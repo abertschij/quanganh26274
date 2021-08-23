@@ -30,14 +30,14 @@
 
 
 /*
- * XXX: MSVC takes forever to compile this module for x86_64 unless we disable
+ * XXX: MSVC takes forever to compile this module unless we disable
  * this global optimization.
  *
  * See also:
  * - http://msdn.microsoft.com/en-us/library/1yk3ydd7.aspx
  * - http://msdn.microsoft.com/en-us/library/chh3fb0k.aspx
  */
-#if defined(_MSC_VER) && defined(_M_X64)
+#if defined(_MSC_VER)
 #  pragma optimize( "g", off )
 #endif
 

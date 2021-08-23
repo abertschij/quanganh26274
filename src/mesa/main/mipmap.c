@@ -40,7 +40,14 @@
 #include "../../gallium/auxiliary/util/u_format_rgb9e5.h"
 #include "../../gallium/auxiliary/util/u_format_r11g11b10f.h"
 
-
+/*
+ * XXX: MSVC takes forever to compile this module for x86 unless we disable
+ * optimizations.
+ *
+ */
+#if defined(_MSC_VER) && defined(_M_IX86)
+#  pragma optimize( "", off )
+#endif
 
 static GLint
 bytes_per_pixel(GLenum datatype, GLuint comps)

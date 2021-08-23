@@ -35,6 +35,14 @@
 #include "s_context.h"
 #include "s_texcombine.h"
 
+/*
+ * XXX: MSVC takes forever to compile this module for x86 unless we disable
+ * optimizations.
+ *
+ */
+#if defined(_MSC_VER) && defined(_M_IX86)
+#  pragma optimize( "", off )
+#endif
 
 /**
  * Pointer to array of float[4]
