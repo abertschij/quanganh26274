@@ -158,7 +158,18 @@ _mesa_add_parameter(struct gl_program_parameter_list *paramList,
          p->DataType = datatype;
          p->Flags = flags;
          if (values) {
-            COPY_4V(paramList->ParameterValues[oldNum + i], values);
+            if (size >= (i+1)*4) {
+               COPY_4V(paramList->ParameterValues[oldNum + i], values);
+            } else {
+               /* silence asan */
+               for (j = 0; j < 4; j++) {
+                  if (i*4+j < size) {
+                     paramList->ParameterValues[oldNum + i][j] = values[i*4+j];
+                  } else {
+                     paramList->ParameterValues[oldNum + i][j].f = 0.0f;
+                  }
+               }
+            }
             values += 4;
             p->Initialized = GL_TRUE;
          }
