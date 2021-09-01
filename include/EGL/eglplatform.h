@@ -124,6 +124,19 @@ typedef Window   EGLNativeWindowType;
 
 #endif /* MESA_EGL_NO_X11_HEADERS */
 
+#elif defined(__APPLE__)
+
+// TODO(gman): these are place holders.
+typedef void          *EGLNativeDisplayType;
+typedef int            EGLNativePixmapType;
+#ifdef __OBJC__
+@class NSView;
+typedef NSView *EGLNativeWindowType;
+#else
+struct NSView;
+typedef struct NSView *EGLNativeWindowType;
+#endif  // __OBJC__
+
 #else
 #error "Platform not recognized"
 #endif
