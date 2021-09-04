@@ -1,3 +1,33 @@
+/**************************************************************************
+ *
+ * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
+ * Copyright 2010-2011 LunarG, Inc.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
 /**
  * Functions related to EGLDisplay.
  */
@@ -13,6 +43,40 @@
 #include "eglmutex.h"
 #include "egllog.h"
 
+/* Includes for _eglNativePlatformDetectNativeDisplay */
+#ifdef HAVE_MINCORE
+#include <unistd.h>
+#include <sys/mman.h>
+#endif
+#ifdef HAVE_WAYLAND_PLATFORM
+#include <wayland-client.h>
+#endif
+#ifdef HAVE_DRM_PLATFORM
+#include <gbm.h>
+#endif
+#ifdef HAVE_FBDEV_PLATFORM
+#include <stdint.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#endif
+
+
+/**
+ * Map --with-egl-platforms names to platform types.
+ */
+static const struct {
+   _EGLPlatformType platform;
+   const char *name;
+} egl_platforms[_EGL_NUM_PLATFORMS] = {
+   { _EGL_PLATFORM_WINDOWS, "gdi" },
+   { _EGL_PLATFORM_X11, "x11" },
+   { _EGL_PLATFORM_WAYLAND, "wayland" },
+   { _EGL_PLATFORM_DRM, "drm" },
+   { _EGL_PLATFORM_FBDEV, "fbdev" },
+   { _EGL_PLATFORM_NULL, "null" },
+   { _EGL_PLATFORM_ANDROID, "android" }
+};
+
 
 /**
  * Return the native platform by parsing EGL_PLATFORM.
@@ -20,16 +84,6 @@
 static _EGLPlatformType
 _eglGetNativePlatformFromEnv(void)
 {
-   /* map --with-egl-platforms names to platform types */
-   static const struct {
-      _EGLPlatformType platform;
-      const char *name;
-   } egl_platforms[_EGL_NUM_PLATFORMS] = {
-      { _EGL_PLATFORM_WINDOWS, "gdi" },
-      { _EGL_PLATFORM_X11, "x11" },
-      { _EGL_PLATFORM_DRM, "drm" },
-      { _EGL_PLATFORM_FBDEV, "fbdev" }
-   };
    _EGLPlatformType plat = _EGL_INVALID_PLATFORM;
    const char *plat_name;
    EGLint i;
@@ -53,18 +107,106 @@ _eglGetNativePlatformFromEnv(void)
 
 
 /**
+ * Perform validity checks on a generic pointer.
+ */
+static EGLBoolean
+_eglPointerIsDereferencable(void *p)
+{
+#ifdef HAVE_MINCORE
+   uintptr_t addr = (uintptr_t) p;
+   unsigned char valid = 0;
+   const long page_size = getpagesize();
+
+   if (p == NULL)
+      return EGL_FALSE;
+
+   /* align addr to page_size */
+   addr &= ~(page_size - 1);
+
+   if (mincore((void *) addr, page_size, &valid) < 0) {
+      _eglLog(_EGL_DEBUG, "mincore failed: %m");
+      return EGL_FALSE;
+   }
+
+   return (valid & 0x01) == 0x01;
+#else
+   return p != NULL;
+#endif
+}
+
+
+/**
+ * Try detecting native platform with the help of native display characteristcs.
+ */
+static _EGLPlatformType
+_eglNativePlatformDetectNativeDisplay(EGLNativeDisplayType nativeDisplay)
+{
+#ifdef HAVE_FBDEV_PLATFORM
+   struct stat buf;
+#endif
+
+   if (nativeDisplay == EGL_DEFAULT_DISPLAY)
+      return _EGL_INVALID_PLATFORM;
+
+#ifdef HAVE_FBDEV_PLATFORM
+   /* fbdev is the only platform that can be a file descriptor. */
+   if (fstat((intptr_t) nativeDisplay, &buf) == 0 && S_ISCHR(buf.st_mode))
+      return _EGL_PLATFORM_FBDEV;
+#endif
+
+   if (_eglPointerIsDereferencable(nativeDisplay)) {
+      void *first_pointer = *(void **) nativeDisplay;
+
+      (void) first_pointer; /* silence unused var warning */
+
+#ifdef HAVE_WAYLAND_PLATFORM
+      /* wl_display is a wl_proxy, which is a wl_object.
+       * wl_object's first element points to the interfacetype. */
+      if (first_pointer == &wl_display_interface)
+         return _EGL_PLATFORM_WAYLAND;
+#endif
+
+#ifdef HAVE_DRM_PLATFORM
+      /* gbm has a pointer to its constructor as first element. */
+      if (first_pointer == gbm_create_device)
+         return _EGL_PLATFORM_DRM;
+#endif
+
+#ifdef HAVE_X11_PLATFORM
+      /* If not matched to any other platform, fallback to x11. */
+      return _EGL_PLATFORM_X11;
+#endif
+   }
+
+   return _EGL_INVALID_PLATFORM;
+}
+
+
+/**
  * Return the native platform.  It is the platform of the EGL native types.
  */
 _EGLPlatformType
-_eglGetNativePlatform(void)
+_eglGetNativePlatform(EGLNativeDisplayType nativeDisplay)
 {
    static _EGLPlatformType native_platform = _EGL_INVALID_PLATFORM;
+   char *detection_method = NULL;
 
    if (native_platform == _EGL_INVALID_PLATFORM) {
       native_platform = _eglGetNativePlatformFromEnv();
-      if (native_platform == _EGL_INVALID_PLATFORM)
-         native_platform = _EGL_NATIVE_PLATFORM;
+      detection_method = "environment overwrite";
+      if (native_platform == _EGL_INVALID_PLATFORM) {
+         native_platform = _eglNativePlatformDetectNativeDisplay(nativeDisplay);
+         detection_method = "autodetected";
+         if (native_platform == _EGL_INVALID_PLATFORM) {
+            native_platform = _EGL_NATIVE_PLATFORM;
+            detection_method = "build-time configuration";
+         }
+      }
    }
+
+   if (detection_method != NULL)
+      _eglLog(_EGL_DEBUG, "Native platform type: %s (%s)",
+              egl_platforms[native_platform].name, detection_method);
 
    return native_platform;
 }
@@ -105,7 +247,7 @@ _eglFiniDisplay(void)
  * new one.
  */
 _EGLDisplay *
-_eglFindDisplay(_EGLPlatformType plat, EGLNativeDisplayType plat_dpy)
+_eglFindDisplay(_EGLPlatformType plat, void *plat_dpy)
 {
    _EGLDisplay *dpy;
 
@@ -233,17 +375,53 @@ _eglCheckResource(void *res, _EGLResourceType type, _EGLDisplay *dpy)
 
 
 /**
- * Link a resource to a display.
+ * Initialize a display resource.
  */
 void
-_eglLinkResource(_EGLResource *res, _EGLResourceType type, _EGLDisplay *dpy)
+_eglInitResource(_EGLResource *res, EGLint size, _EGLDisplay *dpy)
 {
-   assert(!res->Display || res->Display == dpy);
-
+   memset(res, 0, size);
    res->Display = dpy;
+   res->RefCount = 1;
+}
+
+
+/**
+ * Increment reference count for the resource.
+ */
+void
+_eglGetResource(_EGLResource *res)
+{
+   assert(res && res->RefCount > 0);
+   /* hopefully a resource is always manipulated with its display locked */
+   res->RefCount++;
+}
+
+
+/**
+ * Decrement reference count for the resource.
+ */
+EGLBoolean
+_eglPutResource(_EGLResource *res)
+{
+   assert(res && res->RefCount > 0);
+   res->RefCount--;
+   return (!res->RefCount);
+}
+
+
+/**
+ * Link a resource to its display.
+ */
+void
+_eglLinkResource(_EGLResource *res, _EGLResourceType type)
+{
+   assert(res->Display);
+
    res->IsLinked = EGL_TRUE;
-   res->Next = dpy->ResourceLists[type];
-   dpy->ResourceLists[type] = res;
+   res->Next = res->Display->ResourceLists[type];
+   res->Display->ResourceLists[type] = res;
+   _eglGetResource(res);
 }
 
 
@@ -270,6 +448,9 @@ _eglUnlinkResource(_EGLResource *res, _EGLResourceType type)
    }
 
    res->Next = NULL;
-   /* do not reset res->Display */
    res->IsLinked = EGL_FALSE;
+   _eglPutResource(res);
+
+   /* We always unlink before destroy.  The driver still owns a reference */
+   assert(res->RefCount);
 }

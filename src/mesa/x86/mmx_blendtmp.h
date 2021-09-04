@@ -1,10 +1,10 @@
 /*
- * Written by JosÃ© Fonseca <j_r_fonseca@yahoo.co.uk>
+ * Written by José Fonseca <j_r_fonseca@yahoo.co.uk>
  */
 
 
 /*
- * void _mesa_mmx_blend( GLcontext *ctx,
+ * void _mesa_mmx_blend( struct gl_context *ctx,
  *                       GLuint n, 
  *                       const GLubyte mask[],
  *                       GLchan rgba[][4], 

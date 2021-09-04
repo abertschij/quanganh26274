@@ -99,6 +99,10 @@ enum pipe_error {
 #define PIPE_MASK_B  0x4
 #define PIPE_MASK_A  0x8
 #define PIPE_MASK_RGBA 0xf
+#define PIPE_MASK_Z  0x10
+#define PIPE_MASK_S  0x20
+#define PIPE_MASK_ZS 0x30
+#define PIPE_MASK_RGBAZS (PIPE_MASK_RGBA|PIPE_MASK_ZS)
 
 
 /**
@@ -138,12 +142,14 @@ enum pipe_error {
 /** Texture types.
  * See the documentation for info on PIPE_TEXTURE_RECT vs PIPE_TEXTURE_2D */
 enum pipe_texture_target {
-   PIPE_BUFFER       = 0,
-   PIPE_TEXTURE_1D   = 1,
-   PIPE_TEXTURE_2D   = 2,
-   PIPE_TEXTURE_3D   = 3,
-   PIPE_TEXTURE_CUBE = 4,
-   PIPE_TEXTURE_RECT = 5,
+   PIPE_BUFFER           = 0,
+   PIPE_TEXTURE_1D       = 1,
+   PIPE_TEXTURE_2D       = 2,
+   PIPE_TEXTURE_3D       = 3,
+   PIPE_TEXTURE_CUBE     = 4,
+   PIPE_TEXTURE_RECT     = 5,
+   PIPE_TEXTURE_1D_ARRAY = 6,
+   PIPE_TEXTURE_2D_ARRAY = 7,
    PIPE_MAX_TEXTURE_TYPES
 };
 
@@ -177,14 +183,6 @@ enum pipe_texture_target {
 
 #define PIPE_TEX_COMPARE_NONE          0
 #define PIPE_TEX_COMPARE_R_TO_TEXTURE  1
-
-
-/**
- * Surface layout -- a hint?  Or some driver-internal poking out into
- * the interface?
- */
-#define PIPE_SURFACE_LAYOUT_LINEAR  0
-
 
 /**
  * Clear buffer bits
@@ -231,13 +229,12 @@ enum pipe_transfer_usage {
    /**
     * Discards the memory within the mapped region.
     *
-    * It should not be used with PIPE_TRANSFER_CPU_READ.
+    * It should not be used with PIPE_TRANSFER_READ.
     *
     * See also:
     * - OpenGL's ARB_map_buffer_range extension, MAP_INVALIDATE_RANGE_BIT flag.
-    * - Direct3D's D3DLOCK_DISCARD flag.
     */
-   PIPE_TRANSFER_DISCARD = (1 << 8),
+   PIPE_TRANSFER_DISCARD_RANGE = (1 << 8),
 
    /**
     * Fail if the resource cannot be mapped immediately.
@@ -252,7 +249,7 @@ enum pipe_transfer_usage {
    /**
     * Do not attempt to synchronize pending operations on the resource when mapping.
     *
-    * It should not be used with PIPE_TRANSFER_CPU_READ.
+    * It should not be used with PIPE_TRANSFER_READ.
     *
     * See also:
     * - OpenGL's ARB_map_buffer_range extension, MAP_UNSYNCHRONIZED_BIT flag.
@@ -260,19 +257,33 @@ enum pipe_transfer_usage {
     * - WDDM's D3DDDICB_LOCKFLAGS.IgnoreSync flag.
     */
    PIPE_TRANSFER_UNSYNCHRONIZED = (1 << 10),
-   PIPE_TRANSFER_NOOVERWRITE = (1 << 10), /* are these really the same?? */
 
    /**
     * Written ranges will be notified later with
     * pipe_context::transfer_flush_region.
     *
-    * It should not be used with PIPE_TRANSFER_CPU_READ.
+    * It should not be used with PIPE_TRANSFER_READ.
     *
     * See also:
     * - pipe_context::transfer_flush_region
     * - OpenGL's ARB_map_buffer_range extension, MAP_FLUSH_EXPLICIT_BIT flag.
     */
-   PIPE_TRANSFER_FLUSH_EXPLICIT = (1 << 11)
+   PIPE_TRANSFER_FLUSH_EXPLICIT = (1 << 11),
+
+   /**
+    * Discards all memory backing the resource.
+    *
+    * It should not be used with PIPE_TRANSFER_READ.
+    *
+    * This is equivalent to:
+    * - OpenGL's ARB_map_buffer_range extension, MAP_INVALIDATE_BUFFER_BIT
+    * - BufferData(NULL) on a GL buffer
+    * - Direct3D's D3DLOCK_DISCARD flag.
+    * - WDDM's D3DDDICB_LOCKFLAGS.Discard flag.
+    * - D3D10 DDI's D3D10_DDI_MAP_WRITE_DISCARD flag
+    * - D3D10's D3D10_MAP_WRITE_DISCARD flag.
+    */
+   PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE = (1 << 12)
 
 };
 
@@ -281,17 +292,22 @@ enum pipe_transfer_usage {
  * Resource binding flags -- state tracker must specify in advance all
  * the ways a resource might be used.
  */
-#define PIPE_BIND_DEPTH_STENCIL        (1 << 0) /* get_tex_surface */
-#define PIPE_BIND_RENDER_TARGET        (1 << 1) /* get_tex_surface */
-#define PIPE_BIND_SAMPLER_VIEW         (1 << 2) /* get_sampler_view */
-#define PIPE_BIND_VERTEX_BUFFER        (1 << 3) /* set_vertex_buffers */
-#define PIPE_BIND_INDEX_BUFFER         (1 << 4) /* draw_elements */
-#define PIPE_BIND_CONSTANT_BUFFER      (1 << 5) /* set_constant_buffer */
+#define PIPE_BIND_DEPTH_STENCIL        (1 << 0) /* create_surface */
+#define PIPE_BIND_RENDER_TARGET        (1 << 1) /* create_surface */
+#define PIPE_BIND_BLENDABLE            (1 << 2) /* create_surface */
+#define PIPE_BIND_SAMPLER_VIEW         (1 << 3) /* create_sampler_view */
+#define PIPE_BIND_VERTEX_BUFFER        (1 << 4) /* set_vertex_buffers */
+#define PIPE_BIND_INDEX_BUFFER         (1 << 5) /* draw_elements */
+#define PIPE_BIND_CONSTANT_BUFFER      (1 << 6) /* set_constant_buffer */
 #define PIPE_BIND_DISPLAY_TARGET       (1 << 8) /* flush_front_buffer */
 #define PIPE_BIND_TRANSFER_WRITE       (1 << 9) /* get_transfer */
 #define PIPE_BIND_TRANSFER_READ        (1 << 10) /* get_transfer */
 #define PIPE_BIND_STREAM_OUTPUT        (1 << 11) /* set_stream_output_buffers */
-#define PIPE_BIND_CUSTOM               (1 << 16) /* state-tracker/winsys usages */
+#define PIPE_BIND_CURSOR               (1 << 16) /* mouse cursor */
+#define PIPE_BIND_CUSTOM               (1 << 17) /* state-tracker/winsys usages */
+#define PIPE_BIND_GLOBAL               (1 << 18) /* set_global_binding */
+#define PIPE_BIND_SHADER_RESOURCE      (1 << 19) /* set_shader_resources */
+#define PIPE_BIND_COMPUTE_RESOURCE     (1 << 20) /* set_compute_resources */
 
 /* The first two flags above were previously part of the amorphous
  * TEXTURE_USAGE, most of which are now descriptions of the ways a
@@ -328,32 +344,14 @@ enum pipe_transfer_usage {
 #define PIPE_USAGE_STAGING        5 /* supports data transfers from the GPU to the CPU */
 
 
-/* These are intended to be used in calls to is_format_supported, but
- * no driver actually uses these flags, and only the glx/xlib state
- * tracker issues them.
- *
- * Deprecate?
- */
-#define PIPE_TEXTURE_GEOM_NON_SQUARE       0x1
-#define PIPE_TEXTURE_GEOM_NON_POWER_OF_TWO 0x2
-
-
-/** 
- * Flush types:
- */
-#define PIPE_FLUSH_RENDER_CACHE   0x1
-#define PIPE_FLUSH_TEXTURE_CACHE  0x2
-#define PIPE_FLUSH_SWAPBUFFERS    0x4
-#define PIPE_FLUSH_FRAME          0x8 /**< Mark the end of a frame */
-
-
 /**
  * Shaders
  */
 #define PIPE_SHADER_VERTEX   0
 #define PIPE_SHADER_FRAGMENT 1
 #define PIPE_SHADER_GEOMETRY 2
-#define PIPE_SHADER_TYPES    3
+#define PIPE_SHADER_COMPUTE  3
+#define PIPE_SHADER_TYPES    4
 
 
 /**
@@ -380,13 +378,17 @@ enum pipe_transfer_usage {
  * Query object types
  */
 #define PIPE_QUERY_OCCLUSION_COUNTER     0
-#define PIPE_QUERY_PRIMITIVES_GENERATED  1
-#define PIPE_QUERY_PRIMITIVES_EMITTED    2
-#define PIPE_QUERY_TIME_ELAPSED          3
-#define PIPE_QUERY_SO_STATISTICS         5
-#define PIPE_QUERY_GPU_FINISHED          6
-#define PIPE_QUERY_TIMESTAMP_DISJOINT    7
-#define PIPE_QUERY_TYPES                 8
+#define PIPE_QUERY_OCCLUSION_PREDICATE   1
+#define PIPE_QUERY_TIMESTAMP             2
+#define PIPE_QUERY_TIMESTAMP_DISJOINT    3
+#define PIPE_QUERY_TIME_ELAPSED          4
+#define PIPE_QUERY_PRIMITIVES_GENERATED  5
+#define PIPE_QUERY_PRIMITIVES_EMITTED    6
+#define PIPE_QUERY_SO_STATISTICS         7
+#define PIPE_QUERY_SO_OVERFLOW_PREDICATE 8
+#define PIPE_QUERY_GPU_FINISHED          9
+#define PIPE_QUERY_PIPELINE_STATISTICS  10
+#define PIPE_QUERY_TYPES                11
 
 
 /**
@@ -416,94 +418,220 @@ enum pipe_transfer_usage {
 #define PIPE_SWIZZLE_ONE   5
 
 
+#define PIPE_TIMEOUT_INFINITE 0xffffffffffffffffull
+
 /**
  * Implementation capabilities/limits which are queried through
- * pipe_screen::get_param() and pipe_screen::get_paramf().
+ * pipe_screen::get_param()
  */
 enum pipe_cap {
-   PIPE_CAP_MAX_TEXTURE_IMAGE_UNITS,
-   PIPE_CAP_NPOT_TEXTURES,
-   PIPE_CAP_TWO_SIDED_STENCIL,
-   PIPE_CAP_GLSL,  /* XXX need something better */
-   PIPE_CAP_DUAL_SOURCE_BLEND,
-   PIPE_CAP_ANISOTROPIC_FILTER,
-   PIPE_CAP_POINT_SPRITE,
-   PIPE_CAP_MAX_RENDER_TARGETS,
-   PIPE_CAP_OCCLUSION_QUERY,
-   PIPE_CAP_TIMER_QUERY,
-   PIPE_CAP_TEXTURE_SHADOW_MAP,
-   PIPE_CAP_TEXTURE_SWIZZLE,
-   PIPE_CAP_MAX_TEXTURE_2D_LEVELS,
-   PIPE_CAP_MAX_TEXTURE_3D_LEVELS,
-   PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS,
-   PIPE_CAP_MAX_LINE_WIDTH,
-   PIPE_CAP_MAX_LINE_WIDTH_AA,
-   PIPE_CAP_MAX_POINT_WIDTH,
-   PIPE_CAP_MAX_POINT_WIDTH_AA,
-   PIPE_CAP_MAX_TEXTURE_ANISOTROPY,
-   PIPE_CAP_MAX_TEXTURE_LOD_BIAS,
-   PIPE_CAP_GUARD_BAND_LEFT,  /*< float */
-   PIPE_CAP_GUARD_BAND_TOP,  /*< float */
-   PIPE_CAP_GUARD_BAND_RIGHT,  /*< float */
-   PIPE_CAP_GUARD_BAND_BOTTOM,  /*< float */
-   PIPE_CAP_TEXTURE_MIRROR_CLAMP,
-   PIPE_CAP_TEXTURE_MIRROR_REPEAT,
-   PIPE_CAP_MAX_VERTEX_TEXTURE_UNITS,
-   PIPE_CAP_BLEND_EQUATION_SEPARATE,
-   PIPE_CAP_SM3,  /*< Shader Model, supported */
-   PIPE_CAP_STREAM_OUTPUT,
+   PIPE_CAP_NPOT_TEXTURES = 1,
+   PIPE_CAP_TWO_SIDED_STENCIL = 2,
+   PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS = 4,
+   PIPE_CAP_ANISOTROPIC_FILTER = 5,
+   PIPE_CAP_POINT_SPRITE = 6,
+   PIPE_CAP_MAX_RENDER_TARGETS = 7,
+   PIPE_CAP_OCCLUSION_QUERY = 8,
+   PIPE_CAP_TIMER_QUERY = 9,
+   PIPE_CAP_TEXTURE_SHADOW_MAP = 10,
+   PIPE_CAP_TEXTURE_SWIZZLE = 11,
+   PIPE_CAP_MAX_TEXTURE_2D_LEVELS = 12,
+   PIPE_CAP_MAX_TEXTURE_3D_LEVELS = 13,
+   PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS = 14,
+   PIPE_CAP_TEXTURE_MIRROR_CLAMP = 25,
+   PIPE_CAP_BLEND_EQUATION_SEPARATE = 28,
+   PIPE_CAP_SM3 = 29,  /*< Shader Model, supported */
+   PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS = 30,
+   PIPE_CAP_PRIMITIVE_RESTART = 31,
    /** Maximum texture image units accessible from vertex and fragment shaders
     * combined */
-   PIPE_CAP_MAX_COMBINED_SAMPLERS,
+   PIPE_CAP_MAX_COMBINED_SAMPLERS = 32,
    /** blend enables and write masks per rendertarget */
-   PIPE_CAP_INDEP_BLEND_ENABLE,
+   PIPE_CAP_INDEP_BLEND_ENABLE = 33,
    /** different blend funcs per rendertarget */
-   PIPE_CAP_INDEP_BLEND_FUNC,
-   PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE,
-   PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT,
-   PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT,
-   PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER,
-   PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER,
-   PIPE_CAP_DEPTH_CLAMP
+   PIPE_CAP_INDEP_BLEND_FUNC = 34,
+   PIPE_CAP_DEPTHSTENCIL_CLEAR_SEPARATE = 35,
+   PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS = 36,
+   PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT = 37,
+   PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT = 38,
+   PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER = 39,
+   PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER = 40,
+   PIPE_CAP_DEPTH_CLIP_DISABLE = 41,
+   PIPE_CAP_SHADER_STENCIL_EXPORT = 42,
+   PIPE_CAP_TGSI_INSTANCEID = 43,
+   PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR = 44,
+   PIPE_CAP_FRAGMENT_COLOR_CLAMPED = 45,
+   PIPE_CAP_MIXED_COLORBUFFER_FORMATS = 46,
+   PIPE_CAP_SEAMLESS_CUBE_MAP = 47,
+   PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE = 48,
+   PIPE_CAP_SCALED_RESOLVE = 49,
+   PIPE_CAP_MIN_TEXEL_OFFSET = 50,
+   PIPE_CAP_MAX_TEXEL_OFFSET = 51,
+   PIPE_CAP_CONDITIONAL_RENDER = 52,
+   PIPE_CAP_TEXTURE_BARRIER = 53,
+   PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS = 55,
+   PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS = 56,
+   PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME = 57,
+   PIPE_CAP_TGSI_CAN_COMPACT_VARYINGS = 58, /* temporary */
+   PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS = 59, /* temporary */
+   PIPE_CAP_VERTEX_COLOR_UNCLAMPED = 60,
+   PIPE_CAP_VERTEX_COLOR_CLAMPED = 61,
+   PIPE_CAP_GLSL_FEATURE_LEVEL = 62,
+   PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION = 63,
+   PIPE_CAP_USER_VERTEX_BUFFERS = 64,
+   PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY = 65,
+   PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY = 66,
+   PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY = 67,
+   PIPE_CAP_COMPUTE = 68,
+   PIPE_CAP_USER_INDEX_BUFFERS = 69,
+   PIPE_CAP_USER_CONSTANT_BUFFERS = 70,
+   PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT = 71,
+   PIPE_CAP_START_INSTANCE = 72,
+   PIPE_CAP_QUERY_TIMESTAMP = 73
+};
+
+/**
+ * Implementation limits which are queried through
+ * pipe_screen::get_paramf()
+ */
+enum pipe_capf
+{
+   PIPE_CAPF_MAX_LINE_WIDTH = 15,
+   PIPE_CAPF_MAX_LINE_WIDTH_AA = 16,
+   PIPE_CAPF_MAX_POINT_WIDTH = 17,
+   PIPE_CAPF_MAX_POINT_WIDTH_AA = 18,
+   PIPE_CAPF_MAX_TEXTURE_ANISOTROPY = 19,
+   PIPE_CAPF_MAX_TEXTURE_LOD_BIAS = 20,
+   PIPE_CAPF_GUARD_BAND_LEFT = 21,
+   PIPE_CAPF_GUARD_BAND_TOP = 22,
+   PIPE_CAPF_GUARD_BAND_RIGHT = 23,
+   PIPE_CAPF_GUARD_BAND_BOTTOM = 24
 };
 
 /* Shader caps not specific to any single stage */
 enum pipe_shader_cap
 {
-   PIPE_SHADER_CAP_MAX_INSTRUCTIONS, /* if 0, it means the stage is unsupported */
-   PIPE_SHADER_CAP_MAX_ALU_INSTRUCTIONS,
-   PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS,
-   PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS,
-   PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH,
-   PIPE_SHADER_CAP_MAX_INPUTS,
-   PIPE_SHADER_CAP_MAX_CONSTS,
-   PIPE_SHADER_CAP_MAX_CONST_BUFFERS,
-   PIPE_SHADER_CAP_MAX_TEMPS,
-   PIPE_SHADER_CAP_MAX_ADDRS,
-   PIPE_SHADER_CAP_MAX_PREDS,
-   PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED,
+   PIPE_SHADER_CAP_MAX_INSTRUCTIONS = 0, /* if 0, it means the stage is unsupported */
+   PIPE_SHADER_CAP_MAX_ALU_INSTRUCTIONS = 1,
+   PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS = 2,
+   PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS = 3,
+   PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH = 4,
+   PIPE_SHADER_CAP_MAX_INPUTS = 5,
+   PIPE_SHADER_CAP_MAX_CONSTS = 6,
+   PIPE_SHADER_CAP_MAX_CONST_BUFFERS = 7,
+   PIPE_SHADER_CAP_MAX_TEMPS = 8,
+   PIPE_SHADER_CAP_MAX_ADDRS = 9,
+   PIPE_SHADER_CAP_MAX_PREDS = 10,
+   /* boolean caps */
+   PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED = 11,
+   PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR = 12,
+   PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR = 13,
+   PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR = 14,
+   PIPE_SHADER_CAP_INDIRECT_CONST_ADDR = 15,
+   PIPE_SHADER_CAP_SUBROUTINES = 16, /* BGNSUB, ENDSUB, CAL, RET */
+   PIPE_SHADER_CAP_INTEGERS = 17,
+   PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS = 18,
+   PIPE_SHADER_CAP_PREFERRED_IR = 19
 };
 
 /**
- * Referenced query flags.
+ * Shader intermediate representation.
  */
+enum pipe_shader_ir
+{
+   PIPE_SHADER_IR_TGSI,
+   PIPE_SHADER_IR_LLVM
+};
 
-#define PIPE_UNREFERENCED         0
-#define PIPE_REFERENCED_FOR_READ  (1 << 0)
-#define PIPE_REFERENCED_FOR_WRITE (1 << 1)
+/**
+ * Compute-specific implementation capability.  They can be queried
+ * using pipe_screen::get_compute_param.
+ */
+enum pipe_compute_cap
+{
+   PIPE_COMPUTE_CAP_IR_TARGET,
+   PIPE_COMPUTE_CAP_GRID_DIMENSION,
+   PIPE_COMPUTE_CAP_MAX_GRID_SIZE,
+   PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE,
+   PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK,
+   PIPE_COMPUTE_CAP_MAX_GLOBAL_SIZE,
+   PIPE_COMPUTE_CAP_MAX_LOCAL_SIZE,
+   PIPE_COMPUTE_CAP_MAX_PRIVATE_SIZE,
+   PIPE_COMPUTE_CAP_MAX_INPUT_SIZE
+};
 
 /**
  * Composite query types
+ */
+
+/**
+ * Query result for PIPE_QUERY_SO_STATISTICS.
  */
 struct pipe_query_data_so_statistics
 {
    uint64_t num_primitives_written;
    uint64_t primitives_storage_needed;
 };
+
+/**
+ * Query result for PIPE_QUERY_TIMESTAMP_DISJOINT.
+ */
 struct pipe_query_data_timestamp_disjoint
 {
    uint64_t frequency;
    boolean  disjoint;
+};
+
+/**
+ * Query result for PIPE_QUERY_PIPELINE_STATISTICS.
+ */
+struct pipe_query_data_pipeline_statistics
+{
+   uint64_t ia_vertices;    /**< Num vertices read by the vertex fetcher. */
+   uint64_t ia_primitives;  /**< Num primitives read by the vertex fetcher. */
+   uint64_t vs_invocations; /**< Num vertex shader invocations. */
+   uint64_t gs_invocations; /**< Num geometry shader invocations. */
+   uint64_t gs_primitives;  /**< Num primitives output by a geometry shader. */
+   uint64_t c_invocations;  /**< Num primitives sent to the rasterizer. */
+   uint64_t c_primitives;   /**< Num primitives that were rendered. */
+   uint64_t ps_invocations; /**< Num pixel shader invocations. */
+   uint64_t hs_invocations; /**< Num hull shader invocations. */
+   uint64_t ds_invocations; /**< Num domain shader invocations. */
+   uint64_t cs_invocations; /**< Num compute shader invocations. */
+};
+
+/**
+ * Query result (returned by pipe_context::get_query_result).
+ */
+union pipe_query_result
+{
+   /* PIPE_QUERY_OCCLUSION_PREDICATE */
+   /* PIPE_QUERY_SO_OVERFLOW_PREDICATE */
+   /* PIPE_QUERY_GPU_FINISHED */
+   boolean b;
+
+   /* PIPE_QUERY_OCCLUSION_COUNTER */
+   /* PIPE_QUERY_TIMESTAMP */
+   /* PIPE_QUERY_TIME_ELAPSED */
+   /* PIPE_QUERY_PRIMITIVES_GENERATED */
+   /* PIPE_QUERY_PRIMITIVES_EMITTED */
+   uint64_t u64;
+
+   /* PIPE_QUERY_SO_STATISTICS */
+   struct pipe_query_data_so_statistics so_statistics;
+
+   /* PIPE_QUERY_TIMESTAMP_DISJOINT */
+   struct pipe_query_data_timestamp_disjoint timestamp_disjoint;
+
+   /* PIPE_QUERY_PIPELINE_STATISTICS */
+   struct pipe_query_data_pipeline_statistics pipeline_statistics;
+};
+
+union pipe_color_union
+{
+   float f[4];
+   int i[4];
+   unsigned int ui[4];
 };
 
 #ifdef __cplusplus

@@ -3,7 +3,7 @@
 
 #include "xorg_tracker.h"
 
-#include <pipe/p_state.h>
+#include "pipe/p_state.h"
 
 struct cso_context;
 struct xorg_shaders;
@@ -35,14 +35,9 @@ struct exa_context
    } transform;
 
    struct {
-      boolean use_surface_copy;
-
       struct exa_pixmap_priv *src;
       struct exa_pixmap_priv *dst;
-
-      struct pipe_surface *dst_surface;
-
-      struct pipe_resource *src_texture;
+      PixmapPtr tmp_pix;
    } copy;
 };
 
@@ -72,9 +67,9 @@ do {                                                          \
 } while(0)
 
 struct pipe_surface *
-xorg_gpu_surface(struct pipe_screen *scrn, struct exa_pixmap_priv *priv);
+xorg_gpu_surface(struct pipe_context *pipe, struct exa_pixmap_priv *priv);
 
-void xorg_exa_flush(struct exa_context *exa, uint pipeFlushFlags,
+void xorg_exa_flush(struct exa_context *exa,
                     struct pipe_fence_handle **fence);
 void xorg_exa_finish(struct exa_context *exa);
 

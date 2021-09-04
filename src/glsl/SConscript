@@ -2,91 +2,116 @@ import common
 
 Import('*')
 
+from sys import executable as python_cmd
+
 env = env.Clone()
 
 env.Prepend(CPPPATH = [
+    '#include',
     '#src/mapi',
     '#src/mesa',
+    '#src/glsl',
+    '#src/glsl/glcpp',
 ])
 
-if env['platform'] == 'windows':
-    env.Prepend(CPPPATH = ['#src/talloc'])
+# Make glcpp-parse.h and glsl_parser.h reachable from the include path.
+env.Append(CPPPATH = [Dir('.').abspath, Dir('glcpp').abspath])
 
-sources = [
-    'glcpp/glcpp-lex.c',
-    'glcpp/glcpp-parse.c',
-    'glcpp/pp.c',
-    'ast_expr.cpp',
-    'ast_function.cpp',
-    'ast_to_hir.cpp',
-    'ast_type.cpp',
-    'builtin_function.cpp',
-    'glsl_lexer.cpp',
-    'glsl_parser.cpp',
-    'glsl_parser_extras.cpp',
-    'glsl_types.cpp',
-    'glsl_symbol_table.cpp',
-    'hir_field_selection.cpp',
-    'ir_algebraic.cpp',
-    'ir_basic_block.cpp',
-    'ir_clone.cpp',
-    'ir_constant_expression.cpp',
-    'ir_constant_folding.cpp',
-    'ir_constant_propagation.cpp',
-    'ir_constant_variable.cpp',
-    'ir_copy_propagation.cpp',
-    'ir.cpp',
-    'ir_dead_code.cpp',
-    'ir_dead_code_local.cpp',
-    'ir_dead_functions.cpp',
-    'ir_div_to_mul_rcp.cpp',
-    'ir_explog_to_explog2.cpp',
-    'ir_expression_flattening.cpp',
-    'ir_function_can_inline.cpp',
-    'ir_function.cpp',
-    'ir_function_inlining.cpp',
-    'ir_hierarchical_visitor.cpp',
-    'ir_hv_accept.cpp',
-    'ir_if_simplification.cpp',
-    'ir_if_to_cond_assign.cpp',
-    'ir_import_prototypes.cpp',
-    'ir_lower_jumps.cpp',
-    'ir_mat_op_to_vec.cpp',
-    'ir_mod_to_fract.cpp',
-    'ir_noop_swizzle.cpp',
-    'ir_print_visitor.cpp',
-    'ir_reader.cpp',
-    'ir_rvalue_visitor.cpp',
-    'ir_set_program_inouts.cpp',
-    'ir_structure_splitting.cpp',
-    'ir_sub_to_add_neg.cpp',
-    'ir_swizzle_swizzle.cpp',
-    'ir_tree_grafting.cpp',
-    'ir_validate.cpp',
-    'ir_variable.cpp',
-    'ir_variable_refcount.cpp',
-    'ir_vec_index_to_cond_assign.cpp',
-    'ir_vec_index_to_swizzle.cpp',
-    'linker.cpp',
-    'link_functions.cpp',
-    'loop_analysis.cpp',
-    'loop_controls.cpp',
-    'loop_unroll.cpp',
-    'lower_noise.cpp',
-    'lower_variable_index_to_cond_assign.cpp',
-    'opt_redundant_jumps.cpp',
-    's_expression.cpp',
-]
+env.Append(YACCFLAGS = '-d -p "glcpp_parser_"')
+
+parser_env = env.Clone()
+parser_env.Append(YACCFLAGS = [
+    '--defines=%s' % File('glsl_parser.h').abspath,
+    '-p', '_mesa_glsl_',
+])
+
+# without this line scons will expect "glsl_parser.hpp" instead of
+# "glsl_parser.h", causing glsl_parser.cpp to be regenerated every time
+parser_env['YACCHXXFILESUFFIX'] = '.h'
+
+glcpp_lexer = env.CFile('glcpp/glcpp-lex.c', 'glcpp/glcpp-lex.l')
+glcpp_parser = env.CFile('glcpp/glcpp-parse.c', 'glcpp/glcpp-parse.y')
+glsl_lexer = parser_env.CXXFile('glsl_lexer.cpp', 'glsl_lexer.ll')
+glsl_parser = parser_env.CXXFile('glsl_parser.cpp', 'glsl_parser.yy')
+
+# common generated sources
+glsl_sources = [
+    glcpp_lexer,
+    glcpp_parser[0],
+    glsl_lexer,
+    glsl_parser[0],
+] 
+
+# parse Makefile.sources
+source_lists = env.ParseSourceList('Makefile.sources')
+
+# add non-generated sources
+for l in ('LIBGLCPP_FILES', 'LIBGLSL_FILES', 'LIBGLSL_CXX_FILES'):
+    glsl_sources += source_lists[l]
+
+if env['msvc']:
+    env.Prepend(CPPPATH = ['#/src/getopt'])
+    env.PrependUnique(LIBS = [getopt])
+
+if env['crosscompile'] and not env['embedded']:
+    Import('builtin_glsl_function')
+else:
+    # Copy these files to avoid generation object files into src/mesa/program
+    env.Prepend(CPPPATH = ['#src/mesa/program'])
+    env.Command('hash_table.c', '#src/mesa/program/hash_table.c', Copy('$TARGET', '$SOURCE'))
+    env.Command('symbol_table.c', '#src/mesa/program/symbol_table.c', Copy('$TARGET', '$SOURCE'))
+
+    compiler_objs = env.StaticObject(source_lists['GLSL_COMPILER_CXX_FILES'])
+
+    mesa_objs = env.StaticObject([
+        'hash_table.c',
+        'symbol_table.c',
+    ])
+
+    compiler_objs += mesa_objs
+
+    builtin_compiler = env.Program(
+        target = 'builtin_compiler',
+        source = compiler_objs + glsl_sources + \
+            source_lists['BUILTIN_COMPILER_CXX_FILES'],
+    )
+
+    # SCons builtin dependency scanner doesn't detect that glsl_lexer.ll
+    # depends on glsl_parser.h
+    env.Depends(builtin_compiler, glsl_parser)
+
+    builtin_glsl_function = env.CodeGenerate(
+        target = 'builtin_function.cpp',
+        script = 'builtins/tools/generate_builtins.py',
+        source = builtin_compiler,
+        command = python_cmd + ' $SCRIPT $SOURCE > $TARGET'
+    )
+
+    env.Depends(builtin_glsl_function, ['builtins/tools/generate_builtins.py', 'builtins/tools/texture_builtins.py'] + Glob('builtins/ir/*'))
+
+    Export('builtin_glsl_function')
+
+    if env['hostonly']:
+        Return()
+
+
+glsl_sources += builtin_glsl_function
 
 glsl = env.ConvenienceLibrary(
     target = 'glsl',
-    source = sources,
+    source = glsl_sources,
 )
+
+# SCons builtin dependency scanner doesn't detect that glsl_lexer.ll depends on
+# glsl_parser.h
+env.Depends(glsl, glsl_parser)
 
 Export('glsl')
 
-# FIXME: We can't build the programs because there's a cyclic dependency between tis directory and src/mesa
-Return()
+# Skip building these programs as they will cause SCons error "Two environments
+# with different actions were specified for the same target"
+if env['crosscompile'] or env['embedded']:
+    Return()
 
 env = env.Clone()
 
@@ -95,16 +120,16 @@ if env['platform'] == 'windows':
         'user32',
     ])
 
-env.Prepend(LIBS = [glsl, talloc])
+env.Prepend(LIBS = [glsl])
 
-env.Program(
+glsl2 = env.Program(
     target = 'glsl2',
-    source = [
-        'main.cpp',
-    ]
+    source = compiler_objs,
 )
+env.Alias('glsl2', glsl2)
 
-env.Program(
-    target = 'glcpp',
-    source = ['glcpp/glcpp.c'],
+glcpp = env.Program(
+    target = 'glcpp/glcpp',
+    source = ['glcpp/glcpp.c'] + mesa_objs,
 )
+env.Alias('glcpp', glcpp)

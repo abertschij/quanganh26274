@@ -171,6 +171,7 @@ create_component_texture(struct pipe_context *pipe,
    templ.width0 = width;
    templ.height0 = height;
    templ.depth0 = 1;
+   templ.array_size = 1;
    templ.bind = PIPE_BIND_SAMPLER_VIEW;
 
    tex = screen->resource_create(screen, &templ);
@@ -312,17 +313,17 @@ copy_packed_data(ScrnInfoPtr pScrn,
    int y_array_size = w * h;
 
    ytrans = pipe_get_transfer(pipe, dst[0],
-                                   0, 0, 0,
-                                   PIPE_TRANSFER_WRITE,
-                                   left, top, w, h);
+                              0, 0,
+                              PIPE_TRANSFER_WRITE,
+                              left, top, w, h);
    utrans = pipe_get_transfer(pipe, dst[1],
-                                   0, 0, 0,
-                                   PIPE_TRANSFER_WRITE,
-                                   left, top, w, h);
+                              0, 0,
+                              PIPE_TRANSFER_WRITE,
+                              left, top, w, h);
    vtrans = pipe_get_transfer(pipe, dst[2],
-                                   0, 0, 0,
-                                   PIPE_TRANSFER_WRITE,
-                                   left, top, w, h);
+                              0, 0,
+                              PIPE_TRANSFER_WRITE,
+                              left, top, w, h);
 
    ymap = (char*)pipe->transfer_map(pipe, ytrans);
    umap = (char*)pipe->transfer_map(pipe, utrans);
@@ -460,31 +461,14 @@ bind_shaders(struct xorg_xv_port_priv *port)
    cso_set_fragment_shader_handle(port->r->cso, shader.fs);
 }
 
-static INLINE void
-conditional_flush(struct pipe_context *pipe, struct pipe_resource **tex,
-                  int num)
-{
-   int i;
-   for (i = 0; i < num; ++i) {
-      if (tex[i] && pipe->is_resource_referenced(pipe, tex[i], 0, 0) &
-          PIPE_REFERENCED_FOR_WRITE) {
-         pipe->flush(pipe, PIPE_FLUSH_RENDER_CACHE, NULL);
-         return;
-      }
-   }
-}
-
 static void
 bind_samplers(struct xorg_xv_port_priv *port)
 {
    struct pipe_sampler_state *samplers[PIPE_MAX_SAMPLERS];
    struct pipe_sampler_state sampler;
-   struct pipe_resource **dst = port->yuv[port->current_set];
    struct pipe_sampler_view **dst_views = port->yuv_views[port->current_set];
 
    memset(&sampler, 0, sizeof(struct pipe_sampler_state));
-
-   conditional_flush(port->r->pipe, dst, 3);
 
    sampler.wrap_s = PIPE_TEX_WRAP_CLAMP;
    sampler.wrap_t = PIPE_TEX_WRAP_CLAMP;
@@ -498,9 +482,9 @@ bind_samplers(struct xorg_xv_port_priv *port)
    samplers[2] = &sampler;
 
 
-   cso_set_samplers(port->r->cso, 3,
+   cso_set_samplers(port->r->cso, PIPE_SHADER_FRAGMENT, 3,
                     (const struct pipe_sampler_state **)samplers);
-   cso_set_fragment_sampler_views(port->r->cso, 3, dst_views);
+   cso_set_sampler_views(port->r->cso, PIPE_SHADER_FRAGMENT, 3, dst_views);
 }
 
 static int
@@ -533,11 +517,13 @@ display_video(ScrnInfoPtr pScrn, struct xorg_xv_port_priv *pPriv, int id,
    if (!dst || !dst->tex)
       XORG_FALLBACK("Xv destination %s", !dst ? "!dst" : "!dst->tex");
 
-   dst_surf = xorg_gpu_surface(pPriv->r->pipe->screen, dst);
+   dst_surf = xorg_gpu_surface(pPriv->r->pipe, dst);
    hdtv = ((src_w >= RES_720P_X) && (src_h >= RES_720P_Y));
 
+#ifdef COMPOSITE
    REGION_TRANSLATE(pScrn->pScreen, dstRegion, -pPixmap->screen_x,
                     -pPixmap->screen_y);
+#endif
 
    dxo = dstRegion->extents.x1;
    dyo = dstRegion->extents.y1;
@@ -562,10 +548,15 @@ display_video(ScrnInfoPtr pScrn, struct xorg_xv_port_priv *pPriv, int id,
       int box_y2 = pbox->y2;
       float diff_x = (float)src_w / (float)dst_w;
       float diff_y = (float)src_h / (float)dst_h;
-      float offset_x = box_x1 - dstX + pPixmap->screen_x;
-      float offset_y = box_y1 - dstY + pPixmap->screen_y;
+      float offset_x = box_x1 - dstX;
+      float offset_y = box_y1 - dstY;
       float offset_w;
       float offset_h;
+
+#ifdef COMPOSITE
+      offset_x += pPixmap->screen_x;
+      offset_y += pPixmap->screen_y;
+#endif
 
       x = box_x1;
       y = box_y1;
@@ -601,7 +592,7 @@ put_image(ScrnInfoPtr pScrn,
           DrawablePtr pDraw)
 {
    struct xorg_xv_port_priv *pPriv = (struct xorg_xv_port_priv *) data;
-   ScreenPtr pScreen = screenInfo.screens[pScrn->scrnIndex];
+   ScreenPtr pScreen = xf86ScrnToScreen(pScrn);
    PixmapPtr pPixmap;
    INT32 x1, x2, y1, y2;
    BoxRec dstBox;
@@ -667,7 +658,7 @@ port_priv_create(struct xorg_renderer *r)
 static XF86VideoAdaptorPtr
 xorg_setup_textured_adapter(ScreenPtr pScreen)
 {
-   ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+   ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
    modesettingPtr ms = modesettingPTR(pScrn);
    XF86VideoAdaptorPtr adapt;
    XF86AttributePtr attrs;
@@ -729,7 +720,7 @@ xorg_setup_textured_adapter(ScreenPtr pScreen)
 void
 xorg_xv_init(ScreenPtr pScreen)
 {
-   ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+   ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
    /*modesettingPtr ms = modesettingPTR(pScrn);*/
    XF86VideoAdaptorPtr *adaptors, *new_adaptors = NULL;
    XF86VideoAdaptorPtr textured_adapter;
@@ -759,6 +750,8 @@ xorg_xv_init(ScreenPtr pScreen)
 
    if (num_adaptors) {
       xf86XVScreenInit(pScreen, adaptors, num_adaptors);
+      if (textured_adapter)
+         xorg_xvmc_init(pScreen, textured_adapter->name);
    } else {
       xf86DrvMsg(pScrn->scrnIndex, X_WARNING,
                  "Disabling Xv because no adaptors could be initialized.\n");

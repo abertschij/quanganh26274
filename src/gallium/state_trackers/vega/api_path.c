@@ -27,14 +27,11 @@
 #include "VG/openvg.h"
 
 #include "vg_context.h"
+#include "handle.h"
 #include "path.h"
-#include "polygon.h"
-#include "paint.h"
 #include "api.h"
 
 #include "pipe/p_context.h"
-#include "util/u_inlines.h"
-#include "util/u_draw_quad.h"
 
 VGPath vegaCreatePath(VGint pathFormat,
                       VGPathDatatype datatype,
@@ -59,9 +56,9 @@ VGPath vegaCreatePath(VGint pathFormat,
       return VG_INVALID_HANDLE;
    }
 
-   return (VGPath)path_create(datatype, scale, bias,
-                              segmentCapacityHint, coordCapacityHint,
-                              capabilities);
+   return path_to_handle(path_create(datatype, scale, bias,
+                                     segmentCapacityHint, coordCapacityHint,
+                                     capabilities));
 }
 
 void vegaClearPath(VGPath path, VGbitfield capabilities)
@@ -74,7 +71,7 @@ void vegaClearPath(VGPath path, VGbitfield capabilities)
       return;
    }
 
-   p = (struct path *)path;
+   p = handle_to_path(path);
    path_clear(p, capabilities);
 }
 
@@ -88,7 +85,7 @@ void vegaDestroyPath(VGPath p)
       return;
    }
 
-   path = (struct path *)p;
+   path = handle_to_path(p);
    path_destroy(path);
 }
 
@@ -104,7 +101,7 @@ void vegaRemovePathCapabilities(VGPath path,
       return;
    }
 
-   p = (struct path*)path;
+   p = handle_to_path(path);
    current = path_capabilities(p);
    path_set_capabilities(p, (current &
                              (~(capabilities & VG_PATH_CAPABILITY_ALL))));
@@ -119,7 +116,7 @@ VGbitfield vegaGetPathCapabilities(VGPath path)
       vg_set_error(ctx, VG_BAD_HANDLE_ERROR);
       return 0;
    }
-   p = (struct path*)path;
+   p = handle_to_path(path);
    return path_capabilities(p);
 }
 
@@ -132,8 +129,8 @@ void vegaAppendPath(VGPath dstPath, VGPath srcPath)
       vg_set_error(ctx, VG_BAD_HANDLE_ERROR);
       return;
    }
-   src = (struct path *)srcPath;
-   dst = (struct path *)dstPath;
+   src = handle_to_path(srcPath);
+   dst = handle_to_path(dstPath);
 
    if (!(path_capabilities(src) & VG_PATH_CAPABILITY_APPEND_FROM) ||
        !(path_capabilities(dst) & VG_PATH_CAPABILITY_APPEND_TO)) {
@@ -171,9 +168,9 @@ void vegaAppendPathData(VGPath dstPath,
       }
    }
 
-   p = (struct path*)dstPath;
+   p = handle_to_path(dstPath);
 
-   if (!pathData || !is_aligned_to(pathData, path_datatype_size(p))) {
+   if (!p || !is_aligned_to(p, path_datatype_size(p))) {
       vg_set_error(ctx, VG_ILLEGAL_ARGUMENT_ERROR);
       return;
    }
@@ -203,7 +200,7 @@ void vegaModifyPathCoords(VGPath dstPath,
       return;
    }
 
-   p = (struct path *)dstPath;
+   p = handle_to_path(dstPath);
 
    if (!pathData || !is_aligned_to(pathData, path_datatype_size(p))) {
       vg_set_error(ctx, VG_ILLEGAL_ARGUMENT_ERROR);
@@ -230,8 +227,8 @@ void vegaTransformPath(VGPath dstPath, VGPath srcPath)
       vg_set_error(ctx, VG_BAD_HANDLE_ERROR);
       return;
    }
-   src = (struct path *)srcPath;
-   dst = (struct path *)dstPath;
+   src = handle_to_path(srcPath);
+   dst = handle_to_path(dstPath);
 
    if (!(path_capabilities(src) & VG_PATH_CAPABILITY_TRANSFORM_FROM) ||
        !(path_capabilities(dst) & VG_PATH_CAPABILITY_TRANSFORM_TO)) {
@@ -255,9 +252,9 @@ VGboolean vegaInterpolatePath(VGPath dstPath,
       vg_set_error(ctx, VG_BAD_HANDLE_ERROR);
       return VG_FALSE;
    }
-   dst = (struct path *)dstPath;
-   start = (struct path *)startPath;
-   end = (struct path *)endPath;
+   dst = handle_to_path(dstPath);
+   start = handle_to_path(startPath);
+   end = handle_to_path(endPath);
 
    if (!(path_capabilities(dst) & VG_PATH_CAPABILITY_INTERPOLATE_TO) ||
        !(path_capabilities(start) & VG_PATH_CAPABILITY_INTERPOLATE_FROM) ||
@@ -289,7 +286,7 @@ VGfloat vegaPathLength(VGPath path,
       vg_set_error(ctx, VG_ILLEGAL_ARGUMENT_ERROR);
       return -1;
    }
-   p = (struct path*)path;
+   p = handle_to_path(path);
 
    if (!(path_capabilities(p) & VG_PATH_CAPABILITY_PATH_LENGTH)) {
       vg_set_error(ctx, VG_PATH_CAPABILITY_ERROR);
@@ -334,7 +331,7 @@ void vegaPointAlongPath(VGPath path,
       return;
    }
 
-   p = (struct path*)path;
+   p = handle_to_path(path);
 
    caps = path_capabilities(p);
    if (!(caps & VG_PATH_CAPABILITY_POINT_ALONG_PATH) ||
@@ -389,7 +386,7 @@ void vegaPathBounds(VGPath path,
       return;
    }
 
-   p = (struct path*)path;
+   p = handle_to_path(path);
 
    caps = path_capabilities(p);
    if (!(caps & VG_PATH_CAPABILITY_PATH_BOUNDS)) {
@@ -426,7 +423,7 @@ void vegaPathTransformedBounds(VGPath path,
       return;
    }
 
-   p = (struct path*)path;
+   p = handle_to_path(path);
 
    caps = path_capabilities(p);
    if (!(caps & VG_PATH_CAPABILITY_PATH_TRANSFORMED_BOUNDS)) {
@@ -470,6 +467,7 @@ void vegaPathTransformedBounds(VGPath path,
 void vegaDrawPath(VGPath path, VGbitfield paintModes)
 {
    struct vg_context *ctx = vg_current_context();
+   struct path *p = handle_to_path(path);
 
    if (path == VG_INVALID_HANDLE) {
       vg_set_error(ctx, VG_BAD_HANDLE_ERROR);
@@ -481,8 +479,9 @@ void vegaDrawPath(VGPath path, VGbitfield paintModes)
       return;
    }
 
-   if (path_is_empty((struct path*)path))
+   if (path_is_empty(p))
       return;
-   path_render((struct path*)path, paintModes);
+   path_render(p, paintModes,
+         &ctx->state.vg.path_user_to_surface_matrix);
 }
 

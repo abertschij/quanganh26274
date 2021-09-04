@@ -3,10 +3,9 @@ include $(TOP)/configs/current
 
 LIBNAME = llvmpipe
 
-DEFINES += -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS
-
 C_SOURCES = \
 	lp_bld_alpha.c \
+	lp_bld_blend.c \
 	lp_bld_blend_aos.c \
 	lp_bld_blend_logicop.c \
 	lp_bld_blend_soa.c \
@@ -28,8 +27,6 @@ C_SOURCES = \
 	lp_scene_queue.c \
 	lp_screen.c \
 	lp_setup.c \
-	lp_setup_coef.c \
-	lp_setup_coef_intrin.c \
 	lp_setup_line.c \
 	lp_setup_point.c \
 	lp_setup_tri.c \
@@ -38,6 +35,7 @@ C_SOURCES = \
 	lp_state_clip.c \
 	lp_state_derived.c \
 	lp_state_fs.c \
+	lp_state_setup.c \
 	lp_state_gs.c \
 	lp_state_rasterizer.c \
 	lp_state_sampler.c \
@@ -54,27 +52,24 @@ C_SOURCES = \
 CPP_SOURCES = \
 
 PROGS := lp_test_format	\
+	 lp_test_arit	\
 	 lp_test_blend	\
 	 lp_test_conv	\
-	 lp_test_printf \
-	 lp_test_round \
-         lp_test_sincos
+	 lp_test_printf
 
 # Need this for the lp_test_*.o files
 CLEAN_EXTRA = *.o
 
-lp_test_sincos.o : sse_mathfun.h
+include ../../Makefile.template
 
 PROGS_DEPS := ../../auxiliary/libgallium.a
 
-include ../../Makefile.template
-
 lp_tile_soa.c: lp_tile_soa.py ../../auxiliary/util/u_format_parse.py ../../auxiliary/util/u_format_pack.py ../../auxiliary/util/u_format.csv
-	python lp_tile_soa.py ../../auxiliary/util/u_format.csv > $@
+	$(PYTHON2) $(PYTHON_FLAGS) lp_tile_soa.py ../../auxiliary/util/u_format.csv > $@
 
 LDFLAGS += $(LLVM_LDFLAGS)
 LIBS += -L../../auxiliary/ -lgallium libllvmpipe.a $(LLVM_LIBS) $(GL_LIB_DEPS)
-LD=g++
+LD=$(CXX)
 
 $(PROGS): lp_test_main.o libllvmpipe.a
 

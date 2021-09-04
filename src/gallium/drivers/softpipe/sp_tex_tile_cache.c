@@ -35,6 +35,7 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_tile.h"
+#include "util/u_format.h"
 #include "util/u_math.h"
 #include "sp_context.h"
 #include "sp_texture.h"
@@ -47,6 +48,9 @@ sp_create_tex_tile_cache( struct pipe_context *pipe )
 {
    struct softpipe_tex_tile_cache *tc;
    uint pos;
+
+   /* make sure max texture size works */
+   assert((TILE_SIZE << TEX_ADDR_BITS) >= (1 << (SP_MAX_TEXTURE_2D_LEVELS-1)));
 
    tc = CALLOC_STRUCT( softpipe_tex_tile_cache );
    if (tc) {
@@ -225,7 +229,8 @@ sp_find_cached_tile_tex(struct softpipe_tex_tile_cache *tc,
                         union tex_tile_address addr )
 {
    struct softpipe_tex_cached_tile *tile;
-   
+   boolean zs = util_format_is_depth_or_stencil(tc->format);
+
    tile = tc->entries + tex_cache_pos( addr );
 
    if (addr.value != tile->addr.value) {
@@ -248,6 +253,7 @@ sp_find_cached_tile_tex(struct softpipe_tex_tile_cache *tc,
           tc->tex_level != addr.bits.level ||
           tc->tex_z != addr.bits.z) {
          /* get new transfer (view into texture) */
+         unsigned width, height, layer;
 
          if (tc->tex_trans) {
             if (tc->tex_trans_map) {
@@ -259,16 +265,23 @@ sp_find_cached_tile_tex(struct softpipe_tex_tile_cache *tc,
             tc->tex_trans = NULL;
          }
 
+         width = u_minify(tc->texture->width0, addr.bits.level);
+         if (tc->texture->target == PIPE_TEXTURE_1D_ARRAY) {
+            height = tc->texture->array_size;
+            layer = 0;
+         }
+         else {
+            height = u_minify(tc->texture->height0, addr.bits.level);
+            layer = addr.bits.face + addr.bits.z;
+         }
+
          tc->tex_trans = 
-            pipe_get_transfer(tc->pipe, tc->texture, 
-			      addr.bits.face, 
-			      addr.bits.level, 
-			      addr.bits.z, 
-			      PIPE_TRANSFER_READ | PIPE_TRANSFER_UNSYNCHRONIZED,
-			      0, 0,
-			      u_minify(tc->texture->width0, addr.bits.level),
-			      u_minify(tc->texture->height0, addr.bits.level));
-         
+            pipe_get_transfer(tc->pipe, tc->texture,
+                              addr.bits.level,
+                              layer,
+                              PIPE_TRANSFER_READ | PIPE_TRANSFER_UNSYNCHRONIZED,
+                              0, 0, width, height);
+
          tc->tex_trans_map = tc->pipe->transfer_map(tc->pipe, tc->tex_trans);
 
          tc->tex_face = addr.bits.face;
@@ -276,25 +289,40 @@ sp_find_cached_tile_tex(struct softpipe_tex_tile_cache *tc,
          tc->tex_z = addr.bits.z;
       }
 
-      /* get tile from the transfer (view into texture) */
-      pipe_get_tile_swizzle(tc->pipe,
-			    tc->tex_trans,
-                            addr.bits.x * TILE_SIZE, 
-                            addr.bits.y * TILE_SIZE,
-                            TILE_SIZE,
-                            TILE_SIZE,
-                            tc->swizzle_r,
-                            tc->swizzle_g,
-                            tc->swizzle_b,
-                            tc->swizzle_a,
-                            tc->format,
-                            (float *) tile->data.color);
+      /* Get tile from the transfer (view into texture), explicitly passing
+       * the image format.
+       */
+      if (!zs && util_format_is_pure_uint(tc->format)) {
+         pipe_get_tile_ui_format(tc->pipe,
+                                 tc->tex_trans,
+                                 addr.bits.x * TILE_SIZE,
+                                 addr.bits.y * TILE_SIZE,
+                                 TILE_SIZE,
+                                 TILE_SIZE,
+                                 tc->format,
+                                 (unsigned *) tile->data.colorui);
+      } else if (!zs && util_format_is_pure_sint(tc->format)) {
+         pipe_get_tile_i_format(tc->pipe,
+                                tc->tex_trans,
+                                addr.bits.x * TILE_SIZE,
+                                addr.bits.y * TILE_SIZE,
+                                TILE_SIZE,
+                                 TILE_SIZE,
+                                tc->format,
+                                (int *) tile->data.colori);
+      } else {
+         pipe_get_tile_rgba_format(tc->pipe,
+                                   tc->tex_trans,
+                                   addr.bits.x * TILE_SIZE,
+                                   addr.bits.y * TILE_SIZE,
+                                   TILE_SIZE,
+                                   TILE_SIZE,
+                                   tc->format,
+                                   (float *) tile->data.color);
+      }
       tile->addr = addr;
    }
 
    tc->last_tile = tile;
    return tile;
 }
-
-
-

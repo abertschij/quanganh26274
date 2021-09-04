@@ -44,8 +44,11 @@ struct lp_type;
 struct lp_build_context;
 
 
+#define LP_BLD_SWIZZLE_DONTCARE 0xFF
+
+
 LLVMValueRef
-lp_build_broadcast(LLVMBuilderRef builder,
+lp_build_broadcast(struct gallivm_state *gallivm,
                    LLVMTypeRef vec_type,
                    LLVMValueRef scalar);
 
@@ -53,6 +56,14 @@ lp_build_broadcast(LLVMBuilderRef builder,
 LLVMValueRef
 lp_build_broadcast_scalar(struct lp_build_context *bld,
                           LLVMValueRef scalar);
+
+
+LLVMValueRef
+lp_build_extract_broadcast(struct gallivm_state *gallivm,
+                           struct lp_type src_type,
+                           struct lp_type dst_type,
+                           LLVMValueRef vector,
+                           LLVMValueRef index);
 
 
 /**
@@ -93,6 +104,27 @@ void
 lp_build_swizzle_soa_inplace(struct lp_build_context *bld,
                              LLVMValueRef *values,
                              const unsigned char swizzles[4]);
+
+
+void
+lp_build_transpose_aos(struct gallivm_state *gallivm,
+                       struct lp_type type,
+                       const LLVMValueRef src[4],
+                       LLVMValueRef dst[4]);
+
+
+LLVMValueRef
+lp_build_pack_aos_scalars(struct gallivm_state *gallivm,
+                          struct lp_type src_type,
+                          struct lp_type dst_type,
+                          const LLVMValueRef src);
+
+
+LLVMValueRef
+lp_build_unpack_broadcast_aos_scalars(struct gallivm_state *gallivm,
+                                      struct lp_type src_type,
+                                      struct lp_type dst_type,
+                                      const LLVMValueRef src);
 
 
 #endif /* !LP_BLD_SWIZZLE_H */

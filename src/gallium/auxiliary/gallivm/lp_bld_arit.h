@@ -57,8 +57,13 @@ lp_build_add(struct lp_build_context *bld,
              LLVMValueRef b);
 
 LLVMValueRef
-lp_build_sum_vector(struct lp_build_context *bld,
-                    LLVMValueRef a);
+lp_build_horizontal_add(struct lp_build_context *bld,
+                        LLVMValueRef a);
+
+LLVMValueRef
+lp_build_hadd_partial4(struct lp_build_context *bld,
+                       LLVMValueRef vectors[],
+                       unsigned num_vecs);
 
 LLVMValueRef
 lp_build_sub(struct lp_build_context *bld,
@@ -157,6 +162,10 @@ lp_build_fract(struct lp_build_context *bld,
                LLVMValueRef a);
 
 LLVMValueRef
+lp_build_fract_safe(struct lp_build_context *bld,
+                    LLVMValueRef a);
+
+LLVMValueRef
 lp_build_ifloor(struct lp_build_context *bld,
                 LLVMValueRef a);
 LLVMValueRef
@@ -170,6 +179,18 @@ lp_build_iround(struct lp_build_context *bld,
 LLVMValueRef
 lp_build_itrunc(struct lp_build_context *bld,
                 LLVMValueRef a);
+
+void
+lp_build_ifloor_fract(struct lp_build_context *bld,
+                      LLVMValueRef a,
+                      LLVMValueRef *out_ipart,
+                      LLVMValueRef *out_fpart);
+
+void
+lp_build_ifloor_fract_safe(struct lp_build_context *bld,
+                           LLVMValueRef a,
+                           LLVMValueRef *out_ipart,
+                           LLVMValueRef *out_fpart);
 
 LLVMValueRef
 lp_build_sqrt(struct lp_build_context *bld,
@@ -209,8 +230,25 @@ lp_build_exp2(struct lp_build_context *bld,
               LLVMValueRef a);
 
 LLVMValueRef
+lp_build_extract_exponent(struct lp_build_context *bld,
+                          LLVMValueRef x,
+                          int bias);
+
+LLVMValueRef
+lp_build_extract_mantissa(struct lp_build_context *bld,
+                          LLVMValueRef x);
+
+LLVMValueRef
 lp_build_log2(struct lp_build_context *bld,
               LLVMValueRef a);
+
+LLVMValueRef
+lp_build_fast_log2(struct lp_build_context *bld,
+                   LLVMValueRef a);
+
+LLVMValueRef
+lp_build_ilog2(struct lp_build_context *bld,
+               LLVMValueRef x);
 
 void
 lp_build_exp2_approx(struct lp_build_context *bld,
@@ -225,5 +263,10 @@ lp_build_log2_approx(struct lp_build_context *bld,
                      LLVMValueRef *p_exp,
                      LLVMValueRef *p_floor_log2,
                      LLVMValueRef *p_log2);
+
+LLVMValueRef
+lp_build_mod(struct lp_build_context *bld,
+             LLVMValueRef x,
+             LLVMValueRef y);
 
 #endif /* !LP_BLD_ARIT_H */

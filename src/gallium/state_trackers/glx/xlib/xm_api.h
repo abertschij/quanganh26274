@@ -57,7 +57,7 @@ and create a window, you must do the following to use the X/Mesa interface:
 #define XMESA_H
 
 
-#include "main/core.h" /* for GLvisual and MESA_VERSION_STRING */
+#include "main/core.h" /* for gl_config */
 #include "state_tracker/st_api.h"
 #include "os/os_thread.h"
 
@@ -140,7 +140,10 @@ extern void XMesaDestroyVisual( XMesaVisual v );
  * Return:  an XMesaContext or NULL if error.
  */
 extern XMesaContext XMesaCreateContext( XMesaVisual v,
-					XMesaContext share_list );
+					XMesaContext share_list,
+                                        GLuint major, GLuint minor,
+                                        GLuint profileMask,
+                                        GLuint contextFlags);
 
 
 /*
@@ -280,7 +283,8 @@ XMesaCopyContext(XMesaContext src, XMesaContext dst, unsigned long mask);
  * Basically corresponds to an XVisualInfo.
  */
 struct xmesa_visual {
-   GLvisual mesa_visual;	/* Device independent visual parameters */
+   struct gl_config mesa_visual;/* Device independent visual parameters */
+   int screen, visualID, visualType;
    Display *display;	/* The X11 display */
    XVisualInfo * visinfo;	/* X's visual info (pointer to private copy) */
    XVisualInfo *vishandle;	/* Only used in fakeglx.c */
@@ -325,7 +329,6 @@ struct xmesa_buffer {
 
    GLboolean wasCurrent;	/* was ever the current buffer? */
    XMesaVisual xm_visual;	/* the X/Mesa visual */
-   Drawable drawable;	/* Usually the X window ID */
    Colormap cmap;		/* the X colormap */
    BufferType type;             /* window, pixmap, pbuffer or glxwindow */
 
@@ -349,6 +352,9 @@ struct xmesa_buffer {
 };
 
 
+
+extern const char *
+xmesa_get_name(void);
 
 extern void
 xmesa_init(Display *dpy);

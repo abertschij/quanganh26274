@@ -24,6 +24,7 @@
  **********************************************************/
 
 #include "util/u_inlines.h"
+#include "util/u_memory.h"
 #include "pipe/p_defines.h"
 #include "util/u_math.h"
 
@@ -52,26 +53,28 @@ void svga_cleanup_tss_binding(struct svga_context *svga)
 }
 
 
-static int
+struct bind_queue {
+   struct {
+      unsigned unit;
+      struct svga_hw_view_state *view;
+   } bind[PIPE_MAX_SAMPLERS];
+
+   unsigned bind_count;
+};
+
+
+static enum pipe_error
 update_tss_binding(struct svga_context *svga, 
                    unsigned dirty )
 {
-   boolean reemit = !!(dirty & SVGA_NEW_COMMAND_BUFFER);
+   boolean reemit = svga->rebind.texture_samplers;
    unsigned i;
    unsigned count = MAX2( svga->curr.num_sampler_views,
                           svga->state.hw_draw.num_views );
    unsigned min_lod;
    unsigned max_lod;
 
-
-   struct {
-      struct {
-         unsigned unit;
-         struct svga_hw_view_state *view;
-      } bind[PIPE_MAX_SAMPLERS];
-
-      unsigned bind_count;
-   } queue;
+   struct bind_queue queue;
 
    queue.bind_count = 0;
    
@@ -79,12 +82,14 @@ update_tss_binding(struct svga_context *svga,
       const struct svga_sampler_state *s = svga->curr.sampler[i];
       struct svga_hw_view_state *view = &svga->state.hw_draw.views[i];
       struct pipe_resource *texture = NULL;
+      struct pipe_sampler_view *sv = svga->curr.sampler_views[i];
 
       /* get min max lod */
-      if (svga->curr.sampler_views[i]) {
-         min_lod = MAX2(s->view_min_lod, 0);
-         max_lod = MIN2(s->view_max_lod, svga->curr.sampler_views[i]->texture->last_level);
-         texture = svga->curr.sampler_views[i]->texture;
+      if (sv) {
+         min_lod = MAX2(0, (s->view_min_lod + sv->u.tex.first_level));
+         max_lod = MIN2(s->view_max_lod + sv->u.tex.first_level,
+                        sv->texture->last_level);
+         texture = sv->texture;
       } else {
          min_lod = 0;
          max_lod = 0;
@@ -157,6 +162,8 @@ update_tss_binding(struct svga_context *svga,
       SVGA_FIFOCommitAll( svga->swc );
    }
 
+   svga->rebind.texture_samplers = FALSE;
+
    return 0;
 
 fail:
@@ -164,11 +171,72 @@ fail:
 }
 
 
+/*
+ * Rebind textures.
+ *
+ * Similar to update_tss_binding, but without any state checking/update.
+ *
+ * Called at the beginning of every new command buffer to ensure that
+ * non-dirty textures are properly paged-in.
+ */
+enum pipe_error
+svga_reemit_tss_bindings(struct svga_context *svga)
+{
+   unsigned i;
+   enum pipe_error ret;
+   struct bind_queue queue;
+
+   assert(svga->rebind.texture_samplers);
+
+   queue.bind_count = 0;
+
+   for (i = 0; i < svga->state.hw_draw.num_views; i++) {
+      struct svga_hw_view_state *view = &svga->state.hw_draw.views[i];
+
+      if (view->v) {
+         queue.bind[queue.bind_count].unit = i;
+         queue.bind[queue.bind_count].view = view;
+         queue.bind_count++;
+      }
+   }
+
+   if (queue.bind_count) {
+      SVGA3dTextureState *ts;
+
+      ret = SVGA3D_BeginSetTextureState(svga->swc,
+                                        &ts,
+                                        queue.bind_count);
+      if (ret != PIPE_OK) {
+         return ret;
+      }
+
+      for (i = 0; i < queue.bind_count; i++) {
+         struct svga_winsys_surface *handle;
+
+         ts[i].stage = queue.bind[i].unit;
+         ts[i].name = SVGA3D_TS_BIND_TEXTURE;
+
+         assert(queue.bind[i].view->v);
+         handle = queue.bind[i].view->v->handle;
+         svga->swc->surface_relocation(svga->swc,
+                                       &ts[i].value,
+                                       handle,
+                                       SVGA_RELOC_READ);
+      }
+
+      SVGA_FIFOCommitAll(svga->swc);
+   }
+
+   svga->rebind.texture_samplers = FALSE;
+
+   return PIPE_OK;
+}
+
+
 struct svga_tracked_state svga_hw_tss_binding = {
    "texture binding emit",
    SVGA_NEW_TEXTURE_BINDING |
-   SVGA_NEW_SAMPLER |
-   SVGA_NEW_COMMAND_BUFFER,
+   SVGA_NEW_SAMPLER,
    update_tss_binding
 };
 
@@ -184,6 +252,8 @@ struct ts_queue {
 
 #define EMIT_TS(svga, unit, val, token, fail)                           \
 do {                                                                    \
+   assert(unit < Elements(svga->state.hw_draw.ts));                     \
+   assert(SVGA3D_TS_##token < Elements(svga->state.hw_draw.ts[unit]));  \
    if (svga->state.hw_draw.ts[unit][SVGA3D_TS_##token] != val) {        \
       svga_queue_tss( &queue, unit, SVGA3D_TS_##token, val );           \
       svga->state.hw_draw.ts[unit][SVGA3D_TS_##token] = val;            \
@@ -193,6 +263,8 @@ do {                                                                    \
 #define EMIT_TS_FLOAT(svga, unit, fvalue, token, fail)                  \
 do {                                                                    \
    unsigned val = fui(fvalue);                                          \
+   assert(unit < Elements(svga->state.hw_draw.ts));                     \
+   assert(SVGA3D_TS_##token < Elements(svga->state.hw_draw.ts[unit]));  \
    if (svga->state.hw_draw.ts[unit][SVGA3D_TS_##token] != val) {        \
       svga_queue_tss( &queue, unit, SVGA3D_TS_##token, val );           \
       svga->state.hw_draw.ts[unit][SVGA3D_TS_##token] = val;            \
@@ -214,7 +286,7 @@ svga_queue_tss( struct ts_queue *q,
 }
 
 
-static int
+static enum pipe_error
 update_tss(struct svga_context *svga, 
            unsigned dirty )
 {
@@ -238,7 +310,6 @@ update_tss(struct svga_context *svga,
          // TEXCOORDINDEX -- hopefully not needed
 
          if (svga->curr.tex_flags.flag_1d & (1 << i)) {
-            debug_printf("wrap 1d tex %d\n", i);
             EMIT_TS(svga, i, SVGA3D_TEX_ADDRESS_WRAP, ADDRESSV, fail);
          }
          else
@@ -267,7 +338,7 @@ update_tss(struct svga_context *svga,
       SVGA_FIFOCommitAll( svga->swc );
    }
 
-   return 0;
+   return PIPE_OK;
 
 fail:
    /* XXX: need to poison cached hardware state on failure to ensure

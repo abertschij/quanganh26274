@@ -24,214 +24,235 @@
  *      Jerome Glisse
  *      Corbin Simpson <MostAwesomeDude@gmail.com>
  */
-#include <pipe/p_screen.h>
-#include <util/u_format.h>
-#include <util/u_math.h>
-#include <util/u_inlines.h>
-#include <util/u_memory.h>
-#include "state_tracker/drm_driver.h"
-#include "r600_screen.h"
-#include "r600_context.h"
-#include "r600_resource.h"
-
-extern struct u_resource_vtbl r600_buffer_vtbl;
-
-u32 r600_domain_from_usage(unsigned usage)
-{
-	u32 domain = RADEON_GEM_DOMAIN_GTT;
-
-	if (usage & PIPE_BIND_RENDER_TARGET) {
-	    domain |= RADEON_GEM_DOMAIN_VRAM;
-	}
-	if (usage & PIPE_BIND_DEPTH_STENCIL) {
-	    domain |= RADEON_GEM_DOMAIN_VRAM;
-	}
-	if (usage & PIPE_BIND_SAMPLER_VIEW) {
-	    domain |= RADEON_GEM_DOMAIN_VRAM;
-	}
-	/* also need BIND_BLIT_SOURCE/DESTINATION ? */
-	if (usage & PIPE_BIND_VERTEX_BUFFER) {
-	    domain |= RADEON_GEM_DOMAIN_GTT;
-	}
-	if (usage & PIPE_BIND_INDEX_BUFFER) {
-	    domain |= RADEON_GEM_DOMAIN_GTT;
-	}
-	if (usage & PIPE_BIND_CONSTANT_BUFFER) {
-	    domain |= RADEON_GEM_DOMAIN_VRAM;
-	}
-
-	return domain;
-}
-
-struct pipe_resource *r600_buffer_create(struct pipe_screen *screen,
-					 const struct pipe_resource *templ)
-{
-	struct r600_screen *rscreen = r600_screen(screen);
-	struct r600_resource *rbuffer;
-	struct radeon_bo *bo;
-	struct pb_desc desc;
-	/* XXX We probably want a different alignment for buffers and textures. */
-	unsigned alignment = 4096;
-
-	rbuffer = CALLOC_STRUCT(r600_resource);
-	if (rbuffer == NULL)
-		return NULL;
-
-	rbuffer->base.b = *templ;
-	pipe_reference_init(&rbuffer->base.b.reference, 1);
-	rbuffer->base.b.screen = screen;
-	rbuffer->base.vtbl = &r600_buffer_vtbl;
-
-	if ((rscreen->use_mem_constant == FALSE) && (rbuffer->base.b.bind & PIPE_BIND_CONSTANT_BUFFER)) {
-		desc.alignment = alignment;
-		desc.usage = rbuffer->base.b.bind;
-		rbuffer->pb = pb_malloc_buffer_create(rbuffer->base.b.width0,
-						      &desc);
-		if (rbuffer->pb == NULL) {
-			free(rbuffer);
-			return NULL;
-		}
-		return &rbuffer->base.b;
-	}
-	rbuffer->domain = r600_domain_from_usage(rbuffer->base.b.bind);
-	bo = radeon_bo(rscreen->rw, 0, rbuffer->base.b.width0, alignment, NULL);
-	if (bo == NULL) {
-		FREE(rbuffer);
-		return NULL;
-	}
-	rbuffer->bo = bo;
-	return &rbuffer->base.b;
-}
-
-struct pipe_resource *r600_user_buffer_create(struct pipe_screen *screen,
-					      void *ptr, unsigned bytes,
-					      unsigned bind)
-{
-	struct r600_resource *rbuffer;
-	struct r600_screen *rscreen = r600_screen(screen);
-	struct pipe_resource templ;
-
-	memset(&templ, 0, sizeof(struct pipe_resource));
-	templ.target = PIPE_BUFFER;
-	templ.format = PIPE_FORMAT_R8_UNORM;
-	templ.usage = PIPE_USAGE_IMMUTABLE;
-	templ.bind = bind;
-	templ.width0 = bytes;
-	templ.height0 = 1;
-	templ.depth0 = 1;
-
-	rbuffer = (struct r600_resource*)r600_buffer_create(screen, &templ);
-	if (rbuffer == NULL) {
-		return NULL;
-	}
-	radeon_bo_map(rscreen->rw, rbuffer->bo);
-	memcpy(rbuffer->bo->data, ptr, bytes);
-	radeon_bo_unmap(rscreen->rw, rbuffer->bo);
-	return &rbuffer->base.b;
-}
+#include "r600_pipe.h"
+#include "util/u_upload_mgr.h"
+#include "util/u_memory.h"
 
 static void r600_buffer_destroy(struct pipe_screen *screen,
 				struct pipe_resource *buf)
 {
-	struct r600_resource *rbuffer = (struct r600_resource*)buf;
-	struct r600_screen *rscreen = r600_screen(screen);
+	struct r600_resource *rbuffer = r600_resource(buf);
 
-	if (rbuffer->pb) {
-		pipe_reference_init(&rbuffer->pb->base.reference, 0);
-		pb_destroy(rbuffer->pb);
-		rbuffer->pb = NULL;
-	}
-	if (rbuffer->bo) {
-		radeon_bo_decref(rscreen->rw, rbuffer->bo);
-	}
-	memset(rbuffer, 0, sizeof(struct r600_resource));
+	pb_reference(&rbuffer->buf, NULL);
 	FREE(rbuffer);
+}
+
+static struct pipe_transfer *r600_get_transfer(struct pipe_context *ctx,
+					       struct pipe_resource *resource,
+					       unsigned level,
+					       unsigned usage,
+					       const struct pipe_box *box)
+{
+	struct r600_context *rctx = (struct r600_context*)ctx;
+	struct r600_transfer *transfer = util_slab_alloc(&rctx->pool_transfers);
+
+	assert(box->x + box->width <= resource->width0);
+
+	transfer->transfer.resource = resource;
+	transfer->transfer.level = level;
+	transfer->transfer.usage = usage;
+	transfer->transfer.box = *box;
+	transfer->transfer.stride = 0;
+	transfer->transfer.layer_stride = 0;
+	transfer->transfer.data = NULL;
+	transfer->staging = NULL;
+	transfer->offset = 0;
+
+	/* Note strides are zero, this is ok for buffers, but not for
+	 * textures 2d & higher at least.
+	 */
+	return &transfer->transfer;
+}
+
+static void r600_set_constants_dirty_if_bound(struct r600_context *rctx,
+					      struct r600_constbuf_state *state,
+					      struct r600_resource *rbuffer)
+{
+	bool found = false;
+	uint32_t mask = state->enabled_mask;
+
+	while (mask) {
+		unsigned i = u_bit_scan(&mask);
+		if (state->cb[i].buffer == &rbuffer->b.b) {
+			found = true;
+			state->dirty_mask |= 1 << i;
+		}
+	}
+	if (found) {
+		r600_constant_buffers_dirty(rctx, state);
+	}
 }
 
 static void *r600_buffer_transfer_map(struct pipe_context *pipe,
 				      struct pipe_transfer *transfer)
 {
-	struct r600_resource *rbuffer = (struct r600_resource*)transfer->resource;
-	struct r600_screen *rscreen = r600_screen(pipe->screen);
-	int write = 0;
+	struct r600_resource *rbuffer = r600_resource(transfer->resource);
+	struct r600_context *rctx = (struct r600_context*)pipe;
+	uint8_t *data;
 
-	if (rbuffer->pb) {
-		return (uint8_t*)pb_map(rbuffer->pb, transfer->usage, NULL) + transfer->box.x;
+	if (transfer->usage & PIPE_TRANSFER_DISCARD_WHOLE_RESOURCE &&
+	    !(transfer->usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
+		assert(transfer->usage & PIPE_TRANSFER_WRITE);
+
+		/* Check if mapping this buffer would cause waiting for the GPU. */
+		if (rctx->ws->cs_is_buffer_referenced(rctx->cs, rbuffer->cs_buf, RADEON_USAGE_READWRITE) ||
+		    rctx->ws->buffer_is_busy(rbuffer->buf, RADEON_USAGE_READWRITE)) {
+			unsigned i, mask;
+
+			/* Discard the buffer. */
+			pb_reference(&rbuffer->buf, NULL);
+
+			/* Create a new one in the same pipe_resource. */
+			/* XXX We probably want a different alignment for buffers and textures. */
+			r600_init_resource(rctx->screen, rbuffer, rbuffer->b.b.width0, 4096,
+					   rbuffer->b.b.bind, rbuffer->b.b.usage);
+
+			/* We changed the buffer, now we need to bind it where the old one was bound. */
+			/* Vertex buffers. */
+			mask = rctx->vertex_buffer_state.enabled_mask;
+			while (mask) {
+				i = u_bit_scan(&mask);
+				if (rctx->vertex_buffer_state.vb[i].buffer == &rbuffer->b.b) {
+					rctx->vertex_buffer_state.dirty_mask |= 1 << i;
+					r600_vertex_buffers_dirty(rctx);
+				}
+			}
+			/* Streamout buffers. */
+			for (i = 0; i < rctx->num_so_targets; i++) {
+				if (rctx->so_targets[i]->b.buffer == &rbuffer->b.b) {
+					r600_context_streamout_end(rctx);
+					rctx->streamout_start = TRUE;
+					rctx->streamout_append_bitmask = ~0;
+				}
+			}
+			/* Constant buffers. */
+			r600_set_constants_dirty_if_bound(rctx, &rctx->vs_constbuf_state, rbuffer);
+			r600_set_constants_dirty_if_bound(rctx, &rctx->ps_constbuf_state, rbuffer);
+		}
 	}
-	if (transfer->usage & PIPE_TRANSFER_DONTBLOCK) {
-		/* FIXME */
+#if 0 /* this is broken (see Bug 53130) */
+	else if ((transfer->usage & PIPE_TRANSFER_DISCARD_RANGE) &&
+		 !(transfer->usage & PIPE_TRANSFER_UNSYNCHRONIZED) &&
+		 rctx->screen->has_streamout &&
+		 /* The buffer range must be aligned to 4. */
+		 transfer->box.x % 4 == 0 && transfer->box.width % 4 == 0) {
+		assert(transfer->usage & PIPE_TRANSFER_WRITE);
+
+		/* Check if mapping this buffer would cause waiting for the GPU. */
+		if (rctx->ws->cs_is_buffer_referenced(rctx->cs, rbuffer->cs_buf, RADEON_USAGE_READWRITE) ||
+		    rctx->ws->buffer_is_busy(rbuffer->buf, RADEON_USAGE_READWRITE)) {
+			/* Do a wait-free write-only transfer using a temporary buffer. */
+			struct r600_transfer *rtransfer = (struct r600_transfer*)transfer;
+
+			rtransfer->staging = (struct r600_resource*)
+				pipe_buffer_create(pipe->screen, PIPE_BIND_VERTEX_BUFFER,
+						   PIPE_USAGE_STAGING, transfer->box.width);
+			return rctx->ws->buffer_map(rtransfer->staging->cs_buf, rctx->cs, PIPE_TRANSFER_WRITE);
+		}
 	}
-	if (transfer->usage & PIPE_TRANSFER_WRITE) {
-		write = 1;
-	}
-	if (radeon_bo_map(rscreen->rw, rbuffer->bo)) {
+#endif
+
+	data = rctx->ws->buffer_map(rbuffer->cs_buf, rctx->cs, transfer->usage);
+	if (!data)
 		return NULL;
-	}
-	return (uint8_t*)rbuffer->bo->data + transfer->box.x;
+
+	return (uint8_t*)data + transfer->box.x;
 }
 
 static void r600_buffer_transfer_unmap(struct pipe_context *pipe,
 					struct pipe_transfer *transfer)
 {
-	struct r600_resource *rbuffer = (struct r600_resource*)transfer->resource;
-	struct r600_screen *rscreen = r600_screen(pipe->screen);
+	struct r600_transfer *rtransfer = (struct r600_transfer*)transfer;
 
-	if (rbuffer->pb) {
-		pb_unmap(rbuffer->pb);
-	} else {
-		radeon_bo_unmap(rscreen->rw, rbuffer->bo);
+	if (rtransfer->staging) {
+		struct pipe_box box;
+		u_box_1d(0, transfer->box.width, &box);
+
+		/* Copy the staging buffer into the original one. */
+		r600_copy_buffer(pipe, transfer->resource, transfer->box.x,
+				 &rtransfer->staging->b.b, &box);
+		pipe_resource_reference((struct pipe_resource**)&rtransfer->staging, NULL);
 	}
 }
 
-static void r600_buffer_transfer_flush_region(struct pipe_context *pipe,
-					      struct pipe_transfer *transfer,
-					      const struct pipe_box *box)
+static void r600_transfer_destroy(struct pipe_context *ctx,
+				  struct pipe_transfer *transfer)
 {
+	struct r600_context *rctx = (struct r600_context*)ctx;
+	util_slab_free(&rctx->pool_transfers, transfer);
 }
 
-unsigned r600_buffer_is_referenced_by_cs(struct pipe_context *context,
-					 struct pipe_resource *buf,
-					 unsigned face, unsigned level)
-{
-	/* FIXME */
-	return PIPE_REFERENCED_FOR_READ | PIPE_REFERENCED_FOR_WRITE;
-}
-
-struct pipe_resource *r600_buffer_from_handle(struct pipe_screen *screen,
-					      struct winsys_handle *whandle)
-{
-	struct radeon *rw = (struct radeon*)screen->winsys;
-	struct r600_resource *rbuffer;
-	struct radeon_bo *bo = NULL;
-
-	bo = radeon_bo(rw, whandle->handle, 0, 0, NULL);
-	if (bo == NULL) {
-		return NULL;
-	}
-
-	rbuffer = CALLOC_STRUCT(r600_resource);
-	if (rbuffer == NULL) {
-		radeon_bo_decref(rw, bo);
-		return NULL;
-	}
-
-	pipe_reference_init(&rbuffer->base.b.reference, 1);
-	rbuffer->base.b.target = PIPE_BUFFER;
-	rbuffer->base.b.screen = screen;
-	rbuffer->base.vtbl = &r600_buffer_vtbl;
-	rbuffer->bo = bo;
-	return &rbuffer->base.b;
-}
-
-struct u_resource_vtbl r600_buffer_vtbl =
+static const struct u_resource_vtbl r600_buffer_vtbl =
 {
 	u_default_resource_get_handle,		/* get_handle */
 	r600_buffer_destroy,			/* resource_destroy */
-	r600_buffer_is_referenced_by_cs,	/* is_buffer_referenced */
-	u_default_get_transfer,			/* get_transfer */
-	u_default_transfer_destroy,		/* transfer_destroy */
+	r600_get_transfer,			/* get_transfer */
+	r600_transfer_destroy,			/* transfer_destroy */
 	r600_buffer_transfer_map,		/* transfer_map */
-	r600_buffer_transfer_flush_region,	/* transfer_flush_region */
+	NULL,					/* transfer_flush_region */
 	r600_buffer_transfer_unmap,		/* transfer_unmap */
-	u_default_transfer_inline_write		/* transfer_inline_write */
+	NULL					/* transfer_inline_write */
 };
+
+bool r600_init_resource(struct r600_screen *rscreen,
+			struct r600_resource *res,
+			unsigned size, unsigned alignment,
+			unsigned bind, unsigned usage)
+{
+	uint32_t initial_domain, domains;
+
+	/* Staging resources particpate in transfers and blits only
+	 * and are used for uploads and downloads from regular
+	 * resources.  We generate them internally for some transfers.
+	 */
+	if (usage == PIPE_USAGE_STAGING) {
+		domains = RADEON_DOMAIN_GTT;
+		initial_domain = RADEON_DOMAIN_GTT;
+	} else {
+		domains = RADEON_DOMAIN_GTT | RADEON_DOMAIN_VRAM;
+
+		switch(usage) {
+		case PIPE_USAGE_DYNAMIC:
+		case PIPE_USAGE_STREAM:
+		case PIPE_USAGE_STAGING:
+			initial_domain = RADEON_DOMAIN_GTT;
+			break;
+		case PIPE_USAGE_DEFAULT:
+		case PIPE_USAGE_STATIC:
+		case PIPE_USAGE_IMMUTABLE:
+		default:
+			initial_domain = RADEON_DOMAIN_VRAM;
+			break;
+		}
+	}
+
+	res->buf = rscreen->ws->buffer_create(rscreen->ws, size, alignment, bind, initial_domain);
+	if (!res->buf) {
+		return false;
+	}
+
+	res->cs_buf = rscreen->ws->buffer_get_cs_handle(res->buf);
+	res->domains = domains;
+	return true;
+}
+
+struct pipe_resource *r600_buffer_create(struct pipe_screen *screen,
+					 const struct pipe_resource *templ,
+					 unsigned alignment)
+{
+	struct r600_screen *rscreen = (struct r600_screen*)screen;
+	struct r600_resource *rbuffer;
+
+	rbuffer = MALLOC_STRUCT(r600_resource);
+
+	rbuffer->b.b = *templ;
+	pipe_reference_init(&rbuffer->b.b.reference, 1);
+	rbuffer->b.b.screen = screen;
+	rbuffer->b.vtbl = &r600_buffer_vtbl;
+
+	if (!r600_init_resource(rscreen, rbuffer, templ->width0, alignment, templ->bind, templ->usage)) {
+		FREE(rbuffer);
+		return NULL;
+	}
+	return &rbuffer->b.b;
+}

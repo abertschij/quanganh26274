@@ -1,3 +1,33 @@
+/**************************************************************************
+ *
+ * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
+ * Copyright 2010-2011 LunarG, Inc.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,11 +49,12 @@ _eglGetContextAPIBit(_EGLContext *ctx)
 
    switch (ctx->ClientAPI) {
    case EGL_OPENGL_ES_API:
-      switch (ctx->ClientVersion) {
+      switch (ctx->ClientMajorVersion) {
       case 1:
          bit = EGL_OPENGL_ES_BIT;
          break;
       case 2:
+      case 3:
          bit = EGL_OPENGL_ES2_BIT;
          break;
       default:
@@ -48,7 +79,8 @@ _eglGetContextAPIBit(_EGLContext *ctx)
  * Parse the list of context attributes and return the proper error code.
  */
 static EGLint
-_eglParseContextAttribList(_EGLContext *ctx, const EGLint *attrib_list)
+_eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *dpy,
+                           const EGLint *attrib_list)
 {
    EGLenum api = ctx->ClientAPI;
    EGLint i, err = EGL_SUCCESS;
@@ -56,22 +88,113 @@ _eglParseContextAttribList(_EGLContext *ctx, const EGLint *attrib_list)
    if (!attrib_list)
       return EGL_SUCCESS;
 
+   if (api == EGL_OPENVG_API && attrib_list[0] != EGL_NONE) {
+      _eglLog(_EGL_DEBUG, "bad context attribute 0x%04x", attrib_list[0]);
+      return EGL_BAD_ATTRIBUTE;
+   }
+
    for (i = 0; attrib_list[i] != EGL_NONE; i++) {
       EGLint attr = attrib_list[i++];
       EGLint val = attrib_list[i];
 
       switch (attr) {
       case EGL_CONTEXT_CLIENT_VERSION:
-         if (api != EGL_OPENGL_ES_API) {
-            err = EGL_BAD_ATTRIBUTE;
-            break;
-         }
-         if (val != 1 && val != 2) {
-            err = EGL_BAD_ATTRIBUTE;
-            break;
-         }
-         ctx->ClientVersion = val;
+         ctx->ClientMajorVersion = val;
          break;
+
+      case EGL_CONTEXT_MINOR_VERSION_KHR:
+         if (!dpy->Extensions.KHR_create_context) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         ctx->ClientMinorVersion = val;
+         break;
+
+      case EGL_CONTEXT_FLAGS_KHR:
+         if (!dpy->Extensions.KHR_create_context) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         /* The EGL_KHR_create_context spec says:
+          *
+          *     "Flags are only defined for OpenGL context creation, and
+          *     specifying a flags value other than zero for other types of
+          *     contexts, including OpenGL ES contexts, will generate an
+          *     error."
+          */
+         if (api != EGL_OPENGL_API && val != 0) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         ctx->Flags = val;
+         break;
+
+      case EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR:
+         if (!dpy->Extensions.KHR_create_context) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         /* The EGL_KHR_create_context spec says:
+          *
+          *     "[EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR] is only meaningful for
+          *     OpenGL contexts, and specifying it for other types of
+          *     contexts, including OpenGL ES contexts, will generate an
+          *     error."
+          */
+         if (api != EGL_OPENGL_API) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         ctx->Profile = val;
+         break;
+
+      case EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_KHR:
+         /* The EGL_KHR_create_context spec says:
+          *
+          *     "[EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_KHR] is only
+          *     meaningful for OpenGL contexts, and specifying it for other
+          *     types of contexts, including OpenGL ES contexts, will generate
+          *     an error."
+          */
+           if (!dpy->Extensions.KHR_create_context
+               || api != EGL_OPENGL_API) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         ctx->ResetNotificationStrategy = val;
+         break;
+
+      case EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT:
+         /* The EGL_EXT_create_context_robustness spec says:
+          *
+          *     "[EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT] is only
+          *     meaningful for OpenGL ES contexts, and specifying it for other
+          *     types of contexts will generate an EGL_BAD_ATTRIBUTE error."
+          */
+         if (!dpy->Extensions.EXT_create_context_robustness
+             || api != EGL_OPENGL_ES_API) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         ctx->ResetNotificationStrategy = val;
+         break;
+
+      case EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT:
+         if (!dpy->Extensions.EXT_create_context_robustness) {
+            err = EGL_BAD_ATTRIBUTE;
+            break;
+         }
+
+         ctx->Flags = EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR;
+         break;
+
       default:
          err = EGL_BAD_ATTRIBUTE;
          break;
@@ -81,6 +204,144 @@ _eglParseContextAttribList(_EGLContext *ctx, const EGLint *attrib_list)
          _eglLog(_EGL_DEBUG, "bad context attribute 0x%04x", attr);
          break;
       }
+   }
+
+   if (api == EGL_OPENGL_API) {
+      /* The EGL_KHR_create_context spec says:
+       *
+       *     "If the requested OpenGL version is less than 3.2,
+       *     EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR is ignored and the
+       *     functionality of the context is determined solely by the
+       *     requested version."
+       *
+       * Since the value is ignored, only validate the setting if the version
+       * is >= 3.2.
+       */
+      if (ctx->ClientMajorVersion >= 4
+          || (ctx->ClientMajorVersion == 3 && ctx->ClientMinorVersion >= 2)) {
+         switch (ctx->Profile) {
+         case EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR:
+         case EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR:
+            break;
+
+         default:
+            /* The EGL_KHR_create_context spec says:
+             *
+             *     "* If an OpenGL context is requested, the requested version
+             *        is greater than 3.2, and the value for attribute
+             *        EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR has no bits set; has
+             *        any bits set other than EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR
+             *        and EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR; has
+             *        more than one of these bits set; or if the implementation does
+             *        not support the requested profile, then an EGL_BAD_MATCH error
+             *        is generated."
+             */
+            err = EGL_BAD_MATCH;
+            break;
+         }
+      }
+
+      /* The EGL_KHR_create_context spec says:
+       *
+       *     "* If an OpenGL context is requested and the values for
+       *        attributes EGL_CONTEXT_MAJOR_VERSION_KHR and
+       *        EGL_CONTEXT_MINOR_VERSION_KHR, when considered together with
+       *        the value for attribute
+       *        EGL_CONTEXT_FORWARD_COMPATIBLE_BIT_KHR, specify an OpenGL
+       *        version and feature set that are not defined, than an
+       *        EGL_BAD_MATCH error is generated.
+       *
+       *        ... Thus, examples of invalid combinations of attributes
+       *        include:
+       *
+       *          - Major version < 1 or > 4
+       *          - Major version == 1 and minor version < 0 or > 5
+       *          - Major version == 2 and minor version < 0 or > 1
+       *          - Major version == 3 and minor version < 0 or > 2
+       *          - Major version == 4 and minor version < 0 or > 2
+       *          - Forward-compatible flag set and major version < 3"
+       */
+      if (ctx->ClientMajorVersion < 1 || ctx->ClientMinorVersion < 0)
+         err = EGL_BAD_MATCH;
+
+      switch (ctx->ClientMajorVersion) {
+      case 1:
+         if (ctx->ClientMinorVersion > 5
+             || (ctx->Flags & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR) != 0)
+            err = EGL_BAD_MATCH;
+         break;
+
+      case 2:
+         if (ctx->ClientMinorVersion > 1
+             || (ctx->Flags & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR) != 0)
+            err = EGL_BAD_MATCH;
+         break;
+
+      case 3:
+         /* Note: The text above is incorrect.  There *is* an OpenGL 3.3!
+          */
+         if (ctx->ClientMinorVersion > 3)
+            err = EGL_BAD_MATCH;
+         break;
+
+      case 4:
+      default:
+         /* Don't put additional version checks here.  We don't know that
+          * there won't be versions > 4.2.
+          */
+         break;
+      }
+   } else if (api == EGL_OPENGL_ES_API) {
+      /* The EGL_KHR_create_context spec says:
+       *
+       *     "* If an OpenGL ES context is requested and the values for
+       *        attributes EGL_CONTEXT_MAJOR_VERSION_KHR and
+       *        EGL_CONTEXT_MINOR_VERSION_KHR specify an OpenGL ES version that
+       *        is not defined, than an EGL_BAD_MATCH error is generated.
+       *
+       *        ... Examples of invalid combinations of attributes include:
+       *
+       *          - Major version < 1 or > 2
+       *          - Major version == 1 and minor version < 0 or > 1
+       *          - Major version == 2 and minor version != 0
+       */
+      if (ctx->ClientMajorVersion < 1 || ctx->ClientMinorVersion < 0)
+         err = EGL_BAD_MATCH;
+
+      switch (ctx->ClientMajorVersion) {
+      case 1:
+         if (ctx->ClientMinorVersion > 1)
+            err = EGL_BAD_MATCH;
+         break;
+
+      case 2:
+         if (ctx->ClientMinorVersion > 0)
+            err = EGL_BAD_MATCH;
+         break;
+
+      case 3:
+      default:
+         /* Don't put additional version checks here.  We don't know that
+          * there won't be versions > 3.0.
+          */
+         break;
+      }
+   }
+
+   switch (ctx->ResetNotificationStrategy) {
+   case EGL_NO_RESET_NOTIFICATION_KHR:
+   case EGL_LOSE_CONTEXT_ON_RESET_KHR:
+      break;
+
+   default:
+      err = EGL_BAD_ATTRIBUTE;
+      break;
+   }
+
+   if ((ctx->Flags & ~(EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR
+                      | EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR
+                      | EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR)) != 0) {
+      err = EGL_BAD_ATTRIBUTE;
    }
 
    return err;
@@ -103,23 +364,26 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *dpy, _EGLConfig *conf,
       return EGL_FALSE;
    }
 
-   memset(ctx, 0, sizeof(_EGLContext));
-   ctx->Resource.Display = dpy;
+   _eglInitResource(&ctx->Resource, sizeof(*ctx), dpy);
    ctx->ClientAPI = api;
    ctx->Config = conf;
    ctx->WindowRenderBuffer = EGL_NONE;
+   ctx->Profile = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR;
 
-   ctx->ClientVersion = 1; /* the default, per EGL spec */
+   ctx->ClientMajorVersion = 1; /* the default, per EGL spec */
+   ctx->ClientMinorVersion = 0;
+   ctx->Flags = 0;
+   ctx->Profile = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR;
+   ctx->ResetNotificationStrategy = EGL_NO_RESET_NOTIFICATION_KHR;
 
-   err = _eglParseContextAttribList(ctx, attrib_list);
+   err = _eglParseContextAttribList(ctx, dpy, attrib_list);
    if (err == EGL_SUCCESS && ctx->Config) {
-      EGLint renderable_type, api_bit;
+      EGLint api_bit;
 
-      renderable_type = GET_CONFIG_ATTRIB(ctx->Config, EGL_RENDERABLE_TYPE);
       api_bit = _eglGetContextAPIBit(ctx);
-      if (!(renderable_type & api_bit)) {
+      if (!(ctx->Config->RenderableType & api_bit)) {
          _eglLog(_EGL_DEBUG, "context api is 0x%x while config supports 0x%x",
-               api_bit, renderable_type);
+               api_bit, ctx->Config->RenderableType);
          err = EGL_BAD_CONFIG;
       }
    }
@@ -130,30 +394,6 @@ _eglInitContext(_EGLContext *ctx, _EGLDisplay *dpy, _EGLConfig *conf,
 }
 
 
-/**
- * Just a placeholder/demo function.  Real driver will never use this!
- */
-_EGLContext *
-_eglCreateContext(_EGLDriver *drv, _EGLDisplay *dpy, _EGLConfig *conf,
-                  _EGLContext *share_list, const EGLint *attrib_list)
-{
-   return NULL;
-}
-
-
-/**
- * Default fallback routine - drivers should usually override this.
- */
-EGLBoolean
-_eglDestroyContext(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx)
-{
-   if (!_eglIsContextBound(ctx))
-      free(ctx);
-   return EGL_TRUE;
-}
-
-
-#ifdef EGL_VERSION_1_2
 static EGLint
 _eglQueryContextRenderBuffer(_EGLContext *ctx)
 {
@@ -168,7 +408,6 @@ _eglQueryContextRenderBuffer(_EGLContext *ctx)
       rb = surf->RenderBuffer;
    return rb;
 }
-#endif /* EGL_VERSION_1_2 */
 
 
 EGLBoolean
@@ -183,19 +422,19 @@ _eglQueryContext(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *c,
 
    switch (attribute) {
    case EGL_CONFIG_ID:
-      *value = GET_CONFIG_ATTRIB(c->Config, EGL_CONFIG_ID);
+      if (!c->Config)
+         return _eglError(EGL_BAD_ATTRIBUTE, "eglQueryContext");
+      *value = c->Config->ConfigID;
       break;
    case EGL_CONTEXT_CLIENT_VERSION:
-      *value = c->ClientVersion;
+      *value = c->ClientMajorVersion;
       break;
-#ifdef EGL_VERSION_1_2
    case EGL_CONTEXT_CLIENT_TYPE:
       *value = c->ClientAPI;
       break;
    case EGL_RENDER_BUFFER:
       *value = _eglQueryContextRenderBuffer(c);
       break;
-#endif /* EGL_VERSION_1_2 */
    default:
       return _eglError(EGL_BAD_ATTRIBUTE, "eglQueryContext");
    }
@@ -241,7 +480,6 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
    _EGLThreadInfo *t = _eglGetCurrentThread();
    _EGLDisplay *dpy;
    EGLint conflict_api;
-   EGLBoolean surfaceless;
 
    if (_eglIsCurrentThreadDummy())
       return _eglError(EGL_BAD_ALLOC, "eglMakeCurrent");
@@ -254,27 +492,9 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
    }
 
    dpy = ctx->Resource.Display;
-   switch (_eglGetContextAPIBit(ctx)) {
-   case EGL_OPENGL_ES_BIT:
-      surfaceless = dpy->Extensions.KHR_surfaceless_gles1;
-      break;
-   case EGL_OPENGL_ES2_BIT:
-      surfaceless = dpy->Extensions.KHR_surfaceless_gles2;
-      break;
-   case EGL_OPENGL_BIT:
-      surfaceless = dpy->Extensions.KHR_surfaceless_opengl;
-      break;
-   default:
-      surfaceless = EGL_FALSE;
-      break;
-   }
-
-   if (!surfaceless && (draw == NULL || read == NULL))
+   if (!dpy->Extensions.KHR_surfaceless_context
+       && (draw == NULL || read == NULL))
       return _eglError(EGL_BAD_MATCH, "eglMakeCurrent");
-
-   /* context stealing from another thread is not allowed */
-   if (ctx->Binding && ctx->Binding != t)
-      return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
 
    /*
     * The spec says
@@ -283,16 +503,23 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
     * bound to contexts in another thread, an EGL_BAD_ACCESS error is
     * generated."
     *
-    * But it also says
+    * and
     *
     * "at most one context may be bound to a particular surface at a given
     * time"
-    *
-    * The latter is more restrictive so we can check only the latter case.
     */
-   if ((draw && draw->CurrentContext && draw->CurrentContext != ctx) ||
-       (read && read->CurrentContext && read->CurrentContext != ctx))
+   if (ctx->Binding && ctx->Binding != t)
       return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+   if (draw && draw->CurrentContext && draw->CurrentContext != ctx) {
+      if (draw->CurrentContext->Binding != t ||
+          draw->CurrentContext->ClientAPI != ctx->ClientAPI)
+         return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+   }
+   if (read && read->CurrentContext && read->CurrentContext != ctx) {
+      if (read->CurrentContext->Binding != t ||
+          read->CurrentContext->ClientAPI != ctx->ClientAPI)
+         return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+   }
 
    /* simply require the configs to be equal */
    if ((draw && draw->Config != ctx->Config) ||
@@ -300,7 +527,6 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
       return _eglError(EGL_BAD_MATCH, "eglMakeCurrent");
 
    switch (ctx->ClientAPI) {
-#ifdef EGL_VERSION_1_4
    /* OpenGL and OpenGL ES are conflicting */
    case EGL_OPENGL_ES_API:
       conflict_api = EGL_OPENGL_API;
@@ -308,7 +534,6 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
    case EGL_OPENGL_API:
       conflict_api = EGL_OPENGL_ES_API;
       break;
-#endif
    default:
       conflict_api = -1;
       break;
@@ -323,79 +548,65 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
 
 /**
  * Bind the context to the current thread and given surfaces.  Return the
- * "orphaned" context and surfaces.  Each argument is both input and output.
+ * previous bound context and surfaces.  The caller should unreference the
+ * returned context and surfaces.
+ *
+ * Making a second call with the resources returned by the first call
+ * unsurprisingly undoes the first call, except for the resouce reference
+ * counts.
  */
 EGLBoolean
-_eglBindContext(_EGLContext **ctx, _EGLSurface **draw, _EGLSurface **read)
+_eglBindContext(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read,
+                _EGLContext **old_ctx,
+                _EGLSurface **old_draw, _EGLSurface **old_read)
 {
    _EGLThreadInfo *t = _eglGetCurrentThread();
-   _EGLContext *newCtx = *ctx, *oldCtx;
-   _EGLSurface *newDraw = *draw, *newRead = *read;
+   _EGLContext *prev_ctx;
+   _EGLSurface *prev_draw, *prev_read;
 
-   if (!_eglCheckMakeCurrent(newCtx, newDraw, newRead))
+   if (!_eglCheckMakeCurrent(ctx, draw, read))
       return EGL_FALSE;
 
+   /* increment refcounts before binding */
+   _eglGetContext(ctx);
+   _eglGetSurface(draw);
+   _eglGetSurface(read);
+
    /* bind the new context */
-   oldCtx = _eglBindContextToThread(newCtx, t);
+   prev_ctx = _eglBindContextToThread(ctx, t);
 
-   /* break old bindings */
-   if (oldCtx) {
-      *ctx = oldCtx;
-      *draw = oldCtx->DrawSurface;
-      *read = oldCtx->ReadSurface;
+   /* break previous bindings */
+   if (prev_ctx) {
+      prev_draw = prev_ctx->DrawSurface;
+      prev_read = prev_ctx->ReadSurface;
 
-      if (*draw)
-         (*draw)->CurrentContext = NULL;
-      if (*read)
-         (*read)->CurrentContext = NULL;
+      if (prev_draw)
+         prev_draw->CurrentContext = NULL;
+      if (prev_read)
+         prev_read->CurrentContext = NULL;
 
-      oldCtx->DrawSurface = NULL;
-      oldCtx->ReadSurface = NULL;
+      prev_ctx->DrawSurface = NULL;
+      prev_ctx->ReadSurface = NULL;
+   }
+   else {
+      prev_draw = prev_read = NULL;
    }
 
    /* establish new bindings */
-   if (newCtx) {
-      if (newDraw)
-         newDraw->CurrentContext = newCtx;
-      if (newRead)
-         newRead->CurrentContext = newCtx;
+   if (ctx) {
+      if (draw)
+         draw->CurrentContext = ctx;
+      if (read)
+         read->CurrentContext = ctx;
 
-      newCtx->DrawSurface = newDraw;
-      newCtx->ReadSurface = newRead;
+      ctx->DrawSurface = draw;
+      ctx->ReadSurface = read;
    }
 
-   /* an old context or surface is not orphaned if it is still bound */
-   if (*ctx == newCtx)
-      *ctx = NULL;
-   if (*draw == newDraw || *draw == newRead)
-      *draw = NULL;
-   if (*read == newDraw || *read == newRead)
-      *read = NULL;
+   assert(old_ctx && old_draw && old_read);
+   *old_ctx = prev_ctx;
+   *old_draw = prev_draw;
+   *old_read = prev_read;
 
    return EGL_TRUE;
-}
-
-
-/**
- * Just a placeholder/demo function.  Drivers should override this.
- */
-EGLBoolean
-_eglMakeCurrent(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSurface *draw,
-                _EGLSurface *read, _EGLContext *ctx)
-{
-   return EGL_FALSE;
-}
-
-
-/**
- * This is defined by the EGL_MESA_copy_context extension.
- */
-EGLBoolean
-_eglCopyContextMESA(_EGLDriver *drv, EGLDisplay dpy, EGLContext source,
-                    EGLContext dest, EGLint mask)
-{
-   /* This function will always have to be overridden/implemented in the
-    * device driver.  If the driver is based on Mesa, use _mesa_copy_context().
-    */
-   return EGL_FALSE;
 }

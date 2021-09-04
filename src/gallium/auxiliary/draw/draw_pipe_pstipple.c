@@ -27,8 +27,9 @@
 
 /**
  * Polygon stipple stage:  implement polygon stipple with texture map and
- * fragment program.  The fragment program samples the texture and does
- * a fragment kill for the stipple-failing fragments.
+ * fragment program.  The fragment program samples the texture using the
+ * fragment window coordinate register and does a fragment kill for the
+ * stipple-failing fragments.
  *
  * Authors:  Brian Paul
  */
@@ -114,7 +115,8 @@ struct pstip_stage
 
 /**
  * Subclass of tgsi_transform_context, used for transforming the
- * user's fragment shader to add the special AA instructions.
+ * user's fragment shader to add the extra texture sample and fragment kill
+ * instructions.
  */
 struct pstip_transform_context {
    struct tgsi_transform_context base;
@@ -163,11 +165,16 @@ pstip_transform_decl(struct tgsi_transform_context *ctx,
 }
 
 
+/**
+ * TGSI immediate declaration transform callback.
+ * We're just counting the number of immediates here.
+ */
 static void
 pstip_transform_immed(struct tgsi_transform_context *ctx,
                       struct tgsi_full_immediate *immed)
 {
    struct pstip_transform_context *pctx = (struct pstip_transform_context *) ctx;
+   ctx->emit_immediate(ctx, immed); /* emit to output shader */
    pctx->numImmed++;
 }
 
@@ -227,12 +234,13 @@ pstip_transform_inst(struct tgsi_transform_context *ctx,
          /* declare new position input reg */
          decl = tgsi_default_full_declaration();
          decl.Declaration.File = TGSI_FILE_INPUT;
-         decl.Declaration.Interpolate = TGSI_INTERPOLATE_LINEAR; /* XXX? */
+         decl.Declaration.Interpolate = 1;
          decl.Declaration.Semantic = 1;
          decl.Semantic.Name = TGSI_SEMANTIC_POSITION;
          decl.Semantic.Index = 0;
          decl.Range.First = 
             decl.Range.Last = wincoordInput;
+         decl.Interp.Interpolate = TGSI_INTERPOLATE_LINEAR; /* XXX? */
          ctx->emit_declaration(ctx, &decl);
       }
 
@@ -359,6 +367,8 @@ generate_pstip_fs(struct pstip_stage *pstip)
    tgsi_dump(pstip_fs.tokens, 0);
 #endif
 
+   assert(pstip->fs);
+
    pstip->fs->sampler_unit = transform.freeSampler;
    assert(pstip->fs->sampler_unit < PIPE_MAX_SAMPLERS);
 
@@ -386,15 +396,8 @@ pstip_update_texture(struct pstip_stage *pstip)
    uint i, j;
    ubyte *data;
 
-   /* XXX: want to avoid flushing just because we use stipple: 
-    *
-    * Flush should no longer be necessary if driver is properly
-    * interleaving drawing and transfers on a given context:
-    */
-   pipe->flush( pipe, PIPE_FLUSH_TEXTURE_CACHE, NULL );
-
-   transfer = pipe_get_transfer(pipe, pstip->texture, 0, 0, 0,
-				    PIPE_TRANSFER_WRITE, 0, 0, 32, 32);
+   transfer = pipe_get_transfer(pipe, pstip->texture, 0, 0,
+                                PIPE_TRANSFER_WRITE, 0, 0, 32, 32);
    data = pipe->transfer_map(pipe, transfer);
 
    /*
@@ -440,6 +443,7 @@ pstip_create_texture(struct pstip_stage *pstip)
    texTemp.width0 = 32;
    texTemp.height0 = 32;
    texTemp.depth0 = 1;
+   texTemp.array_size = 1;
    texTemp.bind = PIPE_BIND_SAMPLER_VIEW;
 
    pstip->texture = screen->resource_create(screen, &texTemp);
@@ -567,7 +571,7 @@ pstip_flush(struct draw_stage *stage, unsigned flags)
 
    /* restore original frag shader, texture, sampler state */
    draw->suspend_flushing = TRUE;
-   pstip->driver_bind_fs_state(pipe, pstip->fs->driver_fs);
+   pstip->driver_bind_fs_state(pipe, pstip->fs ? pstip->fs->driver_fs : NULL);
    pstip->driver_bind_sampler_states(pipe, pstip->num_samplers,
                                      pstip->state.samplers);
    pstip->driver_set_sampler_views(pipe,
@@ -657,16 +661,16 @@ pstip_create_fs_state(struct pipe_context *pipe,
                        const struct pipe_shader_state *fs)
 {
    struct pstip_stage *pstip = pstip_stage_from_pipe(pipe);
-   struct pstip_fragment_shader *aafs = CALLOC_STRUCT(pstip_fragment_shader);
+   struct pstip_fragment_shader *pstipfs = CALLOC_STRUCT(pstip_fragment_shader);
 
-   if (aafs) {
-      aafs->state = *fs;
+   if (pstipfs) {
+      pstipfs->state = *fs;
 
       /* pass-through */
-      aafs->driver_fs = pstip->driver_create_fs_state(pstip->pipe, fs);
+      pstipfs->driver_fs = pstip->driver_create_fs_state(pstip->pipe, fs);
    }
 
-   return aafs;
+   return pstipfs;
 }
 
 
@@ -674,12 +678,12 @@ static void
 pstip_bind_fs_state(struct pipe_context *pipe, void *fs)
 {
    struct pstip_stage *pstip = pstip_stage_from_pipe(pipe);
-   struct pstip_fragment_shader *aafs = (struct pstip_fragment_shader *) fs;
+   struct pstip_fragment_shader *pstipfs = (struct pstip_fragment_shader *) fs;
    /* save current */
-   pstip->fs = aafs;
+   pstip->fs = pstipfs;
    /* pass-through */
    pstip->driver_bind_fs_state(pstip->pipe,
-                               (aafs ? aafs->driver_fs : NULL));
+                               (pstipfs ? pstipfs->driver_fs : NULL));
 }
 
 
@@ -687,14 +691,14 @@ static void
 pstip_delete_fs_state(struct pipe_context *pipe, void *fs)
 {
    struct pstip_stage *pstip = pstip_stage_from_pipe(pipe);
-   struct pstip_fragment_shader *aafs = (struct pstip_fragment_shader *) fs;
+   struct pstip_fragment_shader *pstipfs = (struct pstip_fragment_shader *) fs;
    /* pass-through */
-   pstip->driver_delete_fs_state(pstip->pipe, aafs->driver_fs);
+   pstip->driver_delete_fs_state(pstip->pipe, pstipfs->driver_fs);
 
-   if (aafs->pstip_fs)
-      pstip->driver_delete_fs_state(pstip->pipe, aafs->pstip_fs);
+   if (pstipfs->pstip_fs)
+      pstip->driver_delete_fs_state(pstip->pipe, pstipfs->pstip_fs);
 
-   FREE(aafs);
+   FREE(pstipfs);
 }
 
 

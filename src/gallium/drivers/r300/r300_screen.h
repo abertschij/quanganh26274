@@ -24,34 +24,24 @@
 #ifndef R300_SCREEN_H
 #define R300_SCREEN_H
 
-#include "pipe/p_screen.h"
-
 #include "r300_chipset.h"
-
-#include "util/u_mempool.h"
-
+#include "../../winsys/radeon/drm/radeon_winsys.h"
+#include "pipe/p_screen.h"
+#include "util/u_slab.h"
 #include <stdio.h>
-
-struct r300_winsys_screen;
 
 struct r300_screen {
     /* Parent class */
     struct pipe_screen screen;
 
-    struct r300_winsys_screen *rws;
+    struct radeon_winsys *rws;
 
-    /* Chipset capabilities */
+    /* Chipset info and capabilities. */
+    struct radeon_info info;
     struct r300_capabilities caps;
-
-    /* Memory pools. */
-    struct util_mempool pool_buffers;
 
     /** Combination of DBG_xxx flags */
     unsigned debug;
-
-    /* The number of created contexts to know whether we have multiple
-     * contexts or not. */
-    int num_contexts;
 };
 
 
@@ -60,8 +50,8 @@ static INLINE struct r300_screen* r300_screen(struct pipe_screen* screen) {
     return (struct r300_screen*)screen;
 }
 
-static INLINE struct r300_winsys_screen *
-r300_winsys_screen(struct pipe_screen *screen) {
+static INLINE struct radeon_winsys *
+radeon_winsys(struct pipe_screen *screen) {
     return r300_screen(screen)->rws;
 }
 
@@ -87,21 +77,22 @@ r300_winsys_screen(struct pipe_screen *screen) {
 #define DBG_TEX         (1 << 5)
 #define DBG_TEXALLOC    (1 << 6)
 #define DBG_RS          (1 << 7)
-#define DBG_FALL        (1 << 8)
-#define DBG_FB          (1 << 9)
-#define DBG_RS_BLOCK    (1 << 10)
-#define DBG_CBZB        (1 << 11)
-#define DBG_HYPERZ      (1 << 12)
-#define DBG_SCISSOR     (1 << 13)
+#define DBG_FB          (1 << 8)
+#define DBG_RS_BLOCK    (1 << 9)
+#define DBG_CBZB        (1 << 10)
+#define DBG_HYPERZ      (1 << 11)
+#define DBG_SCISSOR     (1 << 12)
+#define DBG_INFO        (1 << 13)
 /* Features. */
 #define DBG_ANISOHQ     (1 << 16)
 #define DBG_NO_TILING   (1 << 17)
 #define DBG_NO_IMMD     (1 << 18)
-#define DBG_FAKE_OCC    (1 << 19)
-#define DBG_NO_OPT      (1 << 20)
-#define DBG_NO_CBZB     (1 << 21)
+#define DBG_NO_OPT      (1 << 19)
+#define DBG_NO_CBZB     (1 << 20)
+#define DBG_NO_ZMASK    (1 << 21)
+#define DBG_NO_HIZ      (1 << 22)
 /* Statistics. */
-#define DBG_STATS       (1 << 24)
+#define DBG_P_STAT      (1 << 25)
 /*@}*/
 
 static INLINE boolean SCREEN_DBG_ON(struct r300_screen * screen, unsigned flags)

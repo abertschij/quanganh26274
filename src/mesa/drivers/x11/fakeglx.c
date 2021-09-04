@@ -428,7 +428,7 @@ create_glx_visual( Display *dpy, XVisualInfo *visinfo )
 			      GL_TRUE,   /* double */
 			      GL_FALSE,  /* stereo */
 			      zBits,
-			      STENCIL_BITS,
+			      8,       /* stencil bits */
 			      accBits, /* r */
 			      accBits, /* g */
 			      accBits, /* b */
@@ -868,6 +868,7 @@ register_with_display(Display *dpy)
       XExtCodes *c = XAddExtension(dpy);
       ext = dpy->ext_procs;  /* new extension is at head of list */
       assert(c->extension == ext->codes.extension);
+      (void) c; /* silence warning */
       ext->name = _mesa_strdup(extName);
       ext->close_display = close_display_callback;
    }
@@ -915,6 +916,20 @@ choose_visual( Display *dpy, int screen, const int *list, GLboolean fbConfig )
    parselist = list;
 
    while (*parselist) {
+
+      if (fbConfig &&
+          parselist[1] == GLX_DONT_CARE &&
+          parselist[0] != GLX_LEVEL) {
+         /* For glXChooseFBConfig(), skip attributes whose value is
+          * GLX_DONT_CARE (-1), unless it's GLX_LEVEL (which can legitimately be
+          * a negative value).
+          *
+          * From page 17 (23 of the pdf) of the GLX 1.4 spec:
+          * GLX DONT CARE may be specified for all attributes except GLX LEVEL.
+          */
+         parselist += 2;
+         continue;
+      }
 
       switch (*parselist) {
 	 case GLX_USE_GL:
@@ -1096,12 +1111,16 @@ choose_visual( Display *dpy, int screen, const int *list, GLboolean fbConfig )
             parselist++;
             break;
          case GLX_FBCONFIG_ID:
+         case GLX_VISUAL_ID:
             if (!fbConfig)
                return NULL;
             parselist++;
             desiredVisualID = *parselist++;
             break;
          case GLX_X_RENDERABLE:
+         case GLX_MAX_PBUFFER_WIDTH:
+         case GLX_MAX_PBUFFER_HEIGHT:
+         case GLX_MAX_PBUFFER_PIXELS:
             if (!fbConfig)
                return NULL;
             parselist += 2;
@@ -1148,6 +1167,7 @@ choose_visual( Display *dpy, int screen, const int *list, GLboolean fbConfig )
       return NULL;
 
    (void) caveat;
+   (void) min_ci;
 
    /*
     * Since we're only simulating the GLX extension this function will never
@@ -1169,7 +1189,7 @@ choose_visual( Display *dpy, int screen, const int *list, GLboolean fbConfig )
          if (vis->depth <= 8)
 	    return NULL;
          depth_size = default_depth_bits();
-         stencil_size = STENCIL_BITS;
+         stencil_size = 8;
          /* XXX accum??? */
       }
    }
@@ -1210,7 +1230,7 @@ choose_visual( Display *dpy, int screen, const int *list, GLboolean fbConfig )
 
       /* we only support one size of stencil and accum buffers. */
       if (stencil_size > 0)
-         stencil_size = STENCIL_BITS;
+         stencil_size = 8;
       if (accumRedSize > 0 || accumGreenSize > 0 || accumBlueSize > 0 ||
           accumAlphaSize > 0) {
          accumRedSize = 
@@ -1291,7 +1311,7 @@ Fake_glXCreateContext( Display *dpy, XVisualInfo *visinfo,
 
    /* deallocate unused windows/buffers */
 #if 0
-   XMesaGarbageCollect();
+   XMesaGarbageCollect(dpy);
 #endif
 
    xmvis = find_glx_visual( dpy, visinfo );
@@ -1352,9 +1372,6 @@ Fake_glXMakeContextCurrent( Display *dpy, GLXDrawable draw,
             /* Out of memory, or context/drawable depth mismatch */
             return False;
          }
-#ifdef FX
-         FXcreateContext( xmctx->xm_visual, draw, xmctx, drawBuffer );
-#endif
       }
 
       /* Find the XMesaBuffer which corresponds to the GLXDrawable 'read' */
@@ -1372,9 +1389,6 @@ Fake_glXMakeContextCurrent( Display *dpy, GLXDrawable draw,
             /* Out of memory, or context/drawable depth mismatch */
             return False;
          }
-#ifdef FX
-         FXcreateContext( xmctx->xm_visual, read, xmctx, readBuffer );
-#endif
       }
 
       MakeCurrent_PrevContext = ctx;
@@ -1532,7 +1546,7 @@ Fake_glXDestroyContext( Display *dpy, GLXContext ctx )
    MakeCurrent_PrevDrawBuffer = 0;
    MakeCurrent_PrevReadBuffer = 0;
    XMesaDestroyContext( glxCtx->xmesaContext );
-   XMesaGarbageCollect();
+   XMesaGarbageCollect(dpy);
    free(glxCtx);
 }
 
@@ -1867,12 +1881,6 @@ Fake_glXWaitX( void )
 static const char *
 get_extensions( void )
 {
-#ifdef FX
-   const char *fx = _mesa_getenv("MESA_GLX_FX");
-   if (fx && fx[0] != 'd') {
-      return EXTENSIONS;
-   }
-#endif
    return EXTENSIONS + 23; /* skip "GLX_MESA_set_3dfx_mode" */
 }
 
@@ -1990,6 +1998,9 @@ Fake_glXChooseFBConfig( Display *dpy, int screen,
 {
    XMesaVisual xmvis;
 
+   /* register ourselves as an extension on this display */
+   register_with_display(dpy);
+
    if (!attribList || !attribList[0]) {
       /* return list of all configs (per GLX_SGIX_fbconfig spec) */
       return Fake_glXGetFBConfigs(dpy, screen, nitems);
@@ -2047,11 +2058,6 @@ Fake_glXCreateWindow( Display *dpy, GLXFBConfig config, Window win,
    xmbuf = XMesaCreateWindowBuffer(xmvis, win);
    if (!xmbuf)
       return 0;
-
-#ifdef FX
-   /* XXX this will segfault if actually called */
-   FXcreateContext(xmvis, win, NULL, xmbuf);
-#endif
 
    (void) dpy;
    (void) attribList;  /* Ignored in GLX 1.3 */
@@ -2229,13 +2235,13 @@ Fake_glXCreatePbuffer( Display *dpy, GLXFBConfig config,
    if (width == 0 || height == 0)
       return 0;
 
-   if (width > MAX_WIDTH || height > MAX_HEIGHT) {
+   if (width > SWRAST_MAX_WIDTH || height > SWRAST_MAX_HEIGHT) {
       /* If allocation would have failed and GLX_LARGEST_PBUFFER is set,
        * allocate the largest possible buffer.
        */
       if (useLargest) {
-         width = MAX_WIDTH;
-         height = MAX_HEIGHT;
+         width = SWRAST_MAX_WIDTH;
+         height = SWRAST_MAX_HEIGHT;
       }
    }
 
@@ -2326,7 +2332,7 @@ Fake_glXCreateNewContext( Display *dpy, GLXFBConfig config,
       return 0;
 
    /* deallocate unused windows/buffers */
-   XMesaGarbageCollect();
+   XMesaGarbageCollect(dpy);
 
    glxCtx->xmesaContext = XMesaCreateContext(xmvis,
                                    shareCtx ? shareCtx->xmesaContext : NULL);
@@ -2541,7 +2547,7 @@ Fake_glXCreateContextWithConfigSGIX(Display *dpy, GLXFBConfigSGIX config, int re
       return 0;
 
    /* deallocate unused windows/buffers */
-   XMesaGarbageCollect();
+   XMesaGarbageCollect(dpy);
 
    glxCtx->xmesaContext = XMesaCreateContext(xmvis,
                                    shareCtx ? shareCtx->xmesaContext : NULL);

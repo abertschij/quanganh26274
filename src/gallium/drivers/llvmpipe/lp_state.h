@@ -86,7 +86,7 @@ struct lp_velems_state
 };
 
 struct lp_so_state {
-   struct pipe_stream_output_state base;
+   struct pipe_stream_output_info base;
 };
 
 
@@ -96,6 +96,9 @@ llvmpipe_set_framebuffer_state(struct pipe_context *,
 
 void
 llvmpipe_update_fs(struct llvmpipe_context *lp);
+
+void 
+llvmpipe_update_setup(struct llvmpipe_context *lp);
 
 void
 llvmpipe_update_derived(struct llvmpipe_context *llvmpipe);

@@ -58,8 +58,6 @@ extern "C" {
 #  define os_break()  __debugbreak()
 #elif defined(PIPE_OS_UNIX)
 #  define os_break() kill(getpid(), SIGTRAP)
-#elif defined(PIPE_OS_EMBEDDED)
-void os_break(void);
 #else
 #  define os_break() abort()
 #endif
@@ -68,10 +66,8 @@ void os_break(void);
 /*
  * Abort the program.
  */
-#if defined(DEBUG) || defined(PIPE_SUBSYSTEM_WINDOWS_DISPLAY) || defined(PIPE_SUBSYSTEM_WINDOWS_MINIPORT)
+#if defined(DEBUG)
 #  define os_abort() os_break()
-#elif defined(PIPE_OS_EMBEDDED)
-void os_abort(void);
 #else
 #  define os_abort() abort()
 #endif

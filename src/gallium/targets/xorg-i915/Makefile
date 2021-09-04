@@ -1,7 +1,7 @@
 TOP = ../../../..
 include $(TOP)/configs/current
 
-LIBNAME = modesetting_drv.so
+LIBNAME = i915_drv.so
 
 C_SOURCES = \
 	intel_target.c \
@@ -19,6 +19,6 @@ DRIVER_PIPES = \
 	$(TOP)/src/gallium/drivers/rbug/librbug.a
 
 DRIVER_LINKS = \
-	$(shell pkg-config --libs libdrm libdrm_intel)
+	$(shell $(PKG_CONFIG) --libs libdrm libdrm_intel)
 
 include ../Makefile.xorg

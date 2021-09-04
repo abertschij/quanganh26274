@@ -67,8 +67,11 @@ struct tgsi_full_declaration
    struct tgsi_declaration Declaration;
    struct tgsi_declaration_range Range;
    struct tgsi_declaration_dimension Dim;
+   struct tgsi_declaration_interp Interp;
    struct tgsi_declaration_semantic Semantic;
    struct tgsi_immediate_array_data ImmediateData;
+   struct tgsi_declaration_resource Resource;
+   struct tgsi_declaration_sampler_view SamplerView;
 };
 
 struct tgsi_full_immediate
@@ -84,7 +87,8 @@ struct tgsi_full_property
 };
 
 #define TGSI_FULL_MAX_DST_REGISTERS 2
-#define TGSI_FULL_MAX_SRC_REGISTERS 4 /* TXD has 4 */
+#define TGSI_FULL_MAX_SRC_REGISTERS 5 /* SAMPLE_D has 5 */
+#define TGSI_FULL_MAX_TEX_OFFSETS 4
 
 struct tgsi_full_instruction
 {
@@ -94,6 +98,7 @@ struct tgsi_full_instruction
    struct tgsi_instruction_texture     Texture;
    struct tgsi_full_dst_register       Dst[TGSI_FULL_MAX_DST_REGISTERS];
    struct tgsi_full_src_register       Src[TGSI_FULL_MAX_SRC_REGISTERS];
+   struct tgsi_texture_offset          TexOffsets[TGSI_FULL_MAX_TEX_OFFSETS];
 };
 
 union tgsi_full_token
@@ -136,7 +141,8 @@ tgsi_parse_token(
 static INLINE unsigned
 tgsi_num_tokens(const struct tgsi_token *tokens)
 {
-   struct tgsi_header header = *(const struct tgsi_header *) tokens;
+   struct tgsi_header header;
+   memcpy(&header, tokens, sizeof(header));
    return header.HeaderSize + header.BodySize;
 }
 

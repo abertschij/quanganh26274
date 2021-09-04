@@ -35,11 +35,6 @@
 #include "gallivm/lp_bld_assert.h"
 #include "gallivm/lp_bld_printf.h"
 
-#include <llvm-c/Analysis.h>
-#include <llvm-c/ExecutionEngine.h>
-#include <llvm-c/Target.h>
-#include <llvm-c/Transforms/Scalar.h>
-
 #include "lp_test.h"
 
 
@@ -63,98 +58,55 @@ typedef void (*test_printf_t)(int i);
 
 
 static LLVMValueRef
-add_printf_test(LLVMModuleRef module)
+add_printf_test(struct gallivm_state *gallivm)
 {
-   LLVMTypeRef args[1] = { LLVMIntType(32) };
-   LLVMValueRef func = LLVMAddFunction(module, "test_printf", LLVMFunctionType(LLVMVoidType(), args, 1, 0));
-   LLVMBuilderRef builder = LLVMCreateBuilder();
-   LLVMBasicBlockRef block = LLVMAppendBasicBlock(func, "entry");
+   LLVMModuleRef module = gallivm->module;
+   LLVMTypeRef args[1] = { LLVMIntTypeInContext(gallivm->context, 32) };
+   LLVMValueRef func = LLVMAddFunction(module, "test_printf", LLVMFunctionType(LLVMVoidTypeInContext(gallivm->context), args, 1, 0));
+   LLVMBuilderRef builder = gallivm->builder;
+   LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(gallivm->context, func, "entry");
 
    LLVMSetFunctionCallConv(func, LLVMCCallConv);
 
    LLVMPositionBuilderAtEnd(builder, block);
-   lp_build_printf(builder, "hello, world\n");
-   lp_build_printf(builder, "print 5 6: %d %d\n", LLVMConstInt(LLVMInt32Type(), 5, 0),
-				LLVMConstInt(LLVMInt32Type(), 6, 0));
+   lp_build_printf(gallivm, "hello, world\n");
+   lp_build_printf(gallivm, "print 5 6: %d %d\n", LLVMConstInt(LLVMInt32TypeInContext(gallivm->context), 5, 0),
+				LLVMConstInt(LLVMInt32TypeInContext(gallivm->context), 6, 0));
 
    /* Also test lp_build_assert().  This should not fail. */
-   lp_build_assert(builder, LLVMConstInt(LLVMInt32Type(), 1, 0), "assert(1)");
+   lp_build_assert(gallivm, LLVMConstInt(LLVMInt32TypeInContext(gallivm->context), 1, 0), "assert(1)");
 
    LLVMBuildRetVoid(builder);
-   LLVMDisposeBuilder(builder);
+
+   gallivm_verify_function(gallivm, func);
+
    return func;
 }
 
 
 PIPE_ALIGN_STACK
 static boolean
-test_printf(unsigned verbose, FILE *fp, const struct printf_test_case *testcase)
+test_printf(unsigned verbose, FILE *fp,
+            const struct printf_test_case *testcase)
 {
-   LLVMModuleRef module = NULL;
-   LLVMValueRef test = NULL;
-   LLVMExecutionEngineRef engine = NULL;
-   LLVMModuleProviderRef provider = NULL;
-   LLVMPassManagerRef pass = NULL;
-   char *error = NULL;
-   test_printf_t test_printf;
-   float unpacked[4];
-   unsigned packed;
+   struct gallivm_state *gallivm;
+   LLVMValueRef test;
+   test_printf_t test_printf_func;
    boolean success = TRUE;
-   void *code;
 
-   module = LLVMModuleCreateWithName("test");
+   gallivm = gallivm_create();
 
-   test = add_printf_test(module);
+   test = add_printf_test(gallivm);
 
-   if(LLVMVerifyModule(module, LLVMPrintMessageAction, &error)) {
-      LLVMDumpModule(module);
-      abort();
-   }
-   LLVMDisposeMessage(error);
+   gallivm_compile_module(gallivm);
 
-   provider = LLVMCreateModuleProviderForExistingModule(module);
-#if 0
-   if (LLVMCreateJITCompiler(&engine, provider, 1, &error)) {
-      fprintf(stderr, "%s\n", error);
-      LLVMDisposeMessage(error);
-      abort();
-   }
-#else
-   (void) provider;
-   engine = lp_build_engine;
-#endif
+   test_printf_func = (test_printf_t) gallivm_jit_function(gallivm, test);
 
-#if 0
-   pass = LLVMCreatePassManager();
-   LLVMAddTargetData(LLVMGetExecutionEngineTargetData(engine), pass);
-   /* These are the passes currently listed in llvm-c/Transforms/Scalar.h,
-    * but there are more on SVN. */
-   LLVMAddConstantPropagationPass(pass);
-   LLVMAddInstructionCombiningPass(pass);
-   LLVMAddPromoteMemoryToRegisterPass(pass);
-   LLVMAddGVNPass(pass);
-   LLVMAddCFGSimplificationPass(pass);
-   LLVMRunPassManager(pass, module);
-#else
-   (void)pass;
-#endif
+   test_printf_func(0);
 
-   code = LLVMGetPointerToGlobal(engine, test);
-   test_printf = (test_printf_t)pointer_to_func(code);
+   gallivm_free_function(gallivm, test, test_printf_func);
 
-   memset(unpacked, 0, sizeof unpacked);
-   packed = 0;
-
-
-   // LLVMDumpModule(module);
-
-   test_printf(0);
-
-   LLVMFreeMachineCodeForFunction(engine, test);
-
-   LLVMDisposeExecutionEngine(engine);
-   if(pass)
-      LLVMDisposePassManager(pass);
+   gallivm_destroy(gallivm);
 
    return success;
 }
@@ -172,7 +124,8 @@ test_all(unsigned verbose, FILE *fp)
 
 
 boolean
-test_some(unsigned verbose, FILE *fp, unsigned long n)
+test_some(unsigned verbose, FILE *fp,
+          unsigned long n)
 {
    return test_all(verbose, fp);
 }

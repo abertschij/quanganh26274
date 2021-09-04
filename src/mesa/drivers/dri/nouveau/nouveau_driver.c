@@ -24,6 +24,10 @@
  *
  */
 
+#include "main/mfeatures.h"
+#include "main/mtypes.h"
+#include "main/fbobject.h"
+
 #include "nouveau_driver.h"
 #include "nouveau_context.h"
 #include "nouveau_fbo.h"
@@ -32,7 +36,7 @@
 #include "drivers/common/meta.h"
 
 static const GLubyte *
-nouveau_get_string(GLcontext *ctx, GLenum name)
+nouveau_get_string(struct gl_context *ctx, GLenum name)
 {
 	static char buffer[128];
 	char hardware_name[32];
@@ -43,7 +47,7 @@ nouveau_get_string(GLcontext *ctx, GLenum name)
 
 		case GL_RENDERER:
 			sprintf(hardware_name, "nv%02X", context_chipset(ctx));
-			driGetRendererString(buffer, hardware_name, DRIVER_DATE, 0);
+			driGetRendererString(buffer, hardware_name, 0);
 
 			return (GLubyte *)buffer;
 		default:
@@ -52,14 +56,14 @@ nouveau_get_string(GLcontext *ctx, GLenum name)
 }
 
 static void
-nouveau_flush(GLcontext *ctx)
+nouveau_flush(struct gl_context *ctx)
 {
 	struct nouveau_context *nctx = to_nouveau_context(ctx);
-	struct nouveau_channel *chan = context_chan(ctx);
+	struct nouveau_pushbuf *push = context_push(ctx);
 
-	FIRE_RING(chan);
+	PUSH_KICK(push);
 
-	if (ctx->DrawBuffer->Name == 0 &&
+	if (_mesa_is_winsys_fbo(ctx->DrawBuffer) &&
 	    ctx->DrawBuffer->_ColorDrawBufferIndexes[0] == BUFFER_FRONT_LEFT) {
 		__DRIscreen *screen = nctx->screen->dri_screen;
 		__DRIdri2LoaderExtension *dri2 = screen->dri2.loader;
@@ -70,13 +74,26 @@ nouveau_flush(GLcontext *ctx)
 }
 
 static void
-nouveau_finish(GLcontext *ctx)
+nouveau_finish(struct gl_context *ctx)
 {
+	struct nouveau_context *nctx = to_nouveau_context(ctx);
+	struct nouveau_pushbuf *push = context_push(ctx);
+	struct nouveau_pushbuf_refn refn =
+		{ nctx->fence, NOUVEAU_BO_VRAM | NOUVEAU_BO_RDWR };
+
 	nouveau_flush(ctx);
+
+	if (!nouveau_pushbuf_space(push, 16, 0, 0) &&
+	    !nouveau_pushbuf_refn(push, &refn, 1)) {
+		PUSH_DATA(push, 0);
+		PUSH_KICK(push);
+	}
+
+	nouveau_bo_wait(nctx->fence, NOUVEAU_BO_RDWR, context_client(ctx));
 }
 
 void
-nouveau_clear(GLcontext *ctx, GLbitfield buffers)
+nouveau_clear(struct gl_context *ctx, GLbitfield buffers)
 {
 	struct gl_framebuffer *fb = ctx->DrawBuffer;
 	int x, y, w, h;
@@ -94,11 +111,11 @@ nouveau_clear(GLcontext *ctx, GLbitfield buffers)
 			continue;
 
 		s = &to_nouveau_renderbuffer(
-			fb->Attachment[i].Renderbuffer->Wrapped)->surface;
+			fb->Attachment[i].Renderbuffer)->surface;
 
 		if (buf & BUFFER_BITS_COLOR) {
 			mask = pack_rgba_i(s->format, ctx->Color.ColorMask[0]);
-			value = pack_rgba_f(s->format, ctx->Color.ClearColor);
+			value = pack_rgba_clamp_f(s->format, ctx->Color.ClearColor.f);
 
 			if (mask)
 				context_drv(ctx)->surface_fill(

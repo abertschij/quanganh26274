@@ -91,14 +91,17 @@ debug_printf(const char *format, ...)
    (void) format; /* silence warning */
 #endif
 }
+#else /* is Haiku */
+/* Haiku provides debug_printf in libroot with OS.h */
+#include <OS.h>
+#endif
 
-#endif /* !PIPE_OS_HAIKU */
 
 /*
  * ... isn't portable so we need to pass arguments in parentheses.
  *
  * usage:
- *    debug_printf_once(("awnser: %i\n", 42));
+ *    debug_printf_once(("answer: %i\n", 42));
  */
 #define debug_printf_once(args) \
    do { \
@@ -192,7 +195,7 @@ void _debug_assert_fail(const char *expr,
  */
 #ifdef DEBUG
 #define debug_checkpoint_full() \
-   _debug_printf("%s:%u:%s", __FILE__, __LINE__, __FUNCTION__) 
+   _debug_printf("%s:%u:%s\n", __FILE__, __LINE__, __FUNCTION__)
 #else
 #define debug_checkpoint_full() \
    ((void)0) 
@@ -207,6 +210,25 @@ void _debug_assert_fail(const char *expr,
    _debug_printf("%s:%u:%s: warning: %s\n", __FILE__, __LINE__, __FUNCTION__, __msg)
 #else
 #define debug_warning(__msg) \
+   ((void)0) 
+#endif
+
+
+/**
+ * Emit a warning message, but only once.
+ */
+#ifdef DEBUG
+#define debug_warn_once(__msg) \
+   do { \
+      static bool warned = FALSE; \
+      if (!warned) { \
+         _debug_printf("%s:%u:%s: one time warning: %s\n", \
+                       __FILE__, __LINE__, __FUNCTION__, __msg); \
+         warned = TRUE; \
+      } \
+   } while (0)
+#else
+#define debug_warn_once(__msg) \
    ((void)0) 
 #endif
 
@@ -277,6 +299,43 @@ debug_dump_enum_noprefix(const struct debug_named_value *names,
 const char *
 debug_dump_flags(const struct debug_named_value *names, 
                  unsigned long value);
+
+
+/**
+ * Function enter exit loggers
+ */
+#ifdef DEBUG
+int debug_funclog_enter(const char* f, const int line, const char* file);
+void debug_funclog_exit(const char* f, const int line, const char* file);
+void debug_funclog_enter_exit(const char* f, const int line, const char* file);
+
+#define DEBUG_FUNCLOG_ENTER() \
+   int __debug_decleration_work_around = \
+      debug_funclog_enter(__FUNCTION__, __LINE__, __FILE__)
+#define DEBUG_FUNCLOG_EXIT() \
+   do { \
+      (void)__debug_decleration_work_around; \
+      debug_funclog_exit(__FUNCTION__, __LINE__, __FILE__); \
+      return; \
+   } while(0)
+#define DEBUG_FUNCLOG_EXIT_RET(ret) \
+   do { \
+      (void)__debug_decleration_work_around; \
+      debug_funclog_exit(__FUNCTION__, __LINE__, __FILE__); \
+      return ret; \
+   } while(0)
+#define DEBUG_FUNCLOG_ENTER_EXIT() \
+   debug_funclog_enter_exit(__FUNCTION__, __LINE__, __FILE__)
+
+#else
+#define DEBUG_FUNCLOG_ENTER() \
+   int __debug_decleration_work_around
+#define DEBUG_FUNCLOG_EXIT() \
+   do { (void)__debug_decleration_work_around; return; } while(0)
+#define DEBUG_FUNCLOG_EXIT_RET(ret) \
+   do { (void)__debug_decleration_work_around; return ret; } while(0)
+#define DEBUG_FUNCLOG_ENTER_EXIT()
+#endif
 
 
 /**

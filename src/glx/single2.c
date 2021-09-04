@@ -35,8 +35,6 @@
 #include "glxextensions.h"
 #include "indirect.h"
 #include "indirect_vertex_array.h"
-#include "glapitable.h"
-#include "glapidispatch.h"
 #include "glapi.h"
 #ifdef USE_XCB
 #include <xcb/xcb.h>
@@ -888,7 +886,6 @@ __indirect_glAreTexturesResident(GLsizei n, const GLuint * textures,
    struct glx_context *const gc = __glXGetCurrentContext();
    Display *const dpy = gc->currentDpy;
    GLboolean retval = (GLboolean) 0;
-   const GLuint cmdlen = 4 + __GLX_PAD((n * 4));
    if (__builtin_expect((n >= 0) && (dpy != NULL), 1)) {
 #ifdef USE_XCB
       xcb_connection_t *c = XGetXCBConnection(dpy);
@@ -904,6 +901,7 @@ __indirect_glAreTexturesResident(GLsizei n, const GLuint * textures,
       retval = reply->ret_val;
       free(reply);
 #else
+      const GLuint cmdlen = 4 + __GLX_PAD((n * 4));
       GLubyte const *pc =
          __glXSetupSingleRequest(gc, X_GLsop_AreTexturesResident, cmdlen);
       (void) memcpy((void *) (pc + 0), (void *) (&n), 4);
@@ -944,8 +942,11 @@ glAreTexturesResidentEXT(GLsizei n, const GLuint * textures,
    struct glx_context *const gc = __glXGetCurrentContext();
 
    if (gc->isDirect) {
-      return CALL_AreTexturesResident(GET_DISPATCH(),
-                                      (n, textures, residences));
+      const _glapi_proc *const table = (_glapi_proc *) GET_DISPATCH();
+      PFNGLARETEXTURESRESIDENTEXTPROC p =
+         (PFNGLARETEXTURESRESIDENTEXTPROC) table[332];
+
+      return p(n, textures, residences);
    }
    else {
       struct glx_context *const gc = __glXGetCurrentContext();

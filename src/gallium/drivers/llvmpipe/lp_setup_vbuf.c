@@ -113,11 +113,10 @@ lp_setup_unmap_vertices(struct vbuf_render *vbr,
 }
 
 
-static boolean
+static void
 lp_setup_set_primitive(struct vbuf_render *vbr, unsigned prim)
 {
    lp_setup_context(vbr)->prim = prim;
-   return TRUE;
 }
 
 typedef const float (*const_float4_ptr)[4];
@@ -141,7 +140,10 @@ lp_setup_draw_elements(struct vbuf_render *vbr, const ushort *indices, uint nr)
    const boolean flatshade_first = setup->flatshade_first;
    unsigned i;
 
-   lp_setup_update_state(setup, TRUE);
+   assert(setup->setup.variant);
+
+   if (!lp_setup_update_state(setup, TRUE))
+      return;
 
    switch (setup->prim) {
    case PIPE_PRIM_POINTS:
@@ -338,7 +340,8 @@ lp_setup_draw_arrays(struct vbuf_render *vbr, uint start, uint nr)
    const boolean flatshade_first = setup->flatshade_first;
    unsigned i;
 
-   lp_setup_update_state(setup, TRUE);
+   if (!lp_setup_update_state(setup, TRUE))
+      return;
 
    switch (setup->prim) {
    case PIPE_PRIM_POINTS:

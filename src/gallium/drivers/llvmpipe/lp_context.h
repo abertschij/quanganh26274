@@ -39,6 +39,7 @@
 #include "lp_jit.h"
 #include "lp_setup.h"
 #include "lp_state_fs.h"
+#include "lp_state_setup.h"
 
 
 struct llvmpipe_vbuf_render;
@@ -48,6 +49,7 @@ struct lp_fragment_shader;
 struct lp_vertex_shader;
 struct lp_blend_state;
 struct lp_setup_context;
+struct lp_setup_variant;
 struct lp_velems_state;
 
 struct llvmpipe_context {
@@ -55,8 +57,8 @@ struct llvmpipe_context {
 
    /** Constant state objects */
    const struct pipe_blend_state *blend;
-   const struct pipe_sampler_state *sampler[PIPE_MAX_SAMPLERS];
-   struct pipe_sampler_state *vertex_samplers[PIPE_MAX_VERTEX_SAMPLERS];
+   struct pipe_sampler_state *samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+
    const struct pipe_depth_stencil_alpha_state *depth_stencil;
    const struct pipe_rasterizer_state *rasterizer;
    struct lp_fragment_shader *fs;
@@ -73,8 +75,8 @@ struct llvmpipe_context {
    struct pipe_framebuffer_state framebuffer;
    struct pipe_poly_stipple poly_stipple;
    struct pipe_scissor_state scissor;
-   struct pipe_sampler_view *fragment_sampler_views[PIPE_MAX_SAMPLERS];
-   struct pipe_sampler_view *vertex_sampler_views[PIPE_MAX_VERTEX_SAMPLERS];
+   struct pipe_sampler_view *sampler_views[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+
    struct pipe_viewport_state viewport;
    struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
    struct pipe_index_buffer index_buffer;
@@ -84,12 +86,11 @@ struct llvmpipe_context {
       int so_count[PIPE_MAX_SO_BUFFERS];
       int num_buffers;
    } so_target;
-   struct pipe_resource *mapped_vs_tex[PIPE_MAX_VERTEX_SAMPLERS];
+   struct pipe_resource *mapped_vs_tex[PIPE_MAX_SAMPLERS];
 
-   unsigned num_samplers;
-   unsigned num_fragment_sampler_views;
-   unsigned num_vertex_samplers;
-   unsigned num_vertex_sampler_views;
+   unsigned num_samplers[PIPE_SHADER_TYPES];
+   unsigned num_sampler_views[PIPE_SHADER_TYPES];
+
    unsigned num_vertex_buffers;
 
    unsigned dirty; /**< Mask of LP_NEW_x flags */
@@ -102,15 +103,21 @@ struct llvmpipe_context {
    /** Vertex format */
    struct vertex_info vertex_info;
    
+   /** Which vertex shader output slot contains color */
+   int color_slot[2];
+
+   /** Which vertex shader output slot contains bcolor */
+   int bcolor_slot[2];
+
    /** Which vertex shader output slot contains point size */
    int psize_slot;
 
-   /** Fragment shader input interpolation info */
-   unsigned num_inputs;
-   struct lp_shader_input inputs[PIPE_MAX_SHADER_INPUTS];
-
+   /**< minimum resolvable depth value, for polygon offset */   
+   double mrd;
+   
    /** The tiling engine */
    struct lp_setup_context *setup;
+   struct lp_setup_variant setup_variant;
 
    /** The primitive drawing context */
    struct draw_context *draw;
@@ -118,13 +125,36 @@ struct llvmpipe_context {
    unsigned tex_timestamp;
    boolean no_rast;
 
+   /** List of all fragment shader variants */
    struct lp_fs_variant_list_item fs_variants_list;
    unsigned nr_fs_variants;
+   unsigned nr_fs_instrs;
+
+   struct lp_setup_variant_list_item setup_variants_list;
+   unsigned nr_setup_variants;
+
+   /** Conditional query object and mode */
+   struct pipe_query *render_cond_query;
+   uint render_cond_mode;
 };
+
+
+/**
+ * Fragment and setup variant count, used to trigger garbage collection.
+ * This is global since all variants in all contexts will be free when
+ * we do garbage collection.
+ */
+extern unsigned llvmpipe_variant_count;
 
 
 struct pipe_context *
 llvmpipe_create_context( struct pipe_screen *screen, void *priv );
+
+struct pipe_resource *
+llvmpipe_user_buffer_create(struct pipe_screen *screen,
+                            void *ptr,
+                            unsigned bytes,
+			    unsigned bind_flags);
 
 
 static INLINE struct llvmpipe_context *

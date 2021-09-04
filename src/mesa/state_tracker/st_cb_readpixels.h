@@ -29,19 +29,9 @@
 #ifndef ST_CB_READPIXELS_H
 #define ST_CB_READPIXELS_H
 
-#include "main/mtypes.h"
+#include "main/glheader.h"
 
 struct dd_function_table;
-
-extern struct st_renderbuffer *
-st_get_color_read_renderbuffer(GLcontext *ctx);
-
-extern void
-st_read_stencil_pixels(GLcontext *ctx, GLint x, GLint y,
-                       GLsizei width, GLsizei height,
-                       GLenum format, GLenum type,
-                       const struct gl_pixelstore_attrib *packing,
-                       GLvoid *pixels);
 
 extern void
 st_init_readpixels_functions(struct dd_function_table *functions);

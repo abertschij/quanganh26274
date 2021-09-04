@@ -172,17 +172,15 @@ llvmpipe_resource_stride(struct pipe_resource *resource,
 
 void *
 llvmpipe_resource_map(struct pipe_resource *resource,
-		      unsigned face_slice,
-		      unsigned level,
-		      unsigned zslice,
+                      unsigned level,
+                      unsigned layer,
                       enum lp_texture_usage tex_usage,
                       enum lp_texture_layout layout);
 
 void
 llvmpipe_resource_unmap(struct pipe_resource *resource,
-                       unsigned face_slice,
                        unsigned level,
-                       unsigned zslice);
+                       unsigned layer);
 
 
 void *
@@ -244,5 +242,15 @@ llvmpipe_init_screen_texture_funcs(struct pipe_screen *screen);
 
 extern void
 llvmpipe_init_context_texture_funcs(struct pipe_context *pipe);
+
+
+#define LP_UNREFERENCED         0
+#define LP_REFERENCED_FOR_READ  (1 << 0)
+#define LP_REFERENCED_FOR_WRITE (1 << 1)
+
+unsigned int
+llvmpipe_is_resource_referenced( struct pipe_context *pipe,
+                                 struct pipe_resource *presource,
+                                 unsigned level, int layer);
 
 #endif /* LP_TEXTURE_H */

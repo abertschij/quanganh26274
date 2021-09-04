@@ -1,6 +1,7 @@
 /**************************************************************************
  * 
  * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2011 Intel Corporation
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -23,220 +24,105 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * 
+ * Authors:
+ *     Chad Versace <chad@chad-versace.us>
+ *
  **************************************************************************/
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "main/glheader.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/colormac.h"
+#include "main/renderbuffer.h"
 
 #include "intel_buffers.h"
 #include "intel_fbo.h"
+#include "intel_mipmap_tree.h"
 #include "intel_screen.h"
 #include "intel_span.h"
 #include "intel_regions.h"
 #include "intel_tex.h"
 
 #include "swrast/swrast.h"
-
-static void
-intel_set_span_functions(struct intel_context *intel,
-			 struct gl_renderbuffer *rb);
-
-#undef DBG
-#define DBG 0
-
-#define LOCAL_VARS							\
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);		\
-   const GLint yScale = rb->Name ? 1 : -1;				\
-   const GLint yBias = rb->Name ? 0 : rb->Height - 1;			\
-   int minx = 0, miny = 0;						\
-   int maxx = rb->Width;						\
-   int maxy = rb->Height;						\
-   int pitch = irb->region->pitch * irb->region->cpp;			\
-   void *buf = irb->region->buffer->virtual;				\
-   GLuint p;								\
-   (void) p;								\
-   (void)buf; (void)pitch; /* unused for non-gttmap. */			\
-
-#define HW_CLIPLOOP()
-#define HW_ENDCLIPLOOP()
-
-#define Y_FLIP(_y) ((_y) * yScale + yBias)
-
-#define HW_LOCK()
-
-#define HW_UNLOCK()
-
-/* Convenience macros to avoid typing the address argument over and over */
-#define NO_TILE(_X, _Y) (((_Y) * irb->region->pitch + (_X)) * irb->region->cpp)
-
-/* r5g6b5 color span and pixel functions */
-#define SPANTMP_PIXEL_FMT GL_RGB
-#define SPANTMP_PIXEL_TYPE GL_UNSIGNED_SHORT_5_6_5
-#define TAG(x) intel_##x##_RGB565
-#define TAG2(x,y) intel_##x##y_RGB565
-#include "spantmp2.h"
-
-/* a4r4g4b4 color span and pixel functions */
-#define SPANTMP_PIXEL_FMT GL_BGRA
-#define SPANTMP_PIXEL_TYPE GL_UNSIGNED_SHORT_4_4_4_4_REV
-#define TAG(x) intel_##x##_ARGB4444
-#define TAG2(x,y) intel_##x##y_ARGB4444
-#include "spantmp2.h"
-
-/* a1r5g5b5 color span and pixel functions */
-#define SPANTMP_PIXEL_FMT GL_BGRA
-#define SPANTMP_PIXEL_TYPE GL_UNSIGNED_SHORT_1_5_5_5_REV
-#define TAG(x) intel_##x##_ARGB1555
-#define TAG2(x,y) intel_##x##y##_ARGB1555
-#include "spantmp2.h"
-
-/* a8r8g8b8 color span and pixel functions */
-#define SPANTMP_PIXEL_FMT GL_BGRA
-#define SPANTMP_PIXEL_TYPE GL_UNSIGNED_INT_8_8_8_8_REV
-#define TAG(x) intel_##x##_ARGB8888
-#define TAG2(x,y) intel_##x##y##_ARGB8888
-#include "spantmp2.h"
-
-/* x8r8g8b8 color span and pixel functions */
-#define SPANTMP_PIXEL_FMT GL_BGR
-#define SPANTMP_PIXEL_TYPE GL_UNSIGNED_INT_8_8_8_8_REV
-#define TAG(x) intel_##x##_xRGB8888
-#define TAG2(x,y) intel_##x##y##_xRGB8888
-#include "spantmp2.h"
-
-/* a8 color span and pixel functions */
-#define SPANTMP_PIXEL_FMT GL_ALPHA
-#define SPANTMP_PIXEL_TYPE GL_UNSIGNED_BYTE
-#define TAG(x) intel_##x##_A8
-#define TAG2(x,y) intel_##x##y##_A8
-#include "spantmp2.h"
-
-#define LOCAL_DEPTH_VARS						\
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);		\
-   const GLint yScale = rb->Name ? 1 : -1;				\
-   const GLint yBias = rb->Name ? 0 : rb->Height - 1;			\
-   int minx = 0, miny = 0;						\
-   int maxx = rb->Width;						\
-   int maxy = rb->Height;						\
-   int pitch = irb->region->pitch * irb->region->cpp;			\
-   void *buf = irb->region->buffer->virtual;				\
-   (void)buf; (void)pitch; /* unused for non-gttmap. */			\
-
-#define LOCAL_STENCIL_VARS LOCAL_DEPTH_VARS
-
-/* z16 depthbuffer functions. */
-#define VALUE_TYPE GLushort
-#define WRITE_DEPTH(_x, _y, d) \
-   (*(uint16_t *)(irb->region->buffer->virtual + NO_TILE(_x, _y)) = d)
-#define READ_DEPTH(d, _x, _y) \
-   d = *(uint16_t *)(irb->region->buffer->virtual + NO_TILE(_x, _y))
-#define TAG(x) intel_##x##_z16
-#include "depthtmp.h"
-
-/* z24_s8 and z24_x8 depthbuffer functions. */
-#define VALUE_TYPE GLuint
-#define WRITE_DEPTH(_x, _y, d) \
-   (*(uint32_t *)(irb->region->buffer->virtual + NO_TILE(_x, _y)) = d)
-#define READ_DEPTH(d, _x, _y) \
-   d = *(uint32_t *)(irb->region->buffer->virtual + NO_TILE(_x, _y))
-#define TAG(x) intel_##x##_z24_s8
-#include "depthtmp.h"
-
-void
-intel_renderbuffer_map(struct intel_context *intel, struct gl_renderbuffer *rb)
-{
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
-
-   if (irb == NULL || irb->region == NULL)
-      return;
-
-   drm_intel_gem_bo_map_gtt(irb->region->buffer);
-
-   intel_set_span_functions(intel, rb);
-}
-
-void
-intel_renderbuffer_unmap(struct intel_context *intel,
-			 struct gl_renderbuffer *rb)
-{
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
-
-   if (irb == NULL || irb->region == NULL)
-      return;
-
-   drm_intel_gem_bo_unmap_gtt(irb->region->buffer);
-
-   rb->GetRow = NULL;
-   rb->PutRow = NULL;
-}
+#include "swrast/s_renderbuffer.h"
 
 /**
- * Map or unmap all the renderbuffers which we may need during
- * software rendering.
- * XXX in the future, we could probably convey extra information to
- * reduce the number of mappings needed.  I.e. if doing a glReadPixels
- * from the depth buffer, we really only need one mapping.
+ * \brief Get pointer offset into stencil buffer.
  *
- * XXX Rewrite this function someday.
- * We can probably just loop over all the renderbuffer attachments,
- * map/unmap all of them, and not worry about the _ColorDrawBuffers
- * _ColorReadBuffer, _DepthBuffer or _StencilBuffer fields.
+ * The stencil buffer is W tiled. Since the GTT is incapable of W fencing, we
+ * must decode the tile's layout in software.
+ *
+ * See
+ *   - PRM, 2011 Sandy Bridge, Volume 1, Part 2, Section 4.5.2.1 W-Major Tile
+ *     Format.
+ *   - PRM, 2011 Sandy Bridge, Volume 1, Part 2, Section 4.5.3 Tiling Algorithm
+ *
+ * Even though the returned offset is always positive, the return type is
+ * signed due to
+ *    commit e8b1c6d6f55f5be3bef25084fdd8b6127517e137
+ *    mesa: Fix return type of  _mesa_get_format_bytes() (#37351)
  */
-static void
-intel_map_unmap_framebuffer(struct intel_context *intel,
-			    struct gl_framebuffer *fb,
-			    GLboolean map)
+intptr_t
+intel_offset_S8(uint32_t stride, uint32_t x, uint32_t y, bool swizzled)
 {
-   GLuint i;
+   uint32_t tile_size = 4096;
+   uint32_t tile_width = 64;
+   uint32_t tile_height = 64;
+   uint32_t row_size = 64 * stride;
 
-   /* color draw buffers */
-   for (i = 0; i < fb->_NumColorDrawBuffers; i++) {
-      if (map)
-         intel_renderbuffer_map(intel, fb->_ColorDrawBuffers[i]);
-      else
-         intel_renderbuffer_unmap(intel, fb->_ColorDrawBuffers[i]);
-   }
+   uint32_t tile_x = x / tile_width;
+   uint32_t tile_y = y / tile_height;
 
-   /* color read buffer */
-   if (map)
-      intel_renderbuffer_map(intel, fb->_ColorReadBuffer);
-   else
-      intel_renderbuffer_unmap(intel, fb->_ColorReadBuffer);
+   /* The byte's address relative to the tile's base addres. */
+   uint32_t byte_x = x % tile_width;
+   uint32_t byte_y = y % tile_height;
 
-   /* check for render to textures */
-   for (i = 0; i < BUFFER_COUNT; i++) {
-      struct gl_renderbuffer_attachment *att =
-         fb->Attachment + i;
-      struct gl_texture_object *tex = att->Texture;
-      if (tex) {
-         /* render to texture */
-         ASSERT(att->Renderbuffer);
-         if (map)
-            intel_tex_map_images(intel, intel_texture_object(tex));
-         else
-            intel_tex_unmap_images(intel, intel_texture_object(tex));
+   uintptr_t u = tile_y * row_size
+               + tile_x * tile_size
+               + 512 * (byte_x / 8)
+               +  64 * (byte_y / 8)
+               +  32 * ((byte_y / 4) % 2)
+               +  16 * ((byte_x / 4) % 2)
+               +   8 * ((byte_y / 2) % 2)
+               +   4 * ((byte_x / 2) % 2)
+               +   2 * (byte_y % 2)
+               +   1 * (byte_x % 2);
+
+   if (swizzled) {
+      /* adjust for bit6 swizzling */
+      if (((byte_x / 8) % 2) == 1) {
+	 if (((byte_y / 8) % 2) == 0) {
+	    u += 64;
+	 } else {
+	    u -= 64;
+	 }
       }
    }
 
-   /* depth buffer (Note wrapper!) */
-   if (fb->_DepthBuffer) {
-      if (map)
-         intel_renderbuffer_map(intel, fb->_DepthBuffer->Wrapped);
-      else
-         intel_renderbuffer_unmap(intel, fb->_DepthBuffer->Wrapped);
+   return u;
+}
+
+/**
+ * Map the regions needed by intelSpanRenderStart().
+ */
+static void
+intel_span_map_buffers(struct intel_context *intel)
+{
+   struct gl_context *ctx = &intel->ctx;
+   struct intel_texture_object *tex_obj;
+
+   for (int i = 0; i < ctx->Const.MaxTextureImageUnits; i++) {
+      if (!ctx->Texture.Unit[i]._ReallyEnabled)
+	 continue;
+      tex_obj = intel_texture_object(ctx->Texture.Unit[i]._Current);
+      intel_finalize_mipmap_tree(intel, i);
+      intel_tex_map_images(intel, tex_obj,
+			   GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
    }
 
-   /* stencil buffer (Note wrapper!) */
-   if (fb->_StencilBuffer) {
-      if (map)
-         intel_renderbuffer_map(intel, fb->_StencilBuffer->Wrapped);
-      else
-         intel_renderbuffer_unmap(intel, fb->_StencilBuffer->Wrapped);
-   }
-
-   intel_check_front_buffer_rendering(intel);
+   _swrast_map_renderbuffers(ctx);
 }
 
 /**
@@ -246,26 +132,14 @@ intel_map_unmap_framebuffer(struct intel_context *intel,
  * Old note: Moved locking out to get reasonable span performance.
  */
 void
-intelSpanRenderStart(GLcontext * ctx)
+intelSpanRenderStart(struct gl_context * ctx)
 {
    struct intel_context *intel = intel_context(ctx);
-   GLuint i;
 
-   intel_flush(&intel->ctx);
+   intel_flush(ctx);
    intel_prepare_render(intel);
-
-   for (i = 0; i < ctx->Const.MaxTextureImageUnits; i++) {
-      if (ctx->Texture.Unit[i]._ReallyEnabled) {
-         struct gl_texture_object *texObj = ctx->Texture.Unit[i]._Current;
-
-         intel_finalize_mipmap_tree(intel, i);
-         intel_tex_map_images(intel, intel_texture_object(texObj));
-      }
-   }
-
-   intel_map_unmap_framebuffer(intel, ctx->DrawBuffer, GL_TRUE);
-   if (ctx->ReadBuffer != ctx->DrawBuffer)
-      intel_map_unmap_framebuffer(intel, ctx->ReadBuffer, GL_TRUE);
+   intel_flush(ctx);
+   intel_span_map_buffers(intel);
 }
 
 /**
@@ -273,7 +147,7 @@ intelSpanRenderStart(GLcontext * ctx)
  * the above function.
  */
 void
-intelSpanRenderFinish(GLcontext * ctx)
+intelSpanRenderFinish(struct gl_context * ctx)
 {
    struct intel_context *intel = intel_context(ctx);
    GLuint i;
@@ -287,22 +161,22 @@ intelSpanRenderFinish(GLcontext * ctx)
       }
    }
 
-   intel_map_unmap_framebuffer(intel, ctx->DrawBuffer, GL_FALSE);
-   if (ctx->ReadBuffer != ctx->DrawBuffer)
-      intel_map_unmap_framebuffer(intel, ctx->ReadBuffer, GL_FALSE);
+   _swrast_unmap_renderbuffers(ctx);
 }
 
 
 void
-intelInitSpanFuncs(GLcontext * ctx)
+intelInitSpanFuncs(struct gl_context * ctx)
 {
    struct swrast_device_driver *swdd = _swrast_GetDeviceDriverReference(ctx);
-   swdd->SpanRenderStart = intelSpanRenderStart;
-   swdd->SpanRenderFinish = intelSpanRenderFinish;
+   if (swdd) {
+      swdd->SpanRenderStart = intelSpanRenderStart;
+      swdd->SpanRenderFinish = intelSpanRenderFinish;
+   }
 }
 
 void
-intel_map_vertex_shader_textures(GLcontext *ctx)
+intel_map_vertex_shader_textures(struct gl_context *ctx)
 {
    struct intel_context *intel = intel_context(ctx);
    int i;
@@ -315,13 +189,14 @@ intel_map_vertex_shader_textures(GLcontext *ctx)
 	  ctx->VertexProgram._Current->Base.TexturesUsed[i] != 0) {
          struct gl_texture_object *texObj = ctx->Texture.Unit[i]._Current;
 
-         intel_tex_map_images(intel, intel_texture_object(texObj));
+         intel_tex_map_images(intel, intel_texture_object(texObj),
+                              GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
       }
    }
 }
 
 void
-intel_unmap_vertex_shader_textures(GLcontext *ctx)
+intel_unmap_vertex_shader_textures(struct gl_context *ctx)
 {
    struct intel_context *intel = intel_context(ctx);
    int i;
@@ -336,49 +211,5 @@ intel_unmap_vertex_shader_textures(GLcontext *ctx)
 
          intel_tex_unmap_images(intel, intel_texture_object(texObj));
       }
-   }
-}
-
-/**
- * Plug in appropriate span read/write functions for the given renderbuffer.
- * These are used for the software fallbacks.
- */
-static void
-intel_set_span_functions(struct intel_context *intel,
-			 struct gl_renderbuffer *rb)
-{
-   struct intel_renderbuffer *irb = (struct intel_renderbuffer *) rb;
-
-   switch (irb->Base.Format) {
-   case MESA_FORMAT_A8:
-      intel_InitPointers_A8(rb);
-      break;
-   case MESA_FORMAT_RGB565:
-      intel_InitPointers_RGB565(rb);
-      break;
-   case MESA_FORMAT_ARGB4444:
-      intel_InitPointers_ARGB4444(rb);
-      break;
-   case MESA_FORMAT_ARGB1555:
-      intel_InitPointers_ARGB1555(rb);
-      break;
-   case MESA_FORMAT_XRGB8888:
-      intel_InitPointers_xRGB8888(rb);
-      break;
-   case MESA_FORMAT_ARGB8888:
-      intel_InitPointers_ARGB8888(rb);
-      break;
-   case MESA_FORMAT_Z16:
-      intel_InitDepthPointers_z16(rb);
-      break;
-   case MESA_FORMAT_X8_Z24:
-   case MESA_FORMAT_S8_Z24:
-      intel_InitDepthPointers_z24_s8(rb);
-      break;
-   default:
-      _mesa_problem(NULL,
-		    "Unexpected MesaFormat %d in intelSetSpanFunctions",
-		    irb->Base.Format);
-      break;
    }
 }

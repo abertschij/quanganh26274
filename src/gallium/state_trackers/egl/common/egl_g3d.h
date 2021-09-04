@@ -56,7 +56,6 @@ struct egl_g3d_display {
 
    const struct egl_g3d_loader *loader;
    struct st_manager *smapi;
-   struct pipe_context *pipe;
 };
 
 struct egl_g3d_context {
@@ -92,21 +91,16 @@ struct egl_g3d_config {
 struct egl_g3d_image {
    _EGLImage base;
    struct pipe_resource *texture;
-   unsigned face;
    unsigned level;
-   unsigned zslice;
+   unsigned layer;
 };
 
 /* standard typecasts */
 _EGL_DRIVER_STANDARD_TYPECASTS(egl_g3d)
 _EGL_DRIVER_TYPECAST(egl_g3d_image, _EGLImage, obj)
 
-#ifdef EGL_KHR_reusable_sync
-
 struct egl_g3d_sync {
    _EGLSync base;
-
-   int refs;
 
    /* the mutex protects only the condvar, not the struct */
    pipe_mutex mutex;
@@ -116,8 +110,6 @@ struct egl_g3d_sync {
    struct pipe_fence_handle *fence;
 };
 _EGL_DRIVER_TYPECAST(egl_g3d_sync, _EGLSync, obj)
-
-#endif /* EGL_KHR_reusable_sync */
 
 #ifdef EGL_MESA_screen_surface
 
@@ -129,5 +121,13 @@ struct egl_g3d_screen {
 _EGL_DRIVER_TYPECAST(egl_g3d_screen, _EGLScreen, obj)
 
 #endif /* EGL_MESA_screen_surface */
+
+static INLINE struct st_api *
+egl_g3d_get_st_api(_EGLDriver *drv, enum st_api_type api)
+{
+   struct egl_g3d_driver *gdrv = egl_g3d_driver(drv);
+
+   return gdrv->loader->get_st_api(api);
+}
 
 #endif /* _EGL_G3D_H_ */

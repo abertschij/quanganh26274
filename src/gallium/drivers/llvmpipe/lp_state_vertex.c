@@ -33,6 +33,8 @@
 #include "lp_state.h"
 
 #include "draw/draw_context.h"
+#include "util/u_inlines.h"
+#include "util/u_transfer.h"
 
 
 static void *
@@ -80,8 +82,9 @@ llvmpipe_set_vertex_buffers(struct pipe_context *pipe,
 
    assert(count <= PIPE_MAX_ATTRIBS);
 
-   memcpy(llvmpipe->vertex_buffer, buffers, count * sizeof(buffers[0]));
-   llvmpipe->num_vertex_buffers = count;
+   util_copy_vertex_buffers(llvmpipe->vertex_buffer,
+                            &llvmpipe->num_vertex_buffers,
+                            buffers, count);
 
    llvmpipe->dirty |= LP_NEW_VERTEX;
 
@@ -99,8 +102,6 @@ llvmpipe_set_index_buffer(struct pipe_context *pipe,
       memcpy(&llvmpipe->index_buffer, ib, sizeof(llvmpipe->index_buffer));
    else
       memset(&llvmpipe->index_buffer, 0, sizeof(llvmpipe->index_buffer));
-
-   draw_set_index_buffer(llvmpipe->draw, ib);
 }
 
 void

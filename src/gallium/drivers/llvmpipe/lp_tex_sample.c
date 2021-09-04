@@ -43,11 +43,13 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_shader_tokens.h"
 #include "gallivm/lp_bld_debug.h"
+#include "gallivm/lp_bld_const.h"
 #include "gallivm/lp_bld_type.h"
 #include "gallivm/lp_bld_sample.h"
 #include "gallivm/lp_bld_tgsi.h"
 #include "lp_jit.h"
 #include "lp_tex_sample.h"
+#include "lp_debug.h"
 
 
 /**
@@ -88,7 +90,7 @@ struct lp_llvm_sampler_soa
  */
 static LLVMValueRef
 lp_llvm_texture_member(const struct lp_sampler_dynamic_state *base,
-                       LLVMBuilderRef builder,
+                       struct gallivm_state *gallivm,
                        unsigned unit,
                        unsigned member_index,
                        const char *member_name,
@@ -96,6 +98,7 @@ lp_llvm_texture_member(const struct lp_sampler_dynamic_state *base,
 {
    struct llvmpipe_sampler_dynamic_state *state =
       (struct llvmpipe_sampler_dynamic_state *)base;
+   LLVMBuilderRef builder = gallivm->builder;
    LLVMValueRef indices[4];
    LLVMValueRef ptr;
    LLVMValueRef res;
@@ -103,13 +106,13 @@ lp_llvm_texture_member(const struct lp_sampler_dynamic_state *base,
    assert(unit < PIPE_MAX_SAMPLERS);
 
    /* context[0] */
-   indices[0] = LLVMConstInt(LLVMInt32Type(), 0, 0);
+   indices[0] = lp_build_const_int32(gallivm, 0);
    /* context[0].textures */
-   indices[1] = LLVMConstInt(LLVMInt32Type(), LP_JIT_CTX_TEXTURES, 0);
+   indices[1] = lp_build_const_int32(gallivm, LP_JIT_CTX_TEXTURES);
    /* context[0].textures[unit] */
-   indices[2] = LLVMConstInt(LLVMInt32Type(), unit, 0);
+   indices[2] = lp_build_const_int32(gallivm, unit);
    /* context[0].textures[unit].member */
-   indices[3] = LLVMConstInt(LLVMInt32Type(), member_index, 0);
+   indices[3] = lp_build_const_int32(gallivm, member_index);
 
    ptr = LLVMBuildGEP(builder, state->context_ptr, indices, Elements(indices), "");
 
@@ -136,20 +139,25 @@ lp_llvm_texture_member(const struct lp_sampler_dynamic_state *base,
 #define LP_LLVM_TEXTURE_MEMBER(_name, _index, _emit_load)  \
    static LLVMValueRef \
    lp_llvm_texture_##_name( const struct lp_sampler_dynamic_state *base, \
-                            LLVMBuilderRef builder, \
+                            struct gallivm_state *gallivm, \
                             unsigned unit) \
    { \
-      return lp_llvm_texture_member(base, builder, unit, _index, #_name, _emit_load ); \
+      return lp_llvm_texture_member(base, gallivm, unit, _index, #_name, _emit_load ); \
    }
 
 
 LP_LLVM_TEXTURE_MEMBER(width,      LP_JIT_TEXTURE_WIDTH, TRUE)
 LP_LLVM_TEXTURE_MEMBER(height,     LP_JIT_TEXTURE_HEIGHT, TRUE)
 LP_LLVM_TEXTURE_MEMBER(depth,      LP_JIT_TEXTURE_DEPTH, TRUE)
+LP_LLVM_TEXTURE_MEMBER(first_level, LP_JIT_TEXTURE_FIRST_LEVEL, TRUE)
 LP_LLVM_TEXTURE_MEMBER(last_level, LP_JIT_TEXTURE_LAST_LEVEL, TRUE)
 LP_LLVM_TEXTURE_MEMBER(row_stride, LP_JIT_TEXTURE_ROW_STRIDE, FALSE)
 LP_LLVM_TEXTURE_MEMBER(img_stride, LP_JIT_TEXTURE_IMG_STRIDE, FALSE)
 LP_LLVM_TEXTURE_MEMBER(data_ptr,   LP_JIT_TEXTURE_DATA, FALSE)
+LP_LLVM_TEXTURE_MEMBER(min_lod,    LP_JIT_TEXTURE_MIN_LOD, TRUE)
+LP_LLVM_TEXTURE_MEMBER(max_lod,    LP_JIT_TEXTURE_MAX_LOD, TRUE)
+LP_LLVM_TEXTURE_MEMBER(lod_bias,   LP_JIT_TEXTURE_LOD_BIAS, TRUE)
+LP_LLVM_TEXTURE_MEMBER(border_color, LP_JIT_TEXTURE_BORDER_COLOR, FALSE)
 
 
 static void
@@ -165,13 +173,12 @@ lp_llvm_sampler_soa_destroy(struct lp_build_sampler_soa *sampler)
  */
 static void
 lp_llvm_sampler_soa_emit_fetch_texel(const struct lp_build_sampler_soa *base,
-                                     LLVMBuilderRef builder,
+                                     struct gallivm_state *gallivm,
                                      struct lp_type type,
                                      unsigned unit,
                                      unsigned num_coords,
                                      const LLVMValueRef *coords,
-                                     const LLVMValueRef *ddx,
-                                     const LLVMValueRef *ddy,
+                                     const struct lp_derivatives *derivs,
                                      LLVMValueRef lod_bias, /* optional */
                                      LLVMValueRef explicit_lod, /* optional */
                                      LLVMValueRef *texel)
@@ -179,16 +186,45 @@ lp_llvm_sampler_soa_emit_fetch_texel(const struct lp_build_sampler_soa *base,
    struct lp_llvm_sampler_soa *sampler = (struct lp_llvm_sampler_soa *)base;
 
    assert(unit < PIPE_MAX_SAMPLERS);
+   
+   if (LP_PERF & PERF_NO_TEX) {
+      lp_build_sample_nop(gallivm, type, num_coords, coords, texel);
+      return;
+   }
 
-   lp_build_sample_soa(builder,
+   lp_build_sample_soa(gallivm,
                        &sampler->dynamic_state.static_state[unit],
                        &sampler->dynamic_state.base,
                        type,
                        unit,
                        num_coords, coords,
-                       ddx, ddy,
+                       derivs,
                        lod_bias, explicit_lod,
                        texel);
+}
+
+/**
+ * Fetch the texture size.
+ */
+static void
+lp_llvm_sampler_soa_emit_size_query(const struct lp_build_sampler_soa *base,
+                                    struct gallivm_state *gallivm,
+                                    struct lp_type type,
+                                    unsigned unit,
+                                    LLVMValueRef explicit_lod, /* optional */
+                                    LLVMValueRef *sizes_out)
+{
+   struct lp_llvm_sampler_soa *sampler = (struct lp_llvm_sampler_soa *)base;
+
+   assert(unit < PIPE_MAX_SAMPLERS);
+   
+   lp_build_size_query_soa(gallivm,
+			   &sampler->dynamic_state.static_state[unit],
+			   &sampler->dynamic_state.base,
+                           type,
+			   unit,
+			   explicit_lod,
+			   sizes_out);
 }
 
 
@@ -204,13 +240,20 @@ lp_llvm_sampler_soa_create(const struct lp_sampler_static_state *static_state,
 
    sampler->base.destroy = lp_llvm_sampler_soa_destroy;
    sampler->base.emit_fetch_texel = lp_llvm_sampler_soa_emit_fetch_texel;
+   sampler->base.emit_size_query = lp_llvm_sampler_soa_emit_size_query;
    sampler->dynamic_state.base.width = lp_llvm_texture_width;
    sampler->dynamic_state.base.height = lp_llvm_texture_height;
    sampler->dynamic_state.base.depth = lp_llvm_texture_depth;
+   sampler->dynamic_state.base.first_level = lp_llvm_texture_first_level;
    sampler->dynamic_state.base.last_level = lp_llvm_texture_last_level;
    sampler->dynamic_state.base.row_stride = lp_llvm_texture_row_stride;
    sampler->dynamic_state.base.img_stride = lp_llvm_texture_img_stride;
    sampler->dynamic_state.base.data_ptr = lp_llvm_texture_data_ptr;
+   sampler->dynamic_state.base.min_lod = lp_llvm_texture_min_lod;
+   sampler->dynamic_state.base.max_lod = lp_llvm_texture_max_lod;
+   sampler->dynamic_state.base.lod_bias = lp_llvm_texture_lod_bias;
+   sampler->dynamic_state.base.border_color = lp_llvm_texture_border_color;
+
    sampler->dynamic_state.static_state = static_state;
    sampler->dynamic_state.context_ptr = context_ptr;
 

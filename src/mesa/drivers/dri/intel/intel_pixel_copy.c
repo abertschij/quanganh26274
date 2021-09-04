@@ -29,54 +29,26 @@
 #include "main/image.h"
 #include "main/state.h"
 #include "main/mtypes.h"
+#include "main/condrender.h"
+#include "main/fbobject.h"
 #include "drivers/common/meta.h"
 
 #include "intel_context.h"
 #include "intel_buffers.h"
+#include "intel_mipmap_tree.h"
 #include "intel_regions.h"
 #include "intel_pixel.h"
 #include "intel_fbo.h"
 
 #define FILE_DEBUG_FLAG DEBUG_PIXEL
 
-static struct intel_region *
-copypix_src_region(struct intel_context *intel, GLenum type)
-{
-   struct intel_renderbuffer *depth;
-
-   depth = (struct intel_renderbuffer *)
-      &intel->ctx.DrawBuffer->Attachment[BUFFER_DEPTH].Renderbuffer;
-
-   switch (type) {
-   case GL_COLOR:
-      return intel_readbuf_region(intel);
-   case GL_DEPTH:
-      /* Don't think this is really possible execpt at 16bpp, when we
-       * have no stencil. */
-      if (depth && depth->region->cpp == 2)
-         return depth->region;
-   case GL_STENCIL:
-      /* Don't think this is really possible. */
-      break;
-   case GL_DEPTH_STENCIL_EXT:
-      /* Does it matter whether it is stencil/depth or depth/stencil?
-       */
-      return depth->region;
-   default:
-      break;
-   }
-
-   return NULL;
-}
-
-
 /**
  * Check if any fragment operations are in effect which might effect
  * glCopyPixels.  Differs from intel_check_blit_fragment_ops in that
  * we allow Scissor.
  */
-static GLboolean
-intel_check_copypixel_blit_fragment_ops(GLcontext * ctx)
+static bool
+intel_check_copypixel_blit_fragment_ops(struct gl_context * ctx)
 {
    if (ctx->NewState)
       _mesa_update_state(ctx);
@@ -101,46 +73,83 @@ intel_check_copypixel_blit_fragment_ops(GLcontext * ctx)
 /**
  * CopyPixels with the blitter.  Don't support zooming, pixel transfer, etc.
  */
-static GLboolean
-do_blit_copypixels(GLcontext * ctx,
+static bool
+do_blit_copypixels(struct gl_context * ctx,
                    GLint srcx, GLint srcy,
                    GLsizei width, GLsizei height,
                    GLint dstx, GLint dsty, GLenum type)
 {
    struct intel_context *intel = intel_context(ctx);
-   struct intel_region *dst;
-   struct intel_region *src;
    struct gl_framebuffer *fb = ctx->DrawBuffer;
    struct gl_framebuffer *read_fb = ctx->ReadBuffer;
    GLint orig_dstx;
    GLint orig_dsty;
    GLint orig_srcx;
    GLint orig_srcy;
-   GLboolean flip = GL_FALSE;
-
-   if (type == GL_DEPTH || type == GL_STENCIL) {
-      if (INTEL_DEBUG & DEBUG_FALLBACKS)
-	 fprintf(stderr, "glCopyPixels() fallback: GL_DEPTH || GL_STENCIL\n");
-      return GL_FALSE;
-   }
+   bool flip = false;
+   struct intel_renderbuffer *draw_irb = NULL;
+   struct intel_renderbuffer *read_irb = NULL;
+   gl_format read_format, draw_format;
 
    /* Update draw buffer bounds */
    _mesa_update_state(ctx);
+
+   switch (type) {
+   case GL_COLOR:
+      if (fb->_NumColorDrawBuffers != 1) {
+	 fallback_debug("glCopyPixels() fallback: MRT\n");
+	 return false;
+      }
+
+      draw_irb = intel_renderbuffer(fb->_ColorDrawBuffers[0]);
+      read_irb = intel_renderbuffer(read_fb->_ColorReadBuffer);
+      break;
+   case GL_DEPTH_STENCIL_EXT:
+      draw_irb = intel_renderbuffer(fb->Attachment[BUFFER_DEPTH].Renderbuffer);
+      read_irb =
+	 intel_renderbuffer(read_fb->Attachment[BUFFER_DEPTH].Renderbuffer);
+      break;
+   case GL_DEPTH:
+      fallback_debug("glCopyPixels() fallback: GL_DEPTH\n");
+      return false;
+   case GL_STENCIL:
+      fallback_debug("glCopyPixels() fallback: GL_STENCIL\n");
+      return false;
+   default:
+      fallback_debug("glCopyPixels(): Unknown type\n");
+      return false;
+   }
+
+   if (!draw_irb) {
+      fallback_debug("glCopyPixels() fallback: missing draw buffer\n");
+      return false;
+   }
+
+   if (!read_irb) {
+      fallback_debug("glCopyPixels() fallback: missing read buffer\n");
+      return false;
+   }
+
+   read_format = intel_rb_format(read_irb);
+   draw_format = intel_rb_format(draw_irb);
+
+   if (draw_format != read_format &&
+       !(draw_format == MESA_FORMAT_XRGB8888 &&
+	 read_format == MESA_FORMAT_ARGB8888)) {
+      fallback_debug("glCopyPixels() fallback: mismatched formats (%s -> %s\n",
+		     _mesa_get_format_name(read_format),
+                     _mesa_get_format_name(draw_format));
+      return false;
+   }
 
    /* Copypixels can be more than a straight copy.  Ensure all the
     * extra operations are disabled:
     */
    if (!intel_check_copypixel_blit_fragment_ops(ctx) ||
        ctx->Pixel.ZoomX != 1.0F || ctx->Pixel.ZoomY != 1.0F)
-      return GL_FALSE;
+      return false;
 
    intel_prepare_render(intel);
-
-   dst = intel_drawbuf_region(intel);
-   src = copypix_src_region(intel, type);
-
-   if (!src || !dst)
-      return GL_FALSE;
 
    intel_flush(&intel->ctx);
 
@@ -167,44 +176,51 @@ do_blit_copypixels(GLcontext * ctx,
    dsty += srcy - orig_srcy;
 
    /* Flip dest Y if it's a window system framebuffer. */
-   if (fb->Name == 0) {
+   if (_mesa_is_winsys_fbo(fb)) {
       /* copypixels to a window system framebuffer */
       dsty = fb->Height - dsty - height;
       flip = !flip;
    }
 
    /* Flip source Y if it's a window system framebuffer. */
-   if (read_fb->Name == 0) {
+   if (_mesa_is_winsys_fbo(read_fb)) {
       srcy = read_fb->Height - srcy - height;
       flip = !flip;
    }
 
+   srcx += read_irb->draw_x;
+   srcy += read_irb->draw_y;
+   dstx += draw_irb->draw_x;
+   dsty += draw_irb->draw_y;
+
    if (!intel_region_copy(intel,
-			  dst, 0, dstx, dsty,
-			  src, 0, srcx, srcy,
+			  draw_irb->mt->region, 0, dstx, dsty,
+			  read_irb->mt->region, 0, srcx, srcy,
 			  width, height, flip,
 			  ctx->Color.ColorLogicOpEnabled ?
 			  ctx->Color.LogicOp : GL_COPY)) {
       DBG("%s: blit failure\n", __FUNCTION__);
-      return GL_FALSE;
+      return false;
    }
 
 out:
    intel_check_front_buffer_rendering(intel);
 
    DBG("%s: success\n", __FUNCTION__);
-   return GL_TRUE;
+   return true;
 }
 
 
 void
-intelCopyPixels(GLcontext * ctx,
+intelCopyPixels(struct gl_context * ctx,
                 GLint srcx, GLint srcy,
                 GLsizei width, GLsizei height,
                 GLint destx, GLint desty, GLenum type)
 {
-   if (INTEL_DEBUG & DEBUG_PIXEL)
-      fprintf(stderr, "%s\n", __FUNCTION__);
+   DBG("%s\n", __FUNCTION__);
+
+   if (!_mesa_check_conditional_render(ctx))
+      return;
 
    if (do_blit_copypixels(ctx, srcx, srcy, width, height, destx, desty, type))
       return;

@@ -49,6 +49,7 @@
 #include "lp_tile_image.h"
 #include "lp_texture.h"
 #include "lp_setup.h"
+#include "lp_state.h"
 
 #include "state_tracker/sw_winsys.h"
 
@@ -111,6 +112,7 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
    unsigned width = pt->width0;
    unsigned height = pt->height0;
    unsigned depth = pt->depth0;
+   size_t total_size = 0;
 
    assert(LP_MAX_TEXTURE_2D_LEVELS <= LP_MAX_TEXTURE_LEVELS);
    assert(LP_MAX_TEXTURE_3D_LEVELS <= LP_MAX_TEXTURE_LEVELS);
@@ -162,6 +164,14 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
          lpr->num_slices_faces[level] = num_slices;
 
          lpr->layout[level] = alloc_layout_array(num_slices, width, height);
+         if (!lpr->layout[level]) {
+            goto fail;
+         }
+      }
+
+      total_size += lpr->num_slices_faces[level] * lpr->img_stride[level];
+      if (total_size > LP_MAX_TEXTURE_SIZE) {
+         goto fail;
       }
 
       /* Compute size of next mipmap level */
@@ -171,6 +181,15 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
    }
 
    return TRUE;
+
+fail:
+   for (level = 0; level <= pt->last_level; level++) {
+      if (lpr->layout[level]) {
+         FREE(lpr->layout[level]);
+      }
+   }
+
+   return FALSE;
 }
 
 
@@ -195,7 +214,9 @@ llvmpipe_displaytarget_layout(struct llvmpipe_screen *screen,
    lpr->img_stride[0] = 0;
 
    lpr->layout[0] = alloc_layout_array(1, width, height);
-   //lpr->layout[0][0] = LP_TEX_LAYOUT_LINEAR;
+   if (!lpr->layout[0]) {
+      return FALSE;
+   }
 
    lpr->dt = winsys->displaytarget_create(winsys,
                                           lpr->base.bind,
@@ -204,7 +225,20 @@ llvmpipe_displaytarget_layout(struct llvmpipe_screen *screen,
                                           16,
                                           &lpr->row_stride[0] );
 
-   return lpr->dt != NULL;
+   if (lpr->dt == NULL)
+      return FALSE;
+
+   {
+      void *map = winsys->displaytarget_map(winsys, lpr->dt,
+                                            PIPE_TRANSFER_WRITE);
+
+      if (map)
+         memset(map, 0, height * lpr->row_stride[0]);
+
+      winsys->displaytarget_unmap(winsys, lpr->dt);
+   }
+
+   return TRUE;
 }
 
 
@@ -242,6 +276,7 @@ llvmpipe_resource_create(struct pipe_screen *_screen,
       /* other data (vertex buffer, const buffer, etc) */
       const enum pipe_format format = templat->format;
       const uint w = templat->width0 / util_format_get_blockheight(format);
+      /* XXX buffers should only have one dimension, those values should be 1 */
       const uint h = templat->height0 / util_format_get_blockwidth(format);
       const uint d = templat->depth0;
       const uint bpp = util_format_get_blocksize(format);
@@ -249,6 +284,7 @@ llvmpipe_resource_create(struct pipe_screen *_screen,
       lpr->data = align_malloc(bytes, 16);
       if (!lpr->data)
          goto fail;
+      memset(lpr->data, 0, bytes);
    }
 
    lpr->id = id_counter++;
@@ -329,17 +365,16 @@ llvmpipe_resource_destroy(struct pipe_screen *pscreen,
  */
 void *
 llvmpipe_resource_map(struct pipe_resource *resource,
-		      unsigned face,
-		      unsigned level,
-		      unsigned zslice,
+                      unsigned level,
+                      unsigned layer,
                       enum lp_texture_usage tex_usage,
                       enum lp_texture_layout layout)
 {
    struct llvmpipe_resource *lpr = llvmpipe_resource(resource);
    uint8_t *map;
 
-   assert(face < 6);
    assert(level < LP_MAX_TEXTURE_LEVELS);
+   assert(layer < (u_minify(resource->depth0, level) + resource->array_size - 1));
 
    assert(tex_usage == LP_TEX_USAGE_READ ||
           tex_usage == LP_TEX_USAGE_READ_WRITE ||
@@ -363,9 +398,8 @@ llvmpipe_resource_map(struct pipe_resource *resource,
          dt_usage = PIPE_TRANSFER_READ_WRITE;
       }
 
-      assert(face == 0);
       assert(level == 0);
-      assert(zslice == 0);
+      assert(layer == 0);
 
       /* FIXME: keep map count? */
       map = winsys->displaytarget_map(winsys, lpr->dt, dt_usage);
@@ -381,15 +415,8 @@ llvmpipe_resource_map(struct pipe_resource *resource,
       return map2;
    }
    else if (resource_is_texture(resource)) {
-      /* regular texture */
-      if (resource->target != PIPE_TEXTURE_CUBE) {
-         assert(face == 0);
-      }
-      if (resource->target != PIPE_TEXTURE_3D) {
-         assert(zslice == 0);
-      }
 
-      map = llvmpipe_get_texture_image(lpr, face + zslice, level,
+      map = llvmpipe_get_texture_image(lpr, layer, level,
                                        tex_usage, layout);
       return map;
    }
@@ -404,9 +431,8 @@ llvmpipe_resource_map(struct pipe_resource *resource,
  */
 void
 llvmpipe_resource_unmap(struct pipe_resource *resource,
-                       unsigned face,
                        unsigned level,
-                       unsigned zslice)
+                       unsigned layer)
 {
    struct llvmpipe_resource *lpr = llvmpipe_resource(resource);
 
@@ -415,12 +441,11 @@ llvmpipe_resource_unmap(struct pipe_resource *resource,
       struct llvmpipe_screen *lp_screen = llvmpipe_screen(resource->screen);
       struct sw_winsys *winsys = lp_screen->winsys;
 
-      assert(face == 0);
       assert(level == 0);
-      assert(zslice == 0);
+      assert(layer == 0);
 
       /* make sure linear image is up to date */
-      (void) llvmpipe_get_texture_image(lpr, face + zslice, level,
+      (void) llvmpipe_get_texture_image(lpr, layer, level,
                                         LP_TEX_USAGE_READ,
                                         LP_TEX_LAYOUT_LINEAR);
 
@@ -446,13 +471,15 @@ llvmpipe_resource_from_handle(struct pipe_screen *screen,
 			      struct winsys_handle *whandle)
 {
    struct sw_winsys *winsys = llvmpipe_screen(screen)->winsys;
-   struct llvmpipe_resource *lpr = CALLOC_STRUCT(llvmpipe_resource);
+   struct llvmpipe_resource *lpr;
    unsigned width, height, width_t, height_t;
 
    /* XXX Seems like from_handled depth textures doesn't work that well */
 
-   if (!lpr)
-      return NULL;
+   lpr = CALLOC_STRUCT(llvmpipe_resource);
+   if (!lpr) {
+      goto no_lpr;
+   }
 
    lpr->base = *template;
    pipe_reference_init(&lpr->base.reference, 1);
@@ -481,12 +508,15 @@ llvmpipe_resource_from_handle(struct pipe_screen *screen,
                                                template,
                                                whandle,
                                                &lpr->row_stride[0]);
-   if (!lpr->dt)
-      goto fail;
+   if (!lpr->dt) {
+      goto no_dt;
+   }
 
    lpr->layout[0] = alloc_layout_array(1, lpr->base.width0, lpr->base.height0);
+   if (!lpr->layout[0]) {
+      goto no_layout_0;
+   }
 
-   assert(lpr->layout[0]);
    assert(lpr->layout[0][0] == LP_TEX_LAYOUT_NONE);
 
    lpr->id = id_counter++;
@@ -497,8 +527,11 @@ llvmpipe_resource_from_handle(struct pipe_screen *screen,
 
    return &lpr->base;
 
- fail:
+no_layout_0:
+   winsys->displaytarget_destroy(winsys, lpr->dt);
+no_dt:
    FREE(lpr);
+no_lpr:
    return NULL;
 }
 
@@ -520,34 +553,35 @@ llvmpipe_resource_get_handle(struct pipe_screen *screen,
 
 
 static struct pipe_surface *
-llvmpipe_get_tex_surface(struct pipe_screen *screen,
-                         struct pipe_resource *pt,
-                         unsigned face, unsigned level, unsigned zslice,
-                         unsigned usage)
+llvmpipe_create_surface(struct pipe_context *pipe,
+                        struct pipe_resource *pt,
+                        const struct pipe_surface *surf_tmpl)
 {
    struct pipe_surface *ps;
 
-   assert(level <= pt->last_level);
+   assert(surf_tmpl->u.tex.level <= pt->last_level);
 
    ps = CALLOC_STRUCT(pipe_surface);
    if (ps) {
       pipe_reference_init(&ps->reference, 1);
       pipe_resource_reference(&ps->texture, pt);
-      ps->format = pt->format;
-      ps->width = u_minify(pt->width0, level);
-      ps->height = u_minify(pt->height0, level);
-      ps->usage = usage;
+      ps->context = pipe;
+      ps->format = surf_tmpl->format;
+      ps->width = u_minify(pt->width0, surf_tmpl->u.tex.level);
+      ps->height = u_minify(pt->height0, surf_tmpl->u.tex.level);
+      ps->usage = surf_tmpl->usage;
 
-      ps->face = face;
-      ps->level = level;
-      ps->zslice = zslice;
+      ps->u.tex.level = surf_tmpl->u.tex.level;
+      ps->u.tex.first_layer = surf_tmpl->u.tex.first_layer;
+      ps->u.tex.last_layer = surf_tmpl->u.tex.last_layer;
    }
    return ps;
 }
 
 
 static void 
-llvmpipe_tex_surface_destroy(struct pipe_surface *surf)
+llvmpipe_surface_destroy(struct pipe_context *pipe,
+                         struct pipe_surface *surf)
 {
    /* Effectively do the texture_update work here - if texture images
     * needed post-processing to put them into hardware layout, this is
@@ -561,16 +595,17 @@ llvmpipe_tex_surface_destroy(struct pipe_surface *surf)
 
 static struct pipe_transfer *
 llvmpipe_get_transfer(struct pipe_context *pipe,
-		      struct pipe_resource *resource,
-		      struct pipe_subresource sr,
-		      unsigned usage,
-		      const struct pipe_box *box)
+                      struct pipe_resource *resource,
+                      unsigned level,
+                      unsigned usage,
+                      const struct pipe_box *box)
 {
+   struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
    struct llvmpipe_resource *lprex = llvmpipe_resource(resource);
    struct llvmpipe_transfer *lpr;
 
    assert(resource);
-   assert(sr.level <= resource->last_level);
+   assert(level <= resource->last_level);
 
    /*
     * Transfers, like other pipe operations, must happen in order, so flush the
@@ -580,8 +615,8 @@ llvmpipe_get_transfer(struct pipe_context *pipe,
       boolean read_only = !(usage & PIPE_TRANSFER_WRITE);
       boolean do_not_block = !!(usage & PIPE_TRANSFER_DONTBLOCK);
       if (!llvmpipe_flush_resource(pipe, resource,
-                                   sr.face, sr.level,
-                                   0, /* flush_flags */
+                                   level,
+                                   box->depth > 1 ? -1 : box->z,
                                    read_only,
                                    TRUE, /* cpu_access */
                                    do_not_block,
@@ -594,14 +629,17 @@ llvmpipe_get_transfer(struct pipe_context *pipe,
       }
    }
 
+   if (resource == llvmpipe->constants[PIPE_SHADER_FRAGMENT][0])
+      llvmpipe->dirty |= LP_NEW_CONSTANTS;
+
    lpr = CALLOC_STRUCT(llvmpipe_transfer);
    if (lpr) {
       struct pipe_transfer *pt = &lpr->base;
       pipe_resource_reference(&pt->resource, resource);
       pt->box = *box;
-      pt->sr = sr;
-      pt->stride = lprex->row_stride[sr.level];
-      pt->slice_stride = lprex->img_stride[sr.level];
+      pt->level = level;
+      pt->stride = lprex->row_stride[level];
+      pt->layer_stride = lprex->img_stride[level];
       pt->usage = usage;
 
       return pt;
@@ -635,8 +673,7 @@ llvmpipe_transfer_map( struct pipe_context *pipe,
    enum lp_texture_usage tex_usage;
    const char *mode;
 
-   assert(transfer->sr.face < 6);
-   assert(transfer->sr.level < LP_MAX_TEXTURE_LEVELS);
+   assert(transfer->level < LP_MAX_TEXTURE_LEVELS);
 
    /*
    printf("tex_transfer_map(%d, %d  %d x %d of %d x %d,  usage %d )\n",
@@ -666,9 +703,8 @@ llvmpipe_transfer_map( struct pipe_context *pipe,
    format = lpr->base.format;
 
    map = llvmpipe_resource_map(transfer->resource,
-			       transfer->sr.face,
-			       transfer->sr.level,
-			       transfer->box.z,
+                               transfer->level,
+                               transfer->box.z,
                                tex_usage, LP_TEX_LAYOUT_LINEAR);
 
 
@@ -680,7 +716,7 @@ llvmpipe_transfer_map( struct pipe_context *pipe,
        */
       screen->timestamp++;
    }
-   
+
    map +=
       transfer->box.y / util_format_get_blockheight(format) * transfer->stride +
       transfer->box.x / util_format_get_blockwidth(format) * util_format_get_blocksize(format);
@@ -696,21 +732,20 @@ llvmpipe_transfer_unmap(struct pipe_context *pipe,
    assert(transfer->resource);
 
    llvmpipe_resource_unmap(transfer->resource,
-			   transfer->sr.face,
-			   transfer->sr.level,
-			   transfer->box.z);
+                           transfer->level,
+                           transfer->box.z);
 }
 
-static unsigned int
+unsigned int
 llvmpipe_is_resource_referenced( struct pipe_context *pipe,
-				struct pipe_resource *presource,
-				unsigned face, unsigned level)
+                                 struct pipe_resource *presource,
+                                 unsigned level, int layer)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
 
    if (presource->target == PIPE_BUFFER)
-      return PIPE_UNREFERENCED;
-   
+      return LP_UNREFERENCED;
+
    return lp_setup_is_resource_referenced(llvmpipe->setup, presource);
 }
 
@@ -719,7 +754,7 @@ llvmpipe_is_resource_referenced( struct pipe_context *pipe,
 /**
  * Create buffer which wraps user-space data.
  */
-static struct pipe_resource *
+struct pipe_resource *
 llvmpipe_user_buffer_create(struct pipe_screen *screen,
                             void *ptr,
                             unsigned bytes,
@@ -740,6 +775,7 @@ llvmpipe_user_buffer_create(struct pipe_screen *screen,
    buffer->base.width0 = bytes;
    buffer->base.height0 = 1;
    buffer->base.depth0 = 1;
+   buffer->base.array_size = 1;
    buffer->userBuffer = TRUE;
    buffer->data = ptr;
 
@@ -944,11 +980,16 @@ alloc_image_data(struct llvmpipe_resource *lpr, unsigned level,
       /* tiled data is stored in regular memory */
       uint buffer_size = tex_image_size(lpr, level, layout);
       lpr->tiled[level].data = align_malloc(buffer_size, alignment);
+      if (lpr->tiled[level].data) {
+         memset(lpr->tiled[level].data, 0, buffer_size);
+      }
    }
    else {
       assert(layout == LP_TEX_LAYOUT_LINEAR);
       if (lpr->dt) {
-         /* we get the linear memory from the winsys */
+         /* we get the linear memory from the winsys, and it has
+          * already been zeroed
+          */
          struct llvmpipe_screen *screen = llvmpipe_screen(lpr->base.screen);
          struct sw_winsys *winsys = screen->winsys;
 
@@ -960,6 +1001,9 @@ alloc_image_data(struct llvmpipe_resource *lpr, unsigned level,
          /* not a display target - allocate regular memory */
          uint buffer_size = tex_image_size(lpr, level, LP_TEX_LAYOUT_LINEAR);
          lpr->linear[level].data = align_malloc(buffer_size, alignment);
+         if (lpr->linear[level].data) {
+            memset(lpr->linear[level].data, 0, buffer_size);
+         }
       }
    }
 }
@@ -1394,10 +1438,6 @@ llvmpipe_init_screen_resource_funcs(struct pipe_screen *screen)
    screen->resource_destroy = llvmpipe_resource_destroy;
    screen->resource_from_handle = llvmpipe_resource_from_handle;
    screen->resource_get_handle = llvmpipe_resource_get_handle;
-   screen->user_buffer_create = llvmpipe_user_buffer_create;
-
-   screen->get_tex_surface = llvmpipe_get_tex_surface;
-   screen->tex_surface_destroy = llvmpipe_tex_surface_destroy;
 }
 
 
@@ -1408,8 +1448,10 @@ llvmpipe_init_context_resource_funcs(struct pipe_context *pipe)
    pipe->transfer_destroy = llvmpipe_transfer_destroy;
    pipe->transfer_map = llvmpipe_transfer_map;
    pipe->transfer_unmap = llvmpipe_transfer_unmap;
-   pipe->is_resource_referenced = llvmpipe_is_resource_referenced;
  
    pipe->transfer_flush_region = u_default_transfer_flush_region;
    pipe->transfer_inline_write = u_default_transfer_inline_write;
+
+   pipe->create_surface = llvmpipe_create_surface;
+   pipe->surface_destroy = llvmpipe_surface_destroy;
 }

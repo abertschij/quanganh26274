@@ -4,13 +4,11 @@ include $(TOP)/configs/current
 
 LIBNAME = radeonwinsys
 
-C_SOURCES = \
-	radeon_drm_buffer.c \
-	radeon_drm.c \
-	radeon_r300.c
+# get C_SOURCES
+include Makefile.sources
 
-LIBRARY_INCLUDES = -I$(TOP)/src/gallium/drivers/r300 \
-		   $(shell pkg-config libdrm --cflags-only-I)
+LIBRARY_INCLUDES = -I$(TOP)/include \
+		   $(shell $(PKG_CONFIG) libdrm --cflags-only-I)
 
 include ../../../Makefile.template
 

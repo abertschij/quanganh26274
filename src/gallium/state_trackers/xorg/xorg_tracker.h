@@ -46,6 +46,10 @@
 #include <damage.h>
 #endif
 
+/* Prevent symbol clash */
+#undef Absolute
+
+#include "compat-api.h"
 #include "pipe/p_screen.h"
 #include "util/u_inlines.h"
 #include "util/u_debug.h"
@@ -76,6 +80,7 @@ typedef struct _CustomizerRec
     Bool dirty_throttling;
     Bool swap_throttling;
     Bool no_3d;
+    Bool unhidden_hw_cursor_update;
     Bool (*winsys_pre_init) (struct _CustomizerRec *cust, int fd);
     Bool (*winsys_screen_init)(struct _CustomizerRec *cust);
     Bool (*winsys_screen_close)(struct _CustomizerRec *cust);
@@ -115,7 +120,7 @@ typedef struct _modesettingRec
     /* Broken-out options. */
     OptionInfoPtr Options;
 
-    void (*blockHandler)(int, pointer, pointer, pointer);
+    void (*blockHandler)(BLOCKHANDLER_ARGS_DECL);
     struct pipe_fence_handle *fence[XORG_NR_FENCES];
 
     CreateScreenResourcesProcPtr createScreenResources;
@@ -128,6 +133,7 @@ typedef struct _modesettingRec
     /* kms */
     struct kms_driver *kms;
     struct kms_bo *root_bo;
+    uint16_t lut_r[256], lut_g[256], lut_b[256];
 
     /* gallium */
     struct pipe_screen *screen;
@@ -155,6 +161,7 @@ CustomizerPtr xorg_customizer(ScrnInfoPtr pScrn);
 
 Bool xorg_has_gallium(ScrnInfoPtr pScrn);
 
+void xorg_flush(ScreenPtr pScreen);
 /***********************************************************************
  * xorg_exa.c
  */
@@ -217,6 +224,13 @@ xorg_output_get_id(xf86OutputPtr output);
  */
 void
 xorg_xv_init(ScreenPtr pScreen);
+
+
+/***********************************************************************
+ * xorg_xvmc.c
+ */
+void
+xorg_xvmc_init(ScreenPtr pScreen, char *name);
 
 
 #endif /* _XORG_TRACKER_H_ */

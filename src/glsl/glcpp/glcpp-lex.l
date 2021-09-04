@@ -34,14 +34,24 @@
 int glcpp_get_column  (yyscan_t yyscanner);
 void glcpp_set_column (int  column_no , yyscan_t yyscanner);
 
+#ifdef _MSC_VER
+#define YY_NO_UNISTD_H
+#endif
+
 #define YY_NO_INPUT
 
-#define YY_USER_ACTION                                          \
-   do {                                                         \
-      yylloc->first_column = yycolumn + 1;                      \
-      yylloc->first_line = yylineno;                            \
-      yycolumn += yyleng;                                       \
-   } while(0);
+#define YY_USER_ACTION							\
+	do {								\
+		if (parser->has_new_line_number)			\
+			yylineno = parser->new_line_number;		\
+		if (parser->has_new_source_number)			\
+			yylloc->source = parser->new_source_number;	\
+		yylloc->first_column = yycolumn + 1;			\
+		yylloc->first_line = yylineno;				\
+		yycolumn += yyleng;					\
+		parser->has_new_line_number = 0;			\
+		parser->has_new_source_number = 0;			\
+ } while(0);
 
 #define YY_USER_INIT			\
 	do {				\
@@ -57,7 +67,7 @@ void glcpp_set_column (int  column_no , yyscan_t yyscanner);
 %option stack
 %option never-interactive
 
-%x DONE COMMENT UNREACHABLE
+%x DONE COMMENT UNREACHABLE SKIP DEFINE
 
 SPACE		[[:space:]]
 NONSPACE	[^[:space:]]
@@ -66,7 +76,15 @@ HSPACE		[ \t]
 HASH		^{HSPACE}*#{HSPACE}*
 IDENTIFIER	[_a-zA-Z][_a-zA-Z0-9]*
 PUNCTUATION	[][(){}.&*~!/%<>^|;,=+-]
-OTHER		[^][(){}.&*~!/%<>^|;,=#[:space:]+-]+
+
+/* The OTHER class is simply a catch-all for things that the CPP
+parser just doesn't care about. Since flex regular expressions that
+match longer strings take priority over those matching shorter
+strings, we have to be careful to avoid OTHER matching and hiding
+something that CPP does care about. So we simply exclude all
+characters that appear in any other expressions. */
+
+OTHER		[^][_#[:space:]#a-zA-Z0-9(){}.&*~!/%<>^|;,=+-]
 
 DIGITS			[0-9][0-9]*
 DECIMAL_INTEGER		[1-9][0-9]*[uU]?
@@ -74,6 +92,17 @@ OCTAL_INTEGER		0[0-7]*[uU]?
 HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 
 %%
+	/* Implicitly switch between SKIP and INITIAL (non-skipping);
+	 * don't switch if some other state was explicitly set.
+	 */
+	glcpp_parser_t *parser = yyextra;
+	if (YY_START == 0 || YY_START == SKIP) {
+		if (parser->lexing_if || parser->skip_stack == NULL || parser->skip_stack->type == SKIP_NO_SKIP) {
+			BEGIN 0;
+		} else {
+			BEGIN SKIP;
+		}
+	}
 
 	/* Single-line comments */
 "//"[^\n]* {
@@ -82,9 +111,9 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 	/* Multi-line comments */
 "/*"                    { yy_push_state(COMMENT, yyscanner); }
 <COMMENT>[^*\n]*
-<COMMENT>[^*\n]*\n      { yylineno++; yycolumn = 0; }
+<COMMENT>[^*\n]*\n      { yylineno++; yycolumn = 0; return NEWLINE; }
 <COMMENT>"*"+[^*/\n]*
-<COMMENT>"*"+[^*/\n]*\n { yylineno++; yycolumn = 0; }
+<COMMENT>"*"+[^*/\n]*\n { yylineno++; yycolumn = 0; return NEWLINE; }
 <COMMENT>"*"+"/"        {
 	yy_pop_state(yyscanner);
 	if (yyextra->space_tokens)
@@ -92,7 +121,7 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 }
 
 {HASH}version {
-	yylval->str = talloc_strdup (yyextra, yytext);
+	yylval->str = ralloc_strdup (yyextra, yytext);
 	yyextra->space_tokens = 0;
 	return HASH_VERSION;
 }
@@ -100,96 +129,53 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 	/* glcpp doesn't handle #extension, #version, or #pragma directives.
 	 * Simply pass them through to the main compiler's lexer/parser. */
 {HASH}(extension|pragma)[^\n]+ {
-	yylval->str = talloc_strdup (yyextra, yytext);
+	yylval->str = ralloc_strdup (yyextra, yytext);
 	yylineno++;
 	yycolumn = 0;
 	return OTHER;
 }
 
-{HASH}line{HSPACE}+{DIGITS}{HSPACE}+{DIGITS}{HSPACE}*$ {
-	/* Eat characters until the first digit is
-	 * encountered
-	 */
-	char *ptr = yytext;
-	while (!isdigit(*ptr))
-		ptr++;
-
-	/* Subtract one from the line number because
-	 * yylineno is zero-based instead of
-	 * one-based.
-	 */
-	yylineno = strtol(ptr, &ptr, 0) - 1;
-	yylloc->source = strtol(ptr, NULL, 0);
+{HASH}line {
+	return HASH_LINE;
 }
 
-{HASH}line{HSPACE}+{DIGITS}{HSPACE}*$ {
-	/* Eat characters until the first digit is
-	 * encountered
-	 */
-	char *ptr = yytext;
-	while (!isdigit(*ptr))
-		ptr++;
-
-	/* Subtract one from the line number because
-	 * yylineno is zero-based instead of
-	 * one-based.
-	 */
-	yylineno = strtol(ptr, &ptr, 0) - 1;
-}
-
-{HASH}ifdef/.*\n {
+<SKIP,INITIAL>{
+{HASH}ifdef {
 	yyextra->lexing_if = 1;
 	yyextra->space_tokens = 0;
 	return HASH_IFDEF;
 }
 
-{HASH}ifndef/.*\n {
+{HASH}ifndef {
 	yyextra->lexing_if = 1;
 	yyextra->space_tokens = 0;
 	return HASH_IFNDEF;
 }
 
-{HASH}if/[^_a-zA-Z0-9].*\n {
+{HASH}if/[^_a-zA-Z0-9] {
 	yyextra->lexing_if = 1;
 	yyextra->space_tokens = 0;
 	return HASH_IF;
 }
 
-{HASH}elif/.*\n {
+{HASH}elif {
 	yyextra->lexing_if = 1;
 	yyextra->space_tokens = 0;
 	return HASH_ELIF;
 }
 
-{HASH}else/.*\n {
+{HASH}else {
 	yyextra->space_tokens = 0;
 	return HASH_ELSE;
 }
 
-{HASH}endif/.*\n {
+{HASH}endif {
 	yyextra->space_tokens = 0;
 	return HASH_ENDIF;
 }
-
-	/* When skipping (due to an #if 0 or similar) consume anything
-	 * up to a newline. We do this with less priority than any
-	 * #if-related directive (#if, #elif, #else, #endif), but with
-	 * more priority than any other directive or token to avoid
-	 * any side-effects from skipped content.
-	 *
-	 * We use the lexing_if flag to avoid skipping any part of an
-	 * if conditional expression. */
-[^\n]+/\n {
-	/* Since this rule always matches, YY_USER_ACTION gets called for it,
-	 * wrongly incrementing yycolumn.  We undo that effect here. */
-	yycolumn -= yyleng;
-	if (yyextra->lexing_if ||
-	    yyextra->skip_stack == NULL ||
-	    yyextra->skip_stack->type == SKIP_NO_SKIP)
-	{
-		REJECT;
-	}
 }
+
+<SKIP>[^\n] ;
 
 {HASH}error.* {
 	char *p;
@@ -198,14 +184,22 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 	glcpp_error(yylloc, yyextra, "#error%s", p);
 }
 
-{HASH}define{HSPACE}+/{IDENTIFIER}"(" {
+{HASH}define{HSPACE}+ {
 	yyextra->space_tokens = 0;
-	return HASH_DEFINE_FUNC;
+	yy_push_state(DEFINE, yyscanner);
+	return HASH_DEFINE;
 }
 
-{HASH}define {
-	yyextra->space_tokens = 0;
-	return HASH_DEFINE_OBJ;
+<DEFINE>{IDENTIFIER}/"(" {
+	yy_pop_state(yyscanner);
+	yylval->str = ralloc_strdup (yyextra, yytext);
+	return FUNC_IDENTIFIER;
+}
+
+<DEFINE>{IDENTIFIER} {
+	yy_pop_state(yyscanner);
+	yylval->str = ralloc_strdup (yyextra, yytext);
+	return OBJ_IDENTIFIER;
 }
 
 {HASH}undef {
@@ -219,17 +213,17 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 }
 
 {DECIMAL_INTEGER} {
-	yylval->str = talloc_strdup (yyextra, yytext);
+	yylval->str = ralloc_strdup (yyextra, yytext);
 	return INTEGER_STRING;
 }
 
 {OCTAL_INTEGER} {
-	yylval->str = talloc_strdup (yyextra, yytext);
+	yylval->str = ralloc_strdup (yyextra, yytext);
 	return INTEGER_STRING;
 }
 
 {HEXADECIMAL_INTEGER} {
-	yylval->str = talloc_strdup (yyextra, yytext);
+	yylval->str = ralloc_strdup (yyextra, yytext);
 	return INTEGER_STRING;
 }
 
@@ -274,7 +268,7 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 }
 
 {IDENTIFIER} {
-	yylval->str = talloc_strdup (yyextra, yytext);
+	yylval->str = ralloc_strdup (yyextra, yytext);
 	return IDENTIFIER;
 }
 
@@ -283,7 +277,7 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 }
 
 {OTHER}+ {
-	yylval->str = talloc_strdup (yyextra, yytext);
+	yylval->str = ralloc_strdup (yyextra, yytext);
 	return OTHER;
 }
 
@@ -293,7 +287,7 @@ HEXADECIMAL_INTEGER	0[xX][0-9a-fA-F]+[uU]?
 	}
 }
 
-\n {
+<SKIP,INITIAL>\n {
 	yyextra->lexing_if = 0;
 	yylineno++;
 	yycolumn = 0;

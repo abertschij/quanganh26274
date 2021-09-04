@@ -30,18 +30,27 @@
 #include "u_sampler.h"
 
 
+/**
+ * Initialize a pipe_sampler_view.  'view' is considered to have
+ * uninitialized contents.
+ */
 static void
 default_template(struct pipe_sampler_view *view,
                  const struct pipe_resource *texture,
                  enum pipe_format format,
                  unsigned expand_green_blue)
 {
+   memset(view, 0, sizeof(*view));
+
    /* XXX: Check if format is compatible with texture->format.
     */
 
    view->format = format;
-   view->first_level = 0;
-   view->last_level = texture->last_level;
+   view->u.tex.first_level = 0;
+   view->u.tex.last_level = texture->last_level;
+   view->u.tex.first_layer = 0;
+   view->u.tex.last_layer = texture->target == PIPE_TEXTURE_3D ?
+                               texture->depth0 - 1 : texture->array_size - 1;
    view->swizzle_r = PIPE_SWIZZLE_RED;
    view->swizzle_g = PIPE_SWIZZLE_GREEN;
    view->swizzle_b = PIPE_SWIZZLE_BLUE;

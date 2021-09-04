@@ -2,15 +2,16 @@
  * any utility code, just the graw interface and gallium.
  */
 
+#include <stdio.h>
 #include "state_tracker/graw.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
 
-#include "util/u_debug.h"       /* debug_dump_surface_bmp() */
 #include "util/u_memory.h"      /* Offset() */
 #include "util/u_draw_quad.h"
+#include "util/u_inlines.h"
 
 enum pipe_format formats[] = {
    PIPE_FORMAT_R8G8B8A8_UNORM,
@@ -24,6 +25,7 @@ static const int HEIGHT = 300;
 static struct pipe_screen *screen = NULL;
 static struct pipe_context *ctx = NULL;
 static struct pipe_surface *surf = NULL;
+static struct pipe_resource *tex = NULL;
 static void *window = NULL;
 
 struct vertex {
@@ -88,12 +90,12 @@ static void set_vertices( void )
 
 
    vbuf.stride = sizeof( struct vertex );
-   vbuf.max_index = sizeof(vertices) / vbuf.stride;
    vbuf.buffer_offset = 0;
-   vbuf.buffer = screen->user_buffer_create(screen,
-                                            vertices,
-                                            sizeof(vertices),
-                                            PIPE_BIND_VERTEX_BUFFER);
+   vbuf.buffer = pipe_buffer_create_with_data(ctx,
+                                              PIPE_BIND_VERTEX_BUFFER,
+                                              PIPE_USAGE_STATIC,
+                                              sizeof(vertices),
+                                              vertices);
 
    ctx->set_vertex_buffers(ctx, 1, &vbuf);
 }
@@ -159,20 +161,21 @@ static void set_geometry_shader( void )
 
 static void draw( void )
 {
-   float clear_color[4] = {1,0,1,1};
+   union pipe_color_union clear_color = { {1,0,1,1} };
 
-   ctx->clear(ctx, PIPE_CLEAR_COLOR, clear_color, 0, 0);
+   ctx->clear(ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
    util_draw_arrays(ctx, PIPE_PRIM_TRIANGLES, 0, 3);
-   ctx->flush(ctx, PIPE_FLUSH_RENDER_CACHE, NULL);
+   ctx->flush(ctx, NULL);
 
-   screen->flush_frontbuffer(screen, surf, window);
+   screen->flush_frontbuffer(screen, tex, 0, 0, window);
 }
 
 
 static void init( void )
 {
    struct pipe_framebuffer_state fb;
-   struct pipe_resource *tex, templat;
+   struct pipe_resource templat;
+   struct pipe_surface surf_tmpl;
    int i;
 
    /* It's hard to say whether window or screen should be created
@@ -181,13 +184,16 @@ static void init( void )
     * Also, no easy way of querying supported formats if the screen
     * cannot be created first.
     */
-   for (i = 0; 
-        window == NULL && formats[i] != PIPE_FORMAT_NONE;
-        i++) {
-      
-      screen = graw_create_window_and_screen(0,0,300,300,
+   for (i = 0; formats[i] != PIPE_FORMAT_NONE; i++) {
+      screen = graw_create_window_and_screen(0, 0, 300, 300,
                                              formats[i],
                                              &window);
+      if (window && screen)
+         break;
+   }
+   if (!screen || !window) {
+      fprintf(stderr, "Unable to create window\n");
+      exit(1);
    }
    
    ctx = screen->context_create(screen, NULL);
@@ -199,6 +205,7 @@ static void init( void )
    templat.width0 = WIDTH;
    templat.height0 = HEIGHT;
    templat.depth0 = 1;
+   templat.array_size = 1;
    templat.last_level = 0;
    templat.nr_samples = 1;
    templat.bind = (PIPE_BIND_RENDER_TARGET |
@@ -209,9 +216,12 @@ static void init( void )
    if (tex == NULL)
       exit(4);
 
-   surf = screen->get_tex_surface(screen, tex, 0, 0, 0,
-                                  PIPE_BIND_RENDER_TARGET |
-                                  PIPE_BIND_DISPLAY_TARGET);
+   surf_tmpl.format = templat.format;
+   surf_tmpl.usage = PIPE_BIND_RENDER_TARGET;
+   surf_tmpl.u.tex.level = 0;
+   surf_tmpl.u.tex.first_layer = 0;
+   surf_tmpl.u.tex.last_layer = 0;
+   surf = ctx->create_surface(ctx, tex, &surf_tmpl);
    if (surf == NULL)
       exit(5);
 
@@ -246,6 +256,7 @@ static void init( void )
       memset(&rasterizer, 0, sizeof rasterizer);
       rasterizer.cull_face = PIPE_FACE_NONE;
       rasterizer.gl_rasterization_rules = 1;
+      rasterizer.depth_clip = 1;
       handle = ctx->create_rasterizer_state(ctx, &rasterizer);
       ctx->bind_rasterizer_state(ctx, handle);
    }

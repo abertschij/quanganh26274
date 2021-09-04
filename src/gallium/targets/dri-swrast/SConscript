@@ -27,15 +27,18 @@ if True:
 
 if env['llvm']:
     env.Append(CPPDEFINES = 'GALLIUM_LLVMPIPE')
-    env.Tool('udis86')
     env.Prepend(LIBS = [llvmpipe])
 
-swrastg_sources = [
+swrast_sources = [
     'swrast_drm_api.c'
 ]
 
-env.LoadableModule(
-    target ='swrastg_dri.so',
-    source = swrastg_sources,
+module = env.LoadableModule(
+    target ='swrast_dri.so',
+    source = swrast_sources,
     SHLIBPREFIX = '',
 )
+
+module = env.InstallSharedLibrary(module)
+
+env.Alias('dri-swrast', module)

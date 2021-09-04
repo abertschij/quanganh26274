@@ -27,15 +27,14 @@
 #define _NATIVE_X11_H_
 
 #include "common/native.h"
+#include <X11/Xlib.h>
 
 struct native_display *
 x11_create_ximage_display(Display *dpy,
-                          struct native_event_handler *event_handler,
-                          void *user_data);
+                          const struct native_event_handler *event_handler);
 
 struct native_display *
 x11_create_dri2_display(Display *dpy,
-                        struct native_event_handler *event_handler,
-                        void *user_data);
+                        const struct native_event_handler *event_handler);
 
 #endif /* _NATIVE_X11_H_ */

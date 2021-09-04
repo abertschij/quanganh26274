@@ -10,7 +10,6 @@
 #include "pipe/p_defines.h"
 #include <stdio.h>              /* for fread(), etc */
 
-#include "util/u_debug.h"       /* debug_dump_surface_bmp() */
 #include "util/u_inlines.h"
 #include "util/u_memory.h"      /* Offset() */
 #include "util/u_draw_quad.h"
@@ -157,6 +156,7 @@ static void init_fs_constbuf( void )
    templat.width0 = sizeof(constants1);
    templat.height0 = 1;
    templat.depth0 = 1;
+   templat.array_size = 1;
    templat.last_level = 0;
    templat.nr_samples = 1;
    templat.bind = PIPE_BIND_CONSTANT_BUFFER;
@@ -173,7 +173,7 @@ static void init_fs_constbuf( void )
 
       ctx->transfer_inline_write(ctx,
                                  constbuf1,
-                                 u_subresource(0,0),
+                                 0,
                                  PIPE_TRANSFER_WRITE,
                                  &box,
                                  constants1,
@@ -181,7 +181,7 @@ static void init_fs_constbuf( void )
                                  sizeof constants1);
 
 
-      ctx->set_constant_buffer(ctx,
+      pipe_set_constant_buffer(ctx,
                                PIPE_SHADER_GEOMETRY, 0,
                                constbuf1);
    }
@@ -190,7 +190,7 @@ static void init_fs_constbuf( void )
 
       ctx->transfer_inline_write(ctx,
                                  constbuf2,
-                                 u_subresource(0,0),
+                                 0,
                                  PIPE_TRANSFER_WRITE,
                                  &box,
                                  constants2,
@@ -198,7 +198,7 @@ static void init_fs_constbuf( void )
                                  sizeof constants2);
 
 
-      ctx->set_constant_buffer(ctx,
+      pipe_set_constant_buffer(ctx,
                                PIPE_SHADER_GEOMETRY, 1,
                                constbuf2);
    }
@@ -251,17 +251,17 @@ static void set_vertices( void )
    vbuf.stride = sizeof( struct vertex );
    vbuf.buffer_offset = 0;
    if (draw_strip) {
-      vbuf.max_index = sizeof(vertices_strip) / vbuf.stride;
-      vbuf.buffer = screen->user_buffer_create(screen,
-                                               vertices_strip,
-                                               sizeof(vertices_strip),
-                                               PIPE_BIND_VERTEX_BUFFER);
+      vbuf.buffer = pipe_buffer_create_with_data(ctx,
+                                                 PIPE_BIND_VERTEX_BUFFER,
+                                                 PIPE_USAGE_STATIC,
+                                                 sizeof(vertices_strip),
+                                                 vertices_strip);
    } else {
-      vbuf.max_index = sizeof(vertices) / vbuf.stride;
-      vbuf.buffer = screen->user_buffer_create(screen,
-                                               vertices,
-                                               sizeof(vertices),
-                                               PIPE_BIND_VERTEX_BUFFER);
+      vbuf.buffer = pipe_buffer_create_with_data(ctx,
+                                                 PIPE_BIND_VERTEX_BUFFER,
+                                                 PIPE_USAGE_STATIC,
+                                                 sizeof(vertices),
+                                                 vertices);
    }
 
    ctx->set_vertex_buffers(ctx, 1, &vbuf);
@@ -333,29 +333,19 @@ static void set_geometry_shader( void )
 
 static void draw( void )
 {
-   float clear_color[4] = {.1,.3,.5,0};
+   union pipe_color_union clear_color = { {.1,.3,.5,0} };
 
-   ctx->clear(ctx, PIPE_CLEAR_COLOR, clear_color, 0, 0);
+   ctx->clear(ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
    if (draw_strip)
       util_draw_arrays(ctx, PIPE_PRIM_TRIANGLE_STRIP, 0, 4);
    else
       util_draw_arrays(ctx, PIPE_PRIM_TRIANGLES, 0, 3);
 
-   ctx->flush(ctx, PIPE_FLUSH_RENDER_CACHE, NULL);
+   ctx->flush(ctx, NULL);
 
-#if 0
-   /* At the moment, libgraw leaks out/makes available some of the
-    * symbols from gallium/auxiliary, including these debug helpers.
-    * Will eventually want to bless some of these paths, and lock the
-    * others down so they aren't accessible from test programs.
-    *
-    * This currently just happens to work on debug builds - a release
-    * build will probably fail to link here:
-    */
-   debug_dump_surface_bmp(ctx, "result.bmp", surf);
-#endif
+   graw_save_surface_to_file(ctx, surf, NULL);
 
-   screen->flush_frontbuffer(screen, surf, window);
+   screen->flush_frontbuffer(screen, rttex, 0, 0, window);
 }
 
 #define SIZE 16
@@ -415,6 +405,7 @@ static void init_tex( void )
    templat.width0 = SIZE;
    templat.height0 = SIZE;
    templat.depth0 = 1;
+   templat.array_size = 1;
    templat.last_level = 0;
    templat.nr_samples = 1;
    templat.bind = PIPE_BIND_SAMPLER_VIEW;
@@ -429,7 +420,7 @@ static void init_tex( void )
 
    ctx->transfer_inline_write(ctx,
                               samptex,
-                              u_subresource(0,0),
+                              0,
                               PIPE_TRANSFER_WRITE,
                               &box,
                               tex2d,
@@ -443,7 +434,7 @@ static void init_tex( void )
       struct pipe_transfer *t;
       uint32_t *ptr;
       t = pipe_get_transfer(ctx, samptex,
-                            0, 0, 0, /* face, level, zslice */
+                            0, 0, /* level, layer */
                             PIPE_TRANSFER_READ,
                             0, 0, SIZE, SIZE); /* x, y, width, height */
 
@@ -462,8 +453,6 @@ static void init_tex( void )
    memset(&sv_template, 0, sizeof sv_template);
    sv_template.format = samptex->format;
    sv_template.texture = samptex;
-   sv_template.first_level = 0;
-   sv_template.last_level = 0;
    sv_template.swizzle_r = 0;
    sv_template.swizzle_g = 1;
    sv_template.swizzle_b = 2;
@@ -499,6 +488,7 @@ static void init( void )
 {
    struct pipe_framebuffer_state fb;
    struct pipe_resource templat;
+   struct pipe_surface surf_tmpl;
    int i;
 
    /* It's hard to say whether window or screen should be created
@@ -507,15 +497,18 @@ static void init( void )
     * Also, no easy way of querying supported formats if the screen
     * cannot be created first.
     */
-   for (i = 0; 
-        window == NULL && formats[i] != PIPE_FORMAT_NONE;
-        i++) {
-      
-      screen = graw_create_window_and_screen(0,0,WIDTH,HEIGHT,
+   for (i = 0; formats[i] != PIPE_FORMAT_NONE; i++) {
+      screen = graw_create_window_and_screen(0, 0, 300, 300,
                                              formats[i],
                                              &window);
+      if (window && screen)
+         break;
    }
-   
+   if (!screen || !window) {
+      fprintf(stderr, "Unable to create window\n");
+      exit(1);
+   }
+
    ctx = screen->context_create(screen, NULL);
    if (ctx == NULL)
       exit(3);
@@ -525,6 +518,7 @@ static void init( void )
    templat.width0 = WIDTH;
    templat.height0 = HEIGHT;
    templat.depth0 = 1;
+   templat.array_size = 1;
    templat.last_level = 0;
    templat.nr_samples = 1;
    templat.bind = (PIPE_BIND_RENDER_TARGET |
@@ -535,9 +529,12 @@ static void init( void )
    if (rttex == NULL)
       exit(4);
 
-   surf = screen->get_tex_surface(screen, rttex, 0, 0, 0,
-                                  PIPE_BIND_RENDER_TARGET |
-                                  PIPE_BIND_DISPLAY_TARGET);
+   surf_tmpl.format = templat.format;
+   surf_tmpl.usage = PIPE_BIND_RENDER_TARGET;
+   surf_tmpl.u.tex.level = 0;
+   surf_tmpl.u.tex.first_layer = 0;
+   surf_tmpl.u.tex.last_layer = 0;
+   surf = ctx->create_surface(ctx, rttex, &surf_tmpl);
    if (surf == NULL)
       exit(5);
 
@@ -572,6 +569,7 @@ static void init( void )
       memset(&rasterizer, 0, sizeof rasterizer);
       rasterizer.cull_face = PIPE_FACE_NONE;
       rasterizer.gl_rasterization_rules = 1;
+      rasterizer.depth_clip = 1;
       handle = ctx->create_rasterizer_state(ctx, &rasterizer);
       ctx->bind_rasterizer_state(ctx, handle);
    }
@@ -591,19 +589,25 @@ static void args(int argc, char *argv[])
 {
    int i;
 
-   for (i = 1; i < argc; i++) {
+   for (i = 1; i < argc;) {
+      if (graw_parse_args(&i, argc, argv)) {
+         continue;
+      }
       if (strcmp(argv[i], "-fps") == 0) {
          show_fps = 1;
+         i++;
       }
       else if (strcmp(argv[i], "-strip") == 0) {
          draw_strip = 1;
+         i++;
       }
       else if (i == argc - 1) {
-	 filename = argv[i];
+         filename = argv[i];
+         i++;
       }
       else {
-	 usage(argv[0]);
-	 exit(1);
+         usage(argv[0]);
+         exit(1);
       }
    }
 

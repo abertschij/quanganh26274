@@ -52,7 +52,7 @@ DEBUG_GET_ONCE_BOOL_OPTION(draw_no_fse, "DRAW_NO_FSE", FALSE)
  *     - backend  -- the vbuf_render provided by the driver.
  */
 static boolean
-draw_pt_arrays(struct draw_context *draw, 
+draw_pt_arrays(struct draw_context *draw,
                unsigned prim,
                unsigned start, 
                unsigned count)
@@ -106,16 +106,55 @@ draw_pt_arrays(struct draw_context *draw,
          middle = draw->pt.middle.general;
    }
 
-   frontend = draw->pt.front.vsplit;
+   frontend = draw->pt.frontend;
 
-   frontend->prepare( frontend, prim, middle, opt );
+   if (frontend ) {
+      if (draw->pt.prim != prim || draw->pt.opt != opt) {
+         /* In certain conditions switching primitives requires us to flush
+          * and validate the different stages. One example is when smooth
+          * lines are active but first drawn with triangles and then with
+          * lines.
+          */
+         draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
+         frontend = NULL;
+      } else if (draw->pt.eltSize != draw->pt.user.eltSize) {
+         /* Flush draw state if eltSize changed.
+          * This could be improved so only the frontend is flushed since it
+          * converts all indices to ushorts and the fetch part of the middle
+          * always perpares both linear and indexed.
+          */
+         frontend->flush( frontend, DRAW_FLUSH_STATE_CHANGE );
+         frontend = NULL;
+      }
+   }
 
-   frontend->run(frontend, start, count);
+   if (!frontend) {
+      frontend = draw->pt.front.vsplit;
 
-   frontend->finish( frontend );
+      frontend->prepare( frontend, prim, middle, opt );
+
+      draw->pt.frontend = frontend;
+      draw->pt.eltSize = draw->pt.user.eltSize;
+      draw->pt.prim = prim;
+      draw->pt.opt = opt;
+   }
+
+   frontend->run( frontend, start, count );
 
    return TRUE;
 }
+
+void draw_pt_flush( struct draw_context *draw, unsigned flags )
+{
+   if (draw->pt.frontend) {
+      draw->pt.frontend->flush( draw->pt.frontend, flags );
+
+      /* don't prepare if we only are flushing the backend */
+      if (!(flags & DRAW_FLUSH_BACKEND))
+         draw->pt.frontend = NULL;
+   }
+}
+
 
 
 boolean draw_pt_init( struct draw_context *draw )
@@ -193,28 +232,24 @@ draw_print_arrays(struct draw_context *draw, uint prim, int start, uint count)
       uint j;
 
       if (draw->pt.user.eltSize) {
-         const char *elts;
-
          /* indexed arrays */
-         elts = (const char *) draw->pt.user.elts;
-         elts += draw->pt.index_buffer.offset;
 
          switch (draw->pt.user.eltSize) {
          case 1:
             {
-               const ubyte *elem = (const ubyte *) elts;
+               const ubyte *elem = (const ubyte *) draw->pt.user.elts;
                ii = elem[start + i];
             }
             break;
          case 2:
             {
-               const ushort *elem = (const ushort *) elts;
+               const ushort *elem = (const ushort *) draw->pt.user.elts;
                ii = elem[start + i];
             }
             break;
          case 4:
             {
-               const uint *elem = (const uint *) elts;
+               const uint *elem = (const uint *) draw->pt.user.elts;
                ii = elem[start + i];
             }
             break;
@@ -287,6 +322,84 @@ draw_print_arrays(struct draw_context *draw, uint prim, int start, uint count)
 }
 
 
+/** Helper code for below */
+#define PRIM_RESTART_LOOP(elements) \
+   do { \
+      for (i = start; i < end; i++) { \
+         if (elements[i] == info->restart_index) { \
+            if (cur_count > 0) { \
+               /* draw elts up to prev pos */ \
+               draw_pt_arrays(draw, prim, cur_start, cur_count); \
+            } \
+            /* begin new prim at next elt */ \
+            cur_start = i + 1; \
+            cur_count = 0; \
+         } \
+         else { \
+            cur_count++; \
+         } \
+      } \
+      if (cur_count > 0) { \
+         draw_pt_arrays(draw, prim, cur_start, cur_count); \
+      } \
+   } while (0)
+
+
+/**
+ * For drawing prims with primitive restart enabled.
+ * Scan for restart indexes and draw the runs of elements/vertices between
+ * the restarts.
+ */
+static void
+draw_pt_arrays_restart(struct draw_context *draw,
+                       const struct pipe_draw_info *info)
+{
+   const unsigned prim = info->mode;
+   const unsigned start = info->start;
+   const unsigned count = info->count;
+   const unsigned end = start + count;
+   unsigned i, cur_start, cur_count;
+
+   assert(info->primitive_restart);
+
+   if (draw->pt.user.eltSize) {
+      /* indexed prims (draw_elements) */
+      cur_start = start;
+      cur_count = 0;
+
+      switch (draw->pt.user.eltSize) {
+      case 1:
+         {
+            const ubyte *elt_ub = (const ubyte *) draw->pt.user.elts;
+            PRIM_RESTART_LOOP(elt_ub);
+         }
+         break;
+      case 2:
+         {
+            const ushort *elt_us = (const ushort *) draw->pt.user.elts;
+            PRIM_RESTART_LOOP(elt_us);
+         }
+         break;
+      case 4:
+         {
+            const uint *elt_ui = (const uint *) draw->pt.user.elts;
+            PRIM_RESTART_LOOP(elt_ui);
+         }
+         break;
+      default:
+         assert(0 && "bad eltSize in draw_arrays()");
+      }
+   }
+   else {
+      /* Non-indexed prims (draw_arrays).
+       * Primitive restart should have been handled in the state tracker.
+       */
+      draw_pt_arrays(draw, prim, start, count);
+   }
+}
+
+
+
 /**
  * Non-instanced drawing.
  * \sa draw_arrays_instanced
@@ -320,12 +433,8 @@ draw_arrays_instanced(struct draw_context *draw,
    info.count = count;
    info.start_instance = startInstance;
    info.instance_count = instanceCount;
-
-   info.indexed = (draw->pt.user.elts != NULL);
-   if (!info.indexed) {
-      info.min_index = start;
-      info.max_index = start + count - 1;
-   }
+   info.min_index = start;
+   info.max_index = start + count - 1;
 
    draw_vbo(draw, &info);
 }
@@ -342,24 +451,17 @@ void
 draw_vbo(struct draw_context *draw,
          const struct pipe_draw_info *info)
 {
-   unsigned reduced_prim = u_reduced_prim(info->mode);
    unsigned instance;
+   unsigned index_limit;
 
    assert(info->instance_count > 0);
    if (info->indexed)
       assert(draw->pt.user.elts);
 
-   draw->pt.user.eltSize =
-      (info->indexed) ? draw->pt.index_buffer.index_size : 0;
-
    draw->pt.user.eltBias = info->index_bias;
    draw->pt.user.min_index = info->min_index;
    draw->pt.user.max_index = info->max_index;
-
-   if (reduced_prim != draw->reduced_prim) {
-      draw_do_flush(draw, DRAW_FLUSH_STATE_CHANGE);
-      draw->reduced_prim = reduced_prim;
-   }
+   draw->pt.user.eltSize = info->indexed ? draw->pt.user.eltSizeIB : 0;
 
    if (0)
       debug_printf("draw_vbo(mode=%u start=%u count=%u):\n",
@@ -381,10 +483,9 @@ draw_vbo(struct draw_context *draw,
       }
       debug_printf("Buffers:\n");
       for (i = 0; i < draw->pt.nr_vertex_buffers; i++) {
-         debug_printf("  %u: stride=%u maxindex=%u offset=%u ptr=%p\n",
+         debug_printf("  %u: stride=%u offset=%u ptr=%p\n",
                       i,
                       draw->pt.vertex_buffer[i].stride,
-                      draw->pt.vertex_buffer[i].max_index,
                       draw->pt.vertex_buffer[i].buffer_offset,
                       draw->pt.user.vbuffer[i]);
       }
@@ -393,8 +494,33 @@ draw_vbo(struct draw_context *draw,
    if (0)
       draw_print_arrays(draw, info->mode, info->start, MIN2(info->count, 20));
 
+   index_limit = util_draw_max_index(draw->pt.vertex_buffer,
+                                     draw->pt.vertex_element,
+                                     draw->pt.nr_vertex_elements,
+                                     info);
+
+   if (index_limit == 0) {
+      /* one of the buffers is too small to do any valid drawing */
+      debug_warning("draw: VBO too small to draw anything\n");
+      return;
+   }
+
+   draw->pt.max_index = index_limit - 1;
+
+
+   /*
+    * TODO: We could use draw->pt.max_index to further narrow
+    * the min_index/max_index hints given by the state tracker.
+    */
+
    for (instance = 0; instance < info->instance_count; instance++) {
       draw->instance_id = instance + info->start_instance;
-      draw_pt_arrays(draw, info->mode, info->start, info->count);
+
+      if (info->primitive_restart) {
+         draw_pt_arrays_restart(draw, info);
+      }
+      else {
+         draw_pt_arrays(draw, info->mode, info->start, info->count);
+      }
    }
 }

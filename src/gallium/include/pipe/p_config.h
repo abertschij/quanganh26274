@@ -46,7 +46,7 @@
 #ifndef P_CONFIG_H_
 #define P_CONFIG_H_
 
-
+#include <limits.h>
 /*
  * Compiler
  */
@@ -99,9 +99,9 @@
 #endif
 #endif
 
-#if defined(__PPC__)
+#if defined(__ppc__) || defined(__ppc64__) || defined(__PPC__)
 #define PIPE_ARCH_PPC
-#if defined(__PPC64__)
+#if defined(__ppc64__) || defined(__PPC64__)
 #define PIPE_ARCH_PPC_64
 #endif
 #endif
@@ -111,16 +111,46 @@
  * Endian detection.
  */
 
+#ifdef __GLIBC__
+#include <endian.h>
+
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+# define PIPE_ARCH_LITTLE_ENDIAN
+#elif __BYTE_ORDER == __BIG_ENDIAN
+# define PIPE_ARCH_BIG_ENDIAN
+#endif
+
+#elif defined(__APPLE__)
+#include <machine/endian.h>
+
+#if __DARWIN_BYTE_ORDER == __DARWIN_LITTLE_ENDIAN
+# define PIPE_ARCH_LITTLE_ENDIAN
+#elif __DARWIN_BYTE_ORDER == __DARWIN_BIG_ENDIAN
+# define PIPE_ARCH_BIG_ENDIAN
+#endif
+
+#elif defined(__sun)
+#include <sys/isa_defs.h>
+
+#if defined(_LITTLE_ENDIAN)
+# define PIPE_ARCH_LITTLE_ENDIAN
+#elif defined(_BIG_ENDIAN)
+# define PIPE_ARCH_BIG_ENDIAN
+#endif
+
+#else
+
 #if defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64)
 #define PIPE_ARCH_LITTLE_ENDIAN
 #elif defined(PIPE_ARCH_PPC) || defined(PIPE_ARCH_PPC_64)
 #define PIPE_ARCH_BIG_ENDIAN
-#else
-#define PIPE_ARCH_UNKNOWN_ENDIAN
 #endif
 
+#endif
 
-#if !defined(PIPE_OS_EMBEDDED)
+#if !defined(PIPE_ARCH_LITTLE_ENDIAN) && !defined(PIPE_ARCH_BIG_ENDIAN)
+#error Unknown Endianness
+#endif
 
 /*
  * Auto-detect the operating system family.
@@ -131,6 +161,14 @@
 #if defined(__linux__)
 #define PIPE_OS_LINUX
 #define PIPE_OS_UNIX
+#endif
+
+/*
+ * Android defines __linux__ so PIPE_OS_LINUX and PIPE_OS_UNIX will also be
+ * defined.
+ */
+#if defined(ANDROID)
+#define PIPE_OS_ANDROID
 #endif
 
 #if defined(__FreeBSD__)
@@ -191,24 +229,12 @@
 #endif /* PIPE_OS_LINUX || PIPE_OS_BSD || PIPE_OS_SOLARIS */
 
 #if defined(PIPE_OS_WINDOWS)
-#if defined(PIPE_SUBSYSTEM_WINDOWS_DISPLAY)
-/* Windows 2000/XP Display Driver */ 
-#elif defined(PIPE_SUBSYSTEM_WINDOWS_MINIPORT)
-/* Windows 2000/XP Miniport Driver */ 
-#elif defined(PIPE_SUBSYSTEM_WINDOWS_USER)
+#if defined(PIPE_SUBSYSTEM_WINDOWS_USER)
 /* Windows User-space Library */
-#elif defined(PIPE_SUBSYSTEM_WINDOWS_CE)
-/* Windows CE 5.0/6.0 */
 #else
-#ifdef _WIN32_WCE
-#define PIPE_SUBSYSTEM_WINDOWS_CE
-#else /* !_WIN32_WCE */
-#error No PIPE_SUBSYSTEM_WINDOWS_xxx subsystem defined. 
-#endif /* !_WIN32_WCE */
+#define PIPE_SUBSYSTEM_WINDOWS_USER
 #endif
 #endif /* PIPE_OS_WINDOWS */
-
-#endif /* !PIPE_OS_EMBEDDED */
 
 
 #endif /* P_CONFIG_H_ */

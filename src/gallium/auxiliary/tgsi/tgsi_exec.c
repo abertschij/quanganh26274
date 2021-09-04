@@ -62,7 +62,7 @@
 #include "util/u_math.h"
 
 
-#define FAST_MATH 1
+#define FAST_MATH 0
 
 #define TILE_TOP_LEFT     0
 #define TILE_TOP_RIGHT    1
@@ -375,6 +375,16 @@ micro_sgn(union tgsi_exec_channel *dst,
 }
 
 static void
+micro_isgn(union tgsi_exec_channel *dst,
+          const union tgsi_exec_channel *src)
+{
+   dst->i[0] = src->i[0] < 0 ? -1 : src->i[0] > 0 ? 1 : 0;
+   dst->i[1] = src->i[1] < 0 ? -1 : src->i[1] > 0 ? 1 : 0;
+   dst->i[2] = src->i[2] < 0 ? -1 : src->i[2] > 0 ? 1 : 0;
+   dst->i[3] = src->i[3] < 0 ? -1 : src->i[3] > 0 ? 1 : 0;
+}
+
+static void
 micro_sgt(union tgsi_exec_channel *dst,
           const union tgsi_exec_channel *src0,
           const union tgsi_exec_channel *src1)
@@ -429,6 +439,24 @@ micro_sne(union tgsi_exec_channel *dst,
 }
 
 static void
+micro_sfl(union tgsi_exec_channel *dst)
+{
+   dst->f[0] = 0.0f;
+   dst->f[1] = 0.0f;
+   dst->f[2] = 0.0f;
+   dst->f[3] = 0.0f;
+}
+
+static void
+micro_str(union tgsi_exec_channel *dst)
+{
+   dst->f[0] = 1.0f;
+   dst->f[1] = 1.0f;
+   dst->f[2] = 1.0f;
+   dst->f[3] = 1.0f;
+}
+
+static void
 micro_trunc(union tgsi_exec_channel *dst,
             const union tgsi_exec_channel *src)
 {
@@ -439,11 +467,6 @@ micro_trunc(union tgsi_exec_channel *dst,
 }
 
 
-#define CHAN_X  0
-#define CHAN_Y  1
-#define CHAN_Z  2
-#define CHAN_W  3
-
 enum tgsi_exec_datatype {
    TGSI_EXEC_DATA_FLOAT,
    TGSI_EXEC_DATA_INT,
@@ -453,50 +476,12 @@ enum tgsi_exec_datatype {
 /*
  * Shorthand locations of various utility registers (_I = Index, _C = Channel)
  */
-#define TEMP_0_I           TGSI_EXEC_TEMP_00000000_I
-#define TEMP_0_C           TGSI_EXEC_TEMP_00000000_C
-#define TEMP_7F_I          TGSI_EXEC_TEMP_7FFFFFFF_I
-#define TEMP_7F_C          TGSI_EXEC_TEMP_7FFFFFFF_C
-#define TEMP_80_I          TGSI_EXEC_TEMP_80000000_I
-#define TEMP_80_C          TGSI_EXEC_TEMP_80000000_C
-#define TEMP_FF_I          TGSI_EXEC_TEMP_FFFFFFFF_I
-#define TEMP_FF_C          TGSI_EXEC_TEMP_FFFFFFFF_C
-#define TEMP_1_I           TGSI_EXEC_TEMP_ONE_I
-#define TEMP_1_C           TGSI_EXEC_TEMP_ONE_C
-#define TEMP_2_I           TGSI_EXEC_TEMP_TWO_I
-#define TEMP_2_C           TGSI_EXEC_TEMP_TWO_C
-#define TEMP_128_I         TGSI_EXEC_TEMP_128_I
-#define TEMP_128_C         TGSI_EXEC_TEMP_128_C
-#define TEMP_M128_I        TGSI_EXEC_TEMP_MINUS_128_I
-#define TEMP_M128_C        TGSI_EXEC_TEMP_MINUS_128_C
 #define TEMP_KILMASK_I     TGSI_EXEC_TEMP_KILMASK_I
 #define TEMP_KILMASK_C     TGSI_EXEC_TEMP_KILMASK_C
 #define TEMP_OUTPUT_I      TGSI_EXEC_TEMP_OUTPUT_I
 #define TEMP_OUTPUT_C      TGSI_EXEC_TEMP_OUTPUT_C
 #define TEMP_PRIMITIVE_I   TGSI_EXEC_TEMP_PRIMITIVE_I
 #define TEMP_PRIMITIVE_C   TGSI_EXEC_TEMP_PRIMITIVE_C
-#define TEMP_CC_I          TGSI_EXEC_TEMP_CC_I
-#define TEMP_CC_C          TGSI_EXEC_TEMP_CC_C
-#define TEMP_3_I           TGSI_EXEC_TEMP_THREE_I
-#define TEMP_3_C           TGSI_EXEC_TEMP_THREE_C
-#define TEMP_HALF_I        TGSI_EXEC_TEMP_HALF_I
-#define TEMP_HALF_C        TGSI_EXEC_TEMP_HALF_C
-#define TEMP_R0            TGSI_EXEC_TEMP_R0
-#define TEMP_P0            TGSI_EXEC_TEMP_P0
-
-#define IS_CHANNEL_ENABLED(INST, CHAN)\
-   ((INST).Dst[0].Register.WriteMask & (1 << (CHAN)))
-
-#define IS_CHANNEL_ENABLED2(INST, CHAN)\
-   ((INST).Dst[1].Register.WriteMask & (1 << (CHAN)))
-
-#define FOR_EACH_ENABLED_CHANNEL(INST, CHAN)\
-   for (CHAN = 0; CHAN < NUM_CHANNELS; CHAN++)\
-      if (IS_CHANNEL_ENABLED( INST, CHAN ))
-
-#define FOR_EACH_ENABLED_CHANNEL2(INST, CHAN)\
-   for (CHAN = 0; CHAN < NUM_CHANNELS; CHAN++)\
-      if (IS_CHANNEL_ENABLED2( INST, CHAN ))
 
 
 /** The execution mask depends on the conditional mask and the loop mask */
@@ -509,6 +494,14 @@ static const union tgsi_exec_channel ZeroVec =
 
 static const union tgsi_exec_channel OneVec = {
    {1.0f, 1.0f, 1.0f, 1.0f}
+};
+
+static const union tgsi_exec_channel P128Vec = {
+   {128.0f, 128.0f, 128.0f, 128.0f}
+};
+
+static const union tgsi_exec_channel M128Vec = {
+   {-128.0f, -128.0f, -128.0f, -128.0f}
 };
 
 
@@ -572,8 +565,6 @@ tgsi_exec_set_constant_buffers(struct tgsi_exec_machine *mach,
 }
 
 
-
-
 /**
  * Check if there's a potential src/dst register data dependency when
  * using SOA execution.
@@ -607,18 +598,20 @@ tgsi_check_soa_dependencies(const struct tgsi_full_instruction *inst)
            inst->Dst[0].Register.File) &&
           ((inst->Src[i].Register.Index ==
             inst->Dst[0].Register.Index) ||
-	   inst->Src[i].Register.Indirect ||
-	   inst->Dst[0].Register.Indirect)) {
+           inst->Src[i].Register.Indirect ||
+           inst->Dst[0].Register.Indirect)) {
          /* loop over dest channels */
          uint channelsWritten = 0x0;
-         FOR_EACH_ENABLED_CHANNEL(*inst, chan) {
-            /* check if we're reading a channel that's been written */
-            uint swizzle = tgsi_util_get_full_src_register_swizzle(&inst->Src[i], chan);
-            if (channelsWritten & (1 << swizzle)) {
-               return TRUE;
-            }
+         for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+            if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+               /* check if we're reading a channel that's been written */
+               uint swizzle = tgsi_util_get_full_src_register_swizzle(&inst->Src[i], chan);
+               if (channelsWritten & (1 << swizzle)) {
+                  return TRUE;
+               }
 
-            channelsWritten |= (1 << chan);
+               channelsWritten |= (1 << chan);
+            }
          }
       }
    }
@@ -683,6 +676,34 @@ tgsi_exec_machine_bind_shader(
 
    mach->Processor = parse.FullHeader.Processor.Processor;
    mach->ImmLimit = 0;
+
+   if (mach->Processor == TGSI_PROCESSOR_GEOMETRY &&
+       !mach->UsedGeometryShader) {
+      struct tgsi_exec_vector *inputs;
+      struct tgsi_exec_vector *outputs;
+
+      inputs = align_malloc(sizeof(struct tgsi_exec_vector) *
+                            TGSI_MAX_PRIM_VERTICES * PIPE_MAX_ATTRIBS,
+                            16);
+
+      if (!inputs)
+         return;
+
+      outputs = align_malloc(sizeof(struct tgsi_exec_vector) *
+                             TGSI_MAX_TOTAL_VERTICES, 16);
+
+      if (!outputs) {
+         align_free(inputs);
+         return;
+      }
+
+      align_free(mach->Inputs);
+      align_free(mach->Outputs);
+
+      mach->Inputs = inputs;
+      mach->Outputs = outputs;
+      mach->UsedGeometryShader = TRUE;
+   }
 
    declarations = (struct tgsi_full_declaration *)
       MALLOC( maxDeclarations * sizeof(struct tgsi_full_declaration) );
@@ -813,18 +834,23 @@ tgsi_exec_machine_create( void )
    mach->MaxGeometryShaderOutputs = TGSI_MAX_TOTAL_VERTICES;
    mach->Predicates = &mach->Temps[TGSI_EXEC_TEMP_P0];
 
-   /* Setup constants. */
+   mach->Inputs = align_malloc(sizeof(struct tgsi_exec_vector) * PIPE_MAX_ATTRIBS, 16);
+   mach->Outputs = align_malloc(sizeof(struct tgsi_exec_vector) * PIPE_MAX_ATTRIBS, 16);
+   if (!mach->Inputs || !mach->Outputs)
+      goto fail;
+
+   /* Setup constants needed by the SSE2 executor. */
    for( i = 0; i < 4; i++ ) {
-      mach->Temps[TEMP_0_I].xyzw[TEMP_0_C].u[i] = 0x00000000;
-      mach->Temps[TEMP_7F_I].xyzw[TEMP_7F_C].u[i] = 0x7FFFFFFF;
-      mach->Temps[TEMP_80_I].xyzw[TEMP_80_C].u[i] = 0x80000000;
-      mach->Temps[TEMP_FF_I].xyzw[TEMP_FF_C].u[i] = 0xFFFFFFFF;
-      mach->Temps[TEMP_1_I].xyzw[TEMP_1_C].f[i] = 1.0f;
-      mach->Temps[TEMP_2_I].xyzw[TEMP_2_C].f[i] = 2.0f;
-      mach->Temps[TEMP_128_I].xyzw[TEMP_128_C].f[i] = 128.0f;
-      mach->Temps[TEMP_M128_I].xyzw[TEMP_M128_C].f[i] = -128.0f;
-      mach->Temps[TEMP_3_I].xyzw[TEMP_3_C].f[i] = 3.0f;
-      mach->Temps[TEMP_HALF_I].xyzw[TEMP_HALF_C].f[i] = 0.5f;
+      mach->Temps[TGSI_EXEC_TEMP_00000000_I].xyzw[TGSI_EXEC_TEMP_00000000_C].u[i] = 0x00000000;
+      mach->Temps[TGSI_EXEC_TEMP_7FFFFFFF_I].xyzw[TGSI_EXEC_TEMP_7FFFFFFF_C].u[i] = 0x7FFFFFFF;
+      mach->Temps[TGSI_EXEC_TEMP_80000000_I].xyzw[TGSI_EXEC_TEMP_80000000_C].u[i] = 0x80000000;
+      mach->Temps[TGSI_EXEC_TEMP_FFFFFFFF_I].xyzw[TGSI_EXEC_TEMP_FFFFFFFF_C].u[i] = 0xFFFFFFFF;    /* not used */
+      mach->Temps[TGSI_EXEC_TEMP_ONE_I].xyzw[TGSI_EXEC_TEMP_ONE_C].f[i] = 1.0f;
+      mach->Temps[TGSI_EXEC_TEMP_TWO_I].xyzw[TGSI_EXEC_TEMP_TWO_C].f[i] = 2.0f;    /* not used */
+      mach->Temps[TGSI_EXEC_TEMP_128_I].xyzw[TGSI_EXEC_TEMP_128_C].f[i] = 128.0f;
+      mach->Temps[TGSI_EXEC_TEMP_MINUS_128_I].xyzw[TGSI_EXEC_TEMP_MINUS_128_C].f[i] = -128.0f;
+      mach->Temps[TGSI_EXEC_TEMP_THREE_I].xyzw[TGSI_EXEC_TEMP_THREE_C].f[i] = 3.0f;
+      mach->Temps[TGSI_EXEC_TEMP_HALF_I].xyzw[TGSI_EXEC_TEMP_HALF_C].f[i] = 0.5f;
    }
 
 #ifdef DEBUG
@@ -836,7 +862,11 @@ tgsi_exec_machine_create( void )
    return mach;
 
 fail:
-   align_free(mach);
+   if (mach) {
+      align_free(mach->Inputs);
+      align_free(mach->Outputs);
+      align_free(mach);
+   }
    return NULL;
 }
 
@@ -848,10 +878,13 @@ tgsi_exec_machine_destroy(struct tgsi_exec_machine *mach)
       if (mach->Instructions)
          FREE(mach->Instructions);
       if (mach->Declarations)
-      FREE(mach->Declarations);
-   }
+         FREE(mach->Declarations);
 
-   align_free(mach);
+      align_free(mach->Inputs);
+      align_free(mach->Outputs);
+
+      align_free(mach);
+   }
 }
 
 static void
@@ -886,27 +919,35 @@ micro_div(
 }
 
 static void
-micro_float_clamp(union tgsi_exec_channel *dst,
-                  const union tgsi_exec_channel *src)
+micro_rcc(union tgsi_exec_channel *dst,
+          const union tgsi_exec_channel *src)
 {
    uint i;
 
    for (i = 0; i < 4; i++) {
-      if (src->f[i] > 0.0f) {
-         if (src->f[i] > 1.884467e+019f)
+      float recip = 1.0f / src->f[i];
+
+      if (recip > 0.0f) {
+         if (recip > 1.884467e+019f) {
             dst->f[i] = 1.884467e+019f;
-         else if (src->f[i] < 5.42101e-020f)
+         }
+         else if (recip < 5.42101e-020f) {
             dst->f[i] = 5.42101e-020f;
-         else
-            dst->f[i] = src->f[i];
+         }
+         else {
+            dst->f[i] = recip;
+         }
       }
       else {
-         if (src->f[i] < -1.884467e+019f)
+         if (recip < -1.884467e+019f) {
             dst->f[i] = -1.884467e+019f;
-         else if (src->f[i] > -5.42101e-020f)
+         }
+         else if (recip > -5.42101e-020f) {
             dst->f[i] = -5.42101e-020f;
-         else
-            dst->f[i] = src->f[i];
+         }
+         else {
+            dst->f[i] = recip;
+         }
       }
    }
 }
@@ -958,60 +999,6 @@ micro_mul(union tgsi_exec_channel *dst,
    dst->f[3] = src0->f[3] * src1->f[3];
 }
 
-#if 0
-static void
-micro_imul64(
-   union tgsi_exec_channel *dst0,
-   union tgsi_exec_channel *dst1,
-   const union tgsi_exec_channel *src0,
-   const union tgsi_exec_channel *src1 )
-{
-   dst1->i[0] = src0->i[0] * src1->i[0];
-   dst1->i[1] = src0->i[1] * src1->i[1];
-   dst1->i[2] = src0->i[2] * src1->i[2];
-   dst1->i[3] = src0->i[3] * src1->i[3];
-   dst0->i[0] = 0;
-   dst0->i[1] = 0;
-   dst0->i[2] = 0;
-   dst0->i[3] = 0;
-}
-#endif
-
-#if 0
-static void
-micro_umul64(
-   union tgsi_exec_channel *dst0,
-   union tgsi_exec_channel *dst1,
-   const union tgsi_exec_channel *src0,
-   const union tgsi_exec_channel *src1 )
-{
-   dst1->u[0] = src0->u[0] * src1->u[0];
-   dst1->u[1] = src0->u[1] * src1->u[1];
-   dst1->u[2] = src0->u[2] * src1->u[2];
-   dst1->u[3] = src0->u[3] * src1->u[3];
-   dst0->u[0] = 0;
-   dst0->u[1] = 0;
-   dst0->u[2] = 0;
-   dst0->u[3] = 0;
-}
-#endif
-
-
-#if 0
-static void
-micro_movc(
-   union tgsi_exec_channel *dst,
-   const union tgsi_exec_channel *src0,
-   const union tgsi_exec_channel *src1,
-   const union tgsi_exec_channel *src2 )
-{
-   dst->u[0] = src0->u[0] ? src1->u[0] : src2->u[0];
-   dst->u[1] = src0->u[1] ? src1->u[1] : src2->u[1];
-   dst->u[2] = src0->u[2] ? src1->u[2] : src2->u[2];
-   dst->u[3] = src0->u[3] ? src1->u[3] : src2->u[3];
-}
-#endif
-
 static void
 micro_neg(
    union tgsi_exec_channel *dst,
@@ -1055,6 +1042,7 @@ micro_sub(union tgsi_exec_channel *dst,
 
 static void
 fetch_src_file_channel(const struct tgsi_exec_machine *mach,
+                       const uint chan_index,
                        const uint file,
                        const uint swizzle,
                        const union tgsi_exec_channel *index,
@@ -1067,7 +1055,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
 
    switch (file) {
    case TGSI_FILE_CONSTANT:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index2D->i[i] >= 0 && index2D->i[i] < PIPE_MAX_CONSTANT_BUFFERS);
          assert(mach->Consts[index2D->i[i]]);
 
@@ -1096,8 +1084,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
       break;
 
    case TGSI_FILE_INPUT:
-   case TGSI_FILE_SYSTEM_VALUE:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          /*
          if (TGSI_PROCESSOR_GEOMETRY == mach->Processor) {
             debug_printf("Fetching Input[%d] (2d=%d, 1d=%d)\n",
@@ -1106,13 +1093,22 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
                          }*/
          int pos = index2D->i[i] * TGSI_EXEC_MAX_INPUT_ATTRIBS + index->i[i];
          assert(pos >= 0);
-         assert(pos < Elements(mach->Inputs));
+         assert(pos < TGSI_MAX_PRIM_VERTICES * PIPE_MAX_ATTRIBS);
          chan->u[i] = mach->Inputs[pos].xyzw[swizzle].u[i];
       }
       break;
 
+   case TGSI_FILE_SYSTEM_VALUE:
+      /* XXX no swizzling at this point.  Will be needed if we put
+       * gl_FragCoord, for example, in a sys value register.
+       */
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
+         chan->u[i] = mach->SystemValue[index->i[i]].u[i];
+      }
+      break;
+
    case TGSI_FILE_TEMPORARY:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index->i[i] < TGSI_EXEC_NUM_TEMPS);
          assert(index2D->i[i] == 0);
 
@@ -1121,7 +1117,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
       break;
 
    case TGSI_FILE_TEMPORARY_ARRAY:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index->i[i] < TGSI_EXEC_NUM_TEMPS);
          assert(index2D->i[i] < TGSI_EXEC_NUM_TEMP_ARRAYS);
 
@@ -1131,7 +1127,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
       break;
 
    case TGSI_FILE_IMMEDIATE:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index->i[i] >= 0 && index->i[i] < (int)mach->ImmLimit);
          assert(index2D->i[i] == 0);
 
@@ -1140,7 +1136,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
       break;
 
    case TGSI_FILE_IMMEDIATE_ARRAY:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index2D->i[i] == 0);
 
          chan->f[i] = mach->ImmArray[index->i[i]][swizzle];
@@ -1148,7 +1144,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
       break;
 
    case TGSI_FILE_ADDRESS:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index->i[i] >= 0);
          assert(index2D->i[i] == 0);
 
@@ -1157,7 +1153,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
       break;
 
    case TGSI_FILE_PREDICATE:
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index->i[i] >= 0 && index->i[i] < TGSI_EXEC_NUM_PREDS);
          assert(index2D->i[i] == 0);
 
@@ -1167,7 +1163,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
 
    case TGSI_FILE_OUTPUT:
       /* vertex/fragment output vars can be read too */
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          assert(index->i[i] >= 0);
          assert(index2D->i[i] == 0);
 
@@ -1177,7 +1173,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
 
    default:
       assert(0);
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          chan->u[i] = 0;
       }
    }
@@ -1229,8 +1225,9 @@ fetch_source(const struct tgsi_exec_machine *mach,
       index2.i[3] = reg->Indirect.Index;
       assert(reg->Indirect.File == TGSI_FILE_ADDRESS);
       /* get current value of address register[swizzle] */
-      swizzle = tgsi_util_get_src_register_swizzle( &reg->Indirect, CHAN_X );
+      swizzle = tgsi_util_get_src_register_swizzle( &reg->Indirect, TGSI_CHAN_X );
       fetch_src_file_channel(mach,
+                             chan_index,
                              reg->Indirect.File,
                              swizzle,
                              &index2,
@@ -1246,7 +1243,7 @@ fetch_source(const struct tgsi_exec_machine *mach,
       /* for disabled execution channels, zero-out the index to
        * avoid using a potential garbage value.
        */
-      for (i = 0; i < QUAD_SIZE; i++) {
+      for (i = 0; i < TGSI_QUAD_SIZE; i++) {
          if ((execmask & (1 << i)) == 0)
             index.i[i] = 0;
       }
@@ -1288,8 +1285,9 @@ fetch_source(const struct tgsi_exec_machine *mach,
          index2.i[2] =
          index2.i[3] = reg->DimIndirect.Index;
 
-         swizzle = tgsi_util_get_src_register_swizzle( &reg->DimIndirect, CHAN_X );
+         swizzle = tgsi_util_get_src_register_swizzle( &reg->DimIndirect, TGSI_CHAN_X );
          fetch_src_file_channel(mach,
+                                chan_index,
                                 reg->DimIndirect.File,
                                 swizzle,
                                 &index2,
@@ -1304,7 +1302,7 @@ fetch_source(const struct tgsi_exec_machine *mach,
          /* for disabled execution channels, zero-out the index to
           * avoid using a potential garbage value.
           */
-         for (i = 0; i < QUAD_SIZE; i++) {
+         for (i = 0; i < TGSI_QUAD_SIZE; i++) {
             if ((execmask & (1 << i)) == 0) {
                index2D.i[i] = 0;
             }
@@ -1324,6 +1322,7 @@ fetch_source(const struct tgsi_exec_machine *mach,
 
    swizzle = tgsi_util_get_full_src_register_swizzle( reg, chan_index );
    fetch_src_file_channel(mach,
+                          chan_index,
                           reg->Register.File,
                           swizzle,
                           &index,
@@ -1390,10 +1389,11 @@ store_dest(struct tgsi_exec_machine *mach,
       index.i[3] = reg->Indirect.Index;
 
       /* get current value of address register[swizzle] */
-      swizzle = tgsi_util_get_src_register_swizzle( &reg->Indirect, CHAN_X );
+      swizzle = tgsi_util_get_src_register_swizzle( &reg->Indirect, TGSI_CHAN_X );
 
       /* fetch values from the address/indirection register */
       fetch_src_file_channel(mach,
+                             chan_index,
                              reg->Indirect.File,
                              swizzle,
                              &index,
@@ -1441,8 +1441,9 @@ store_dest(struct tgsi_exec_machine *mach,
          index2.i[2] =
          index2.i[3] = reg->DimIndirect.Index;
 
-         swizzle = tgsi_util_get_src_register_swizzle( &reg->DimIndirect, CHAN_X );
+         swizzle = tgsi_util_get_src_register_swizzle( &reg->DimIndirect, TGSI_CHAN_X );
          fetch_src_file_channel(mach,
+                                chan_index,
                                 reg->DimIndirect.File,
                                 swizzle,
                                 &index2,
@@ -1457,7 +1458,7 @@ store_dest(struct tgsi_exec_machine *mach,
          /* for disabled execution channels, zero-out the index to
           * avoid using a potential garbage value.
           */
-         for (i = 0; i < QUAD_SIZE; i++) {
+         for (i = 0; i < TGSI_QUAD_SIZE; i++) {
             if ((execmask & (1 << i)) == 0) {
                index2D.i[i] = 0;
             }
@@ -1487,7 +1488,7 @@ store_dest(struct tgsi_exec_machine *mach,
 #if 0
       if (TGSI_PROCESSOR_GEOMETRY == mach->Processor) {
          fprintf(stderr, "STORING OUT[%d] mask(%d), = (", offset + index, execmask);
-         for (i = 0; i < QUAD_SIZE; i++)
+         for (i = 0; i < TGSI_QUAD_SIZE; i++)
             if (execmask & (1 << i))
                fprintf(stderr, "%f, ", chan->f[i]);
          fprintf(stderr, ")\n");
@@ -1532,16 +1533,16 @@ store_dest(struct tgsi_exec_machine *mach,
       union tgsi_exec_channel *pred;
 
       switch (chan_index) {
-      case CHAN_X:
+      case TGSI_CHAN_X:
          swizzle = inst->Predicate.SwizzleX;
          break;
-      case CHAN_Y:
+      case TGSI_CHAN_Y:
          swizzle = inst->Predicate.SwizzleY;
          break;
-      case CHAN_Z:
+      case TGSI_CHAN_Z:
          swizzle = inst->Predicate.SwizzleZ;
          break;
-      case CHAN_W:
+      case TGSI_CHAN_W:
          swizzle = inst->Predicate.SwizzleW;
          break;
       default:
@@ -1554,13 +1555,13 @@ store_dest(struct tgsi_exec_machine *mach,
       pred = &mach->Predicates[inst->Predicate.Index].xyzw[swizzle];
 
       if (inst->Predicate.Negate) {
-         for (i = 0; i < QUAD_SIZE; i++) {
+         for (i = 0; i < TGSI_QUAD_SIZE; i++) {
             if (pred->u[i]) {
                execmask &= ~(1 << i);
             }
          }
       } else {
-         for (i = 0; i < QUAD_SIZE; i++) {
+         for (i = 0; i < TGSI_QUAD_SIZE; i++) {
             if (!pred->u[i]) {
                execmask &= ~(1 << i);
             }
@@ -1570,13 +1571,13 @@ store_dest(struct tgsi_exec_machine *mach,
 
    switch (inst->Instruction.Saturate) {
    case TGSI_SAT_NONE:
-      for (i = 0; i < QUAD_SIZE; i++)
+      for (i = 0; i < TGSI_QUAD_SIZE; i++)
          if (execmask & (1 << i))
             dst->i[i] = chan->i[i];
       break;
 
    case TGSI_SAT_ZERO_ONE:
-      for (i = 0; i < QUAD_SIZE; i++)
+      for (i = 0; i < TGSI_QUAD_SIZE; i++)
          if (execmask & (1 << i)) {
             if (chan->f[i] < 0.0f)
                dst->f[i] = 0.0f;
@@ -1588,7 +1589,7 @@ store_dest(struct tgsi_exec_machine *mach,
       break;
 
    case TGSI_SAT_MINUS_PLUS_ONE:
-      for (i = 0; i < QUAD_SIZE; i++)
+      for (i = 0; i < TGSI_QUAD_SIZE; i++)
          if (execmask & (1 << i)) {
             if (chan->f[i] < -1.0f)
                dst->f[i] = -1.0f;
@@ -1607,8 +1608,8 @@ store_dest(struct tgsi_exec_machine *mach,
 #define FETCH(VAL,INDEX,CHAN)\
     fetch_source(mach, VAL, &inst->Src[INDEX], CHAN, TGSI_EXEC_DATA_FLOAT)
 
-#define STORE(VAL,INDEX,CHAN)\
-   store_dest(mach, VAL, &inst->Dst[INDEX], inst, CHAN, TGSI_EXEC_DATA_FLOAT)
+#define IFETCH(VAL,INDEX,CHAN)\
+    fetch_source(mach, VAL, &inst->Src[INDEX], CHAN, TGSI_EXEC_DATA_INT)
 
 
 /**
@@ -1671,7 +1672,7 @@ emit_vertex(struct tgsi_exec_machine *mach)
 {
    /* FIXME: check for exec mask correctly
    unsigned i;
-   for (i = 0; i < QUAD_SIZE; ++i) {
+   for (i = 0; i < TGSI_QUAD_SIZE; ++i) {
          if ((mach->ExecMask & (1 << i)))
    */
    if (mach->ExecMask) {
@@ -1686,7 +1687,7 @@ emit_primitive(struct tgsi_exec_machine *mach)
    unsigned *prim_count = &mach->Temps[TEMP_PRIMITIVE_I].xyzw[TEMP_PRIMITIVE_C].u[0];
    /* FIXME: check for exec mask correctly
    unsigned i;
-   for (i = 0; i < QUAD_SIZE; ++i) {
+   for (i = 0; i < TGSI_QUAD_SIZE; ++i) {
          if ((mach->ExecMask & (1 << i)))
    */
    if (mach->ExecMask) {
@@ -1725,7 +1726,7 @@ fetch_texel( struct tgsi_sampler *sampler,
              union tgsi_exec_channel *a )
 {
    uint j;
-   float rgba[NUM_CHANNELS][QUAD_SIZE];
+   float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE];
 
    sampler->get_samples(sampler, s->f, t->f, p->f, c0->f, control, rgba);
 
@@ -1753,10 +1754,10 @@ exec_tex(struct tgsi_exec_machine *mach,
    union tgsi_exec_channel r[4];
    const union tgsi_exec_channel *lod = &ZeroVec;
    enum tgsi_sampler_control control;
-   uint chan_index;
+   uint chan;
 
    if (modifier != TEX_MODIFIER_NONE) {
-      FETCH(&r[3], 0, CHAN_W);
+      FETCH(&r[3], 0, TGSI_CHAN_W);
       if (modifier != TEX_MODIFIER_PROJECTED) {
          lod = &r[3];
       }
@@ -1770,8 +1771,7 @@ exec_tex(struct tgsi_exec_machine *mach,
 
    switch (inst->Texture.Texture) {
    case TGSI_TEXTURE_1D:
-   case TGSI_TEXTURE_SHADOW1D:
-      FETCH(&r[0], 0, CHAN_X);
+      FETCH(&r[0], 0, TGSI_CHAN_X);
 
       if (modifier == TEX_MODIFIER_PROJECTED) {
          micro_div(&r[0], &r[0], &r[3]);
@@ -1782,14 +1782,27 @@ exec_tex(struct tgsi_exec_machine *mach,
                   control,
                   &r[0], &r[1], &r[2], &r[3]);     /* R, G, B, A */
       break;
+   case TGSI_TEXTURE_SHADOW1D:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+
+      if (modifier == TEX_MODIFIER_PROJECTED) {
+         micro_div(&r[0], &r[0], &r[3]);
+      }
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &ZeroVec, &r[2], lod,  /* S, T, P, LOD */
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);     /* R, G, B, A */
+      break;
 
    case TGSI_TEXTURE_2D:
    case TGSI_TEXTURE_RECT:
    case TGSI_TEXTURE_SHADOW2D:
    case TGSI_TEXTURE_SHADOWRECT:
-      FETCH(&r[0], 0, CHAN_X);
-      FETCH(&r[1], 0, CHAN_Y);
-      FETCH(&r[2], 0, CHAN_Z);
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
 
       if (modifier == TEX_MODIFIER_PROJECTED) {
          micro_div(&r[0], &r[0], &r[3]);
@@ -1803,11 +1816,66 @@ exec_tex(struct tgsi_exec_machine *mach,
                   &r[0], &r[1], &r[2], &r[3]);  /* outputs */
       break;
 
+   case TGSI_TEXTURE_1D_ARRAY:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+
+      if (modifier == TEX_MODIFIER_PROJECTED) {
+         micro_div(&r[0], &r[0], &r[3]);
+      }
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &r[1], &ZeroVec, lod,     /* S, T, P, LOD */
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);  /* outputs */
+      break;
+   case TGSI_TEXTURE_SHADOW1D_ARRAY:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+
+      if (modifier == TEX_MODIFIER_PROJECTED) {
+         micro_div(&r[0], &r[0], &r[3]);
+      }
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &r[1], &r[2], lod,     /* S, T, P, LOD */
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);  /* outputs */
+      break;
+
+   case TGSI_TEXTURE_2D_ARRAY:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+
+      if (modifier == TEX_MODIFIER_PROJECTED) {
+         micro_div(&r[0], &r[0], &r[3]);
+         micro_div(&r[1], &r[1], &r[3]);
+      }
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &r[1], &r[2], lod,     /* S, T, P, LOD */
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);  /* outputs */
+      break;
+   case TGSI_TEXTURE_SHADOW2D_ARRAY:
+   case TGSI_TEXTURE_SHADOWCUBE:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+      FETCH(&r[3], 0, TGSI_CHAN_W);
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &r[1], &r[2], &r[3],     /* S, T, P, LOD */
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);  /* outputs */
+      break;
    case TGSI_TEXTURE_3D:
    case TGSI_TEXTURE_CUBE:
-      FETCH(&r[0], 0, CHAN_X);
-      FETCH(&r[1], 0, CHAN_Y);
-      FETCH(&r[2], 0, CHAN_Z);
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
 
       if (modifier == TEX_MODIFIER_PROJECTED) {
          micro_div(&r[0], &r[0], &r[3]);
@@ -1825,8 +1893,21 @@ exec_tex(struct tgsi_exec_machine *mach,
       assert(0);
    }
 
-   FOR_EACH_ENABLED_CHANNEL(*inst, chan_index) {
-      STORE(&r[chan_index], 0, chan_index);
+#if 0
+   debug_printf("fetch r: %g %g %g %g\n",
+         r[0].f[0], r[0].f[1], r[0].f[2], r[0].f[3]);
+   debug_printf("fetch g: %g %g %g %g\n",
+         r[1].f[0], r[1].f[1], r[1].f[2], r[1].f[3]);
+   debug_printf("fetch b: %g %g %g %g\n",
+         r[2].f[0], r[2].f[1], r[2].f[2], r[2].f[3]);
+   debug_printf("fetch a: %g %g %g %g\n",
+         r[3].f[0], r[3].f[1], r[3].f[2], r[3].f[3]);
+#endif
+
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+         store_dest(mach, &r[chan], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
+      }
    }
 }
 
@@ -1836,7 +1917,7 @@ exec_txd(struct tgsi_exec_machine *mach,
 {
    const uint unit = inst->Src[3].Register.Index;
    union tgsi_exec_channel r[4];
-   uint chan_index;
+   uint chan;
 
    /*
     * XXX: This is fake TXD -- the derivatives are not taken into account, yet.
@@ -1846,9 +1927,301 @@ exec_txd(struct tgsi_exec_machine *mach,
    case TGSI_TEXTURE_1D:
    case TGSI_TEXTURE_SHADOW1D:
 
-      FETCH(&r[0], 0, CHAN_X);
+      FETCH(&r[0], 0, TGSI_CHAN_X);
 
       fetch_texel(mach->Samplers[unit],
+                  &r[0], &ZeroVec, &ZeroVec, &ZeroVec,   /* S, T, P, BIAS */
+                  tgsi_sampler_lod_bias,
+                  &r[0], &r[1], &r[2], &r[3]);           /* R, G, B, A */
+      break;
+
+   case TGSI_TEXTURE_1D_ARRAY:
+   case TGSI_TEXTURE_2D:
+   case TGSI_TEXTURE_RECT:
+   case TGSI_TEXTURE_SHADOW1D_ARRAY:
+   case TGSI_TEXTURE_SHADOW2D:
+   case TGSI_TEXTURE_SHADOWRECT:
+
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &r[1], &r[2], &ZeroVec,   /* inputs */
+                  tgsi_sampler_lod_bias,
+                  &r[0], &r[1], &r[2], &r[3]);     /* outputs */
+      break;
+
+   case TGSI_TEXTURE_2D_ARRAY:
+   case TGSI_TEXTURE_3D:
+   case TGSI_TEXTURE_CUBE:
+
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &r[1], &r[2], &ZeroVec,
+                  tgsi_sampler_lod_bias,
+                  &r[0], &r[1], &r[2], &r[3]);
+      break;
+
+   case TGSI_TEXTURE_SHADOW2D_ARRAY:
+
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+      FETCH(&r[3], 0, TGSI_CHAN_W);
+
+      fetch_texel(mach->Samplers[unit],
+                  &r[0], &r[1], &r[2], &r[3],
+                  tgsi_sampler_lod_bias,
+                  &r[0], &r[1], &r[2], &r[3]);
+      break;
+
+   default:
+      assert(0);
+   }
+
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+         store_dest(mach, &r[chan], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
+      }
+   }
+}
+
+
+static void
+exec_txf(struct tgsi_exec_machine *mach,
+	 const struct tgsi_full_instruction *inst)
+{
+   struct tgsi_sampler *sampler;
+   const uint unit = inst->Src[2].Register.Index;
+   union tgsi_exec_channel r[4];
+   union tgsi_exec_channel offset[3];
+   uint chan;
+   float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE];
+   int j;
+   int8_t offsets[3];
+
+   if (inst->Texture.NumOffsets == 1) {
+      union tgsi_exec_channel index;
+      index.i[0] = index.i[1] = index.i[2] = index.i[3] = inst->TexOffsets[0].Index;
+      fetch_src_file_channel(mach, 0, inst->TexOffsets[0].File,
+                             inst->TexOffsets[0].SwizzleX, &index, &ZeroVec, &offset[0]);
+      fetch_src_file_channel(mach, 0, inst->TexOffsets[0].File,
+                             inst->TexOffsets[0].SwizzleY, &index, &ZeroVec, &offset[1]);
+      fetch_src_file_channel(mach, 0, inst->TexOffsets[0].File,
+                             inst->TexOffsets[0].SwizzleZ, &index, &ZeroVec, &offset[2]);
+     offsets[0] = offset[0].i[0];
+     offsets[1] = offset[1].i[0];
+     offsets[2] = offset[2].i[0];
+   } else
+     offsets[0] = offsets[1] = offsets[2] = 0;
+
+   IFETCH(&r[3], 0, TGSI_CHAN_W);
+
+   switch(inst->Texture.Texture) {
+   case TGSI_TEXTURE_3D:
+   case TGSI_TEXTURE_2D_ARRAY:
+   case TGSI_TEXTURE_SHADOW2D_ARRAY:
+      IFETCH(&r[2], 0, TGSI_CHAN_Z);
+      /* fallthrough */
+   case TGSI_TEXTURE_2D:
+   case TGSI_TEXTURE_RECT:
+   case TGSI_TEXTURE_SHADOW1D_ARRAY:
+   case TGSI_TEXTURE_SHADOW2D:
+   case TGSI_TEXTURE_SHADOWRECT:
+   case TGSI_TEXTURE_1D_ARRAY:
+      IFETCH(&r[1], 0, TGSI_CHAN_Y);
+      /* fallthrough */
+   case TGSI_TEXTURE_1D:
+   case TGSI_TEXTURE_SHADOW1D:
+      IFETCH(&r[0], 0, TGSI_CHAN_X);
+      break;
+   default:
+      assert(0);
+      break;
+   }      
+
+   sampler = mach->Samplers[unit];
+   sampler->get_texel(sampler, r[0].i, r[1].i, r[2].i, r[3].i,
+		      offsets, rgba);
+
+   for (j = 0; j < TGSI_QUAD_SIZE; j++) {
+      r[0].f[j] = rgba[0][j];
+      r[1].f[j] = rgba[1][j];
+      r[2].f[j] = rgba[2][j];
+      r[3].f[j] = rgba[3][j];
+   }
+
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+         store_dest(mach, &r[chan], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
+      }
+   }
+}
+
+static void
+exec_txq(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   struct tgsi_sampler *sampler;
+   const uint unit = inst->Src[1].Register.Index;
+   int result[4];
+   union tgsi_exec_channel r[4], src;
+   uint chan;
+   int i,j;
+
+   fetch_source(mach, &src, &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_INT);
+   sampler = mach->Samplers[unit];
+
+   sampler->get_dims(sampler, src.i[0], result);
+
+   for (i = 0; i < TGSI_QUAD_SIZE; i++) {
+      for (j = 0; j < 4; j++) {
+	 r[j].i[i] = result[j];
+      }
+   }
+
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+	 store_dest(mach, &r[chan], &inst->Dst[0], inst, chan,
+		    TGSI_EXEC_DATA_INT);
+      }
+   }
+}
+
+static void
+exec_sample(struct tgsi_exec_machine *mach,
+            const struct tgsi_full_instruction *inst,
+            uint modifier)
+{
+   const uint resource_unit = inst->Src[1].Register.Index;
+   const uint sampler_unit = inst->Src[2].Register.Index;
+   union tgsi_exec_channel r[4];
+   const union tgsi_exec_channel *lod = &ZeroVec;
+   enum tgsi_sampler_control control;
+   uint chan;
+
+   if (modifier != TEX_MODIFIER_NONE) {
+      if (modifier == TEX_MODIFIER_LOD_BIAS)
+         FETCH(&r[3], 3, TGSI_CHAN_X);
+      else /*TEX_MODIFIER_LOD*/
+         FETCH(&r[3], 0, TGSI_CHAN_W);
+
+      if (modifier != TEX_MODIFIER_PROJECTED) {
+         lod = &r[3];
+      }
+   }
+
+   if (modifier == TEX_MODIFIER_EXPLICIT_LOD) {
+      control = tgsi_sampler_lod_explicit;
+   } else {
+      control = tgsi_sampler_lod_bias;
+   }
+
+   switch (mach->SamplerViews[resource_unit].Resource) {
+   case TGSI_TEXTURE_1D:
+   case TGSI_TEXTURE_SHADOW1D:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+
+      if (modifier == TEX_MODIFIER_PROJECTED) {
+         micro_div(&r[0], &r[0], &r[3]);
+      }
+
+      fetch_texel(mach->Samplers[sampler_unit],
+                  &r[0], &ZeroVec, &ZeroVec, lod,  /* S, T, P, LOD */
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);     /* R, G, B, A */
+      break;
+
+   case TGSI_TEXTURE_1D_ARRAY:
+   case TGSI_TEXTURE_2D:
+   case TGSI_TEXTURE_RECT:
+   case TGSI_TEXTURE_SHADOW1D_ARRAY:
+   case TGSI_TEXTURE_SHADOW2D:
+   case TGSI_TEXTURE_SHADOWRECT:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+
+      if (modifier == TEX_MODIFIER_PROJECTED) {
+         micro_div(&r[0], &r[0], &r[3]);
+         micro_div(&r[1], &r[1], &r[3]);
+         micro_div(&r[2], &r[2], &r[3]);
+      }
+
+      fetch_texel(mach->Samplers[sampler_unit],
+                  &r[0], &r[1], &r[2], lod,     /* S, T, P, LOD */
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);  /* outputs */
+      break;
+
+   case TGSI_TEXTURE_2D_ARRAY:
+   case TGSI_TEXTURE_3D:
+   case TGSI_TEXTURE_CUBE:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+
+      if (modifier == TEX_MODIFIER_PROJECTED) {
+         micro_div(&r[0], &r[0], &r[3]);
+         micro_div(&r[1], &r[1], &r[3]);
+         micro_div(&r[2], &r[2], &r[3]);
+      }
+
+      fetch_texel(mach->Samplers[sampler_unit],
+                  &r[0], &r[1], &r[2], lod,
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);
+      break;
+
+   case TGSI_TEXTURE_SHADOW2D_ARRAY:
+   case TGSI_TEXTURE_SHADOWCUBE:
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
+      FETCH(&r[3], 0, TGSI_CHAN_W);
+
+      assert(modifier != TEX_MODIFIER_PROJECTED);
+
+      fetch_texel(mach->Samplers[sampler_unit],
+                  &r[0], &r[1], &r[2], &r[3],
+                  control,
+                  &r[0], &r[1], &r[2], &r[3]);
+      break;
+
+   default:
+      assert(0);
+   }
+
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+         store_dest(mach, &r[chan], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
+      }
+   }
+}
+
+static void
+exec_sample_d(struct tgsi_exec_machine *mach,
+              const struct tgsi_full_instruction *inst)
+{
+   const uint resource_unit = inst->Src[1].Register.Index;
+   const uint sampler_unit = inst->Src[2].Register.Index;
+   union tgsi_exec_channel r[4];
+   uint chan;
+   /*
+    * XXX: This is fake SAMPLE_D -- the derivatives are not taken into account, yet.
+    */
+
+   switch (mach->SamplerViews[resource_unit].Resource) {
+   case TGSI_TEXTURE_1D:
+   case TGSI_TEXTURE_SHADOW1D:
+
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+
+      fetch_texel(mach->Samplers[sampler_unit],
                   &r[0], &ZeroVec, &ZeroVec, &ZeroVec,   /* S, T, P, BIAS */
                   tgsi_sampler_lod_bias,
                   &r[0], &r[1], &r[2], &r[3]);           /* R, G, B, A */
@@ -1859,11 +2232,11 @@ exec_txd(struct tgsi_exec_machine *mach,
    case TGSI_TEXTURE_SHADOW2D:
    case TGSI_TEXTURE_SHADOWRECT:
 
-      FETCH(&r[0], 0, CHAN_X);
-      FETCH(&r[1], 0, CHAN_Y);
-      FETCH(&r[2], 0, CHAN_Z);
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
 
-      fetch_texel(mach->Samplers[unit],
+      fetch_texel(mach->Samplers[sampler_unit],
                   &r[0], &r[1], &r[2], &ZeroVec,   /* inputs */
                   tgsi_sampler_lod_bias,
                   &r[0], &r[1], &r[2], &r[3]);     /* outputs */
@@ -1872,11 +2245,11 @@ exec_txd(struct tgsi_exec_machine *mach,
    case TGSI_TEXTURE_3D:
    case TGSI_TEXTURE_CUBE:
 
-      FETCH(&r[0], 0, CHAN_X);
-      FETCH(&r[1], 0, CHAN_Y);
-      FETCH(&r[2], 0, CHAN_Z);
+      FETCH(&r[0], 0, TGSI_CHAN_X);
+      FETCH(&r[1], 0, TGSI_CHAN_Y);
+      FETCH(&r[2], 0, TGSI_CHAN_Z);
 
-      fetch_texel(mach->Samplers[unit],
+      fetch_texel(mach->Samplers[sampler_unit],
                   &r[0], &r[1], &r[2], &ZeroVec,
                   tgsi_sampler_lod_bias,
                   &r[0], &r[1], &r[2], &r[3]);
@@ -1886,8 +2259,10 @@ exec_txd(struct tgsi_exec_machine *mach,
       assert(0);
    }
 
-   FOR_EACH_ENABLED_CHANNEL(*inst, chan_index) {
-      STORE(&r[chan_index], 0, chan_index);
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+         store_dest(mach, &r[chan], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
+      }
    }
 }
 
@@ -1904,7 +2279,7 @@ eval_constant_coef(
 {
    unsigned i;
 
-   for( i = 0; i < QUAD_SIZE; i++ ) {
+   for( i = 0; i < TGSI_QUAD_SIZE; i++ ) {
       mach->Inputs[attrib].xyzw[chan].f[i] = mach->InterpCoefs[attrib].a0[chan];
    }
 }
@@ -1963,9 +2338,13 @@ static void
 exec_declaration(struct tgsi_exec_machine *mach,
                  const struct tgsi_full_declaration *decl)
 {
+   if (decl->Declaration.File == TGSI_FILE_SAMPLER_VIEW) {
+      mach->SamplerViews[decl->Range.First] = decl->SamplerView;
+      return;
+   }
+
    if (mach->Processor == TGSI_PROCESSOR_FRAGMENT) {
-      if (decl->Declaration.File == TGSI_FILE_INPUT ||
-          decl->Declaration.File == TGSI_FILE_SYSTEM_VALUE) {
+      if (decl->Declaration.File == TGSI_FILE_INPUT) {
          uint first, last, mask;
 
          first = decl->Range.First;
@@ -1978,20 +2357,21 @@ exec_declaration(struct tgsi_exec_machine *mach,
           * ureg code to emit the right UsageMask value (WRITEMASK_X).
           * Then, we could remove the tgsi_exec_machine::Face field.
           */
+         /* XXX make FACE a system value */
          if (decl->Semantic.Name == TGSI_SEMANTIC_FACE) {
             uint i;
 
             assert(decl->Semantic.Index == 0);
             assert(first == last);
 
-            for (i = 0; i < QUAD_SIZE; i++) {
+            for (i = 0; i < TGSI_QUAD_SIZE; i++) {
                mach->Inputs[first].xyzw[0].f[i] = mach->Face;
             }
          } else {
             eval_coef_func eval;
             uint i, j;
 
-            switch (decl->Declaration.Interpolate) {
+            switch (decl->Interp.Interpolate) {
             case TGSI_INTERPOLATE_CONSTANT:
                eval = eval_constant_coef;
                break;
@@ -2004,12 +2384,16 @@ exec_declaration(struct tgsi_exec_machine *mach,
                eval = eval_perspective_coef;
                break;
 
+            case TGSI_INTERPOLATE_COLOR:
+               eval = mach->flatshade_color ? eval_constant_coef : eval_perspective_coef;
+               break;
+
             default:
                assert(0);
                return;
             }
 
-            for (j = 0; j < NUM_CHANNELS; j++) {
+            for (j = 0; j < TGSI_NUM_CHANNELS; j++) {
                if (mask & (1 << j)) {
                   for (i = first; i <= last; i++) {
                      eval(mach, i, j);
@@ -2017,6 +2401,31 @@ exec_declaration(struct tgsi_exec_machine *mach,
                }
             }
          }
+      }
+   }
+
+   if (decl->Declaration.File == TGSI_FILE_SYSTEM_VALUE) {
+      mach->SysSemanticToIndex[decl->Declaration.Semantic] = decl->Range.First;
+   }
+}
+
+
+typedef void (* micro_op)(union tgsi_exec_channel *dst);
+
+static void
+exec_vector(struct tgsi_exec_machine *mach,
+            const struct tgsi_full_instruction *inst,
+            micro_op op,
+            enum tgsi_exec_datatype dst_datatype)
+{
+   unsigned int chan;
+
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+         union tgsi_exec_channel dst;
+
+         op(&dst);
+         store_dest(mach, &dst, &inst->Dst[0], inst, chan, dst_datatype);
       }
    }
 }
@@ -2035,9 +2444,9 @@ exec_scalar_unary(struct tgsi_exec_machine *mach,
    union tgsi_exec_channel src;
    union tgsi_exec_channel dst;
 
-   fetch_source(mach, &src, &inst->Src[0], CHAN_X, src_datatype);
+   fetch_source(mach, &src, &inst->Src[0], TGSI_CHAN_X, src_datatype);
    op(&dst, &src);
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &dst, &inst->Dst[0], inst, chan, dst_datatype);
       }
@@ -2054,7 +2463,7 @@ exec_vector_unary(struct tgsi_exec_machine *mach,
    unsigned int chan;
    struct tgsi_exec_vector dst;
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          union tgsi_exec_channel src;
 
@@ -2062,7 +2471,7 @@ exec_vector_unary(struct tgsi_exec_machine *mach,
          op(&dst.xyzw[chan], &src);
       }
    }
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &dst.xyzw[chan], &inst->Dst[0], inst, chan, dst_datatype);
       }
@@ -2074,6 +2483,27 @@ typedef void (* micro_binary_op)(union tgsi_exec_channel *dst,
                                  const union tgsi_exec_channel *src1);
 
 static void
+exec_scalar_binary(struct tgsi_exec_machine *mach,
+                   const struct tgsi_full_instruction *inst,
+                   micro_binary_op op,
+                   enum tgsi_exec_datatype dst_datatype,
+                   enum tgsi_exec_datatype src_datatype)
+{
+   unsigned int chan;
+   union tgsi_exec_channel src[2];
+   union tgsi_exec_channel dst;
+
+   fetch_source(mach, &src[0], &inst->Src[0], TGSI_CHAN_X, src_datatype);
+   fetch_source(mach, &src[1], &inst->Src[1], TGSI_CHAN_Y, src_datatype);
+   op(&dst, &src[0], &src[1]);
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
+      if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
+         store_dest(mach, &dst, &inst->Dst[0], inst, chan, dst_datatype);
+      }
+   }
+}
+
+static void
 exec_vector_binary(struct tgsi_exec_machine *mach,
                    const struct tgsi_full_instruction *inst,
                    micro_binary_op op,
@@ -2083,7 +2513,7 @@ exec_vector_binary(struct tgsi_exec_machine *mach,
    unsigned int chan;
    struct tgsi_exec_vector dst;
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          union tgsi_exec_channel src[2];
 
@@ -2092,7 +2522,7 @@ exec_vector_binary(struct tgsi_exec_machine *mach,
          op(&dst.xyzw[chan], &src[0], &src[1]);
       }
    }
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &dst.xyzw[chan], &inst->Dst[0], inst, chan, dst_datatype);
       }
@@ -2114,7 +2544,7 @@ exec_vector_trinary(struct tgsi_exec_machine *mach,
    unsigned int chan;
    struct tgsi_exec_vector dst;
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          union tgsi_exec_channel src[3];
 
@@ -2124,7 +2554,7 @@ exec_vector_trinary(struct tgsi_exec_machine *mach,
          op(&dst.xyzw[chan], &src[0], &src[1], &src[2]);
       }
    }
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &dst.xyzw[chan], &inst->Dst[0], inst, chan, dst_datatype);
       }
@@ -2138,17 +2568,17 @@ exec_dp3(struct tgsi_exec_machine *mach,
    unsigned int chan;
    union tgsi_exec_channel arg[3];
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
    micro_mul(&arg[2], &arg[0], &arg[1]);
 
-   for (chan = CHAN_Y; chan <= CHAN_Z; chan++) {
+   for (chan = TGSI_CHAN_Y; chan <= TGSI_CHAN_Z; chan++) {
       fetch_source(mach, &arg[0], &inst->Src[0], chan, TGSI_EXEC_DATA_FLOAT);
       fetch_source(mach, &arg[1], &inst->Src[1], chan, TGSI_EXEC_DATA_FLOAT);
       micro_mad(&arg[2], &arg[0], &arg[1], &arg[2]);
    }
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &arg[2], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
       }
@@ -2162,17 +2592,17 @@ exec_dp4(struct tgsi_exec_machine *mach,
    unsigned int chan;
    union tgsi_exec_channel arg[3];
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
    micro_mul(&arg[2], &arg[0], &arg[1]);
 
-   for (chan = CHAN_Y; chan <= CHAN_W; chan++) {
+   for (chan = TGSI_CHAN_Y; chan <= TGSI_CHAN_W; chan++) {
       fetch_source(mach, &arg[0], &inst->Src[0], chan, TGSI_EXEC_DATA_FLOAT);
       fetch_source(mach, &arg[1], &inst->Src[1], chan, TGSI_EXEC_DATA_FLOAT);
       micro_mad(&arg[2], &arg[0], &arg[1], &arg[2]);
    }
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &arg[2], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
       }
@@ -2186,18 +2616,18 @@ exec_dp2a(struct tgsi_exec_machine *mach,
    unsigned int chan;
    union tgsi_exec_channel arg[3];
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
    micro_mul(&arg[2], &arg[0], &arg[1]);
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_Y, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
    micro_mad(&arg[0], &arg[0], &arg[1], &arg[2]);
 
-   fetch_source(mach, &arg[1], &inst->Src[2], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[2], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
    micro_add(&arg[0], &arg[0], &arg[1]);
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &arg[0], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
       }
@@ -2211,22 +2641,22 @@ exec_dph(struct tgsi_exec_machine *mach,
    unsigned int chan;
    union tgsi_exec_channel arg[3];
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
    micro_mul(&arg[2], &arg[0], &arg[1]);
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_Y, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
    micro_mad(&arg[2], &arg[0], &arg[1], &arg[2]);
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_Z, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
    micro_mad(&arg[0], &arg[0], &arg[1], &arg[2]);
 
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
    micro_add(&arg[0], &arg[0], &arg[1]);
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &arg[0], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
       }
@@ -2240,15 +2670,15 @@ exec_dp2(struct tgsi_exec_machine *mach,
    unsigned int chan;
    union tgsi_exec_channel arg[3];
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
    micro_mul(&arg[2], &arg[0], &arg[1]);
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_Y, TGSI_EXEC_DATA_FLOAT);
-   fetch_source(mach, &arg[1], &inst->Src[1], CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[1], &inst->Src[1], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
    micro_mad(&arg[2], &arg[0], &arg[1], &arg[2]);
 
-   for (chan = 0; chan < NUM_CHANNELS; chan++) {
+   for (chan = 0; chan < TGSI_NUM_CHANNELS; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          store_dest(mach, &arg[2], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
       }
@@ -2263,10 +2693,10 @@ exec_nrm4(struct tgsi_exec_machine *mach,
    union tgsi_exec_channel arg[4];
    union tgsi_exec_channel scale;
 
-   fetch_source(mach, &arg[0], &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
    micro_mul(&scale, &arg[0], &arg[0]);
 
-   for (chan = CHAN_Y; chan <= CHAN_W; chan++) {
+   for (chan = TGSI_CHAN_Y; chan <= TGSI_CHAN_W; chan++) {
       union tgsi_exec_channel product;
 
       fetch_source(mach, &arg[chan], &inst->Src[0], chan, TGSI_EXEC_DATA_FLOAT);
@@ -2276,7 +2706,7 @@ exec_nrm4(struct tgsi_exec_machine *mach,
 
    micro_rsq(&scale, &scale);
 
-   for (chan = CHAN_X; chan <= CHAN_W; chan++) {
+   for (chan = TGSI_CHAN_X; chan <= TGSI_CHAN_W; chan++) {
       if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
          micro_mul(&arg[chan], &arg[chan], &scale);
          store_dest(mach, &arg[chan], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
@@ -2293,10 +2723,10 @@ exec_nrm3(struct tgsi_exec_machine *mach,
       union tgsi_exec_channel arg[3];
       union tgsi_exec_channel scale;
 
-      fetch_source(mach, &arg[0], &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      fetch_source(mach, &arg[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
       micro_mul(&scale, &arg[0], &arg[0]);
 
-      for (chan = CHAN_Y; chan <= CHAN_Z; chan++) {
+      for (chan = TGSI_CHAN_Y; chan <= TGSI_CHAN_Z; chan++) {
          union tgsi_exec_channel product;
 
          fetch_source(mach, &arg[chan], &inst->Src[0], chan, TGSI_EXEC_DATA_FLOAT);
@@ -2306,7 +2736,7 @@ exec_nrm3(struct tgsi_exec_machine *mach,
 
       micro_rsq(&scale, &scale);
 
-      for (chan = CHAN_X; chan <= CHAN_Z; chan++) {
+      for (chan = TGSI_CHAN_X; chan <= TGSI_CHAN_Z; chan++) {
          if (inst->Dst[0].Register.WriteMask & (1 << chan)) {
             micro_mul(&arg[chan], &arg[chan], &scale);
             store_dest(mach, &arg[chan], &inst->Dst[0], inst, chan, TGSI_EXEC_DATA_FLOAT);
@@ -2315,7 +2745,290 @@ exec_nrm3(struct tgsi_exec_machine *mach,
    }
 
    if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
-      store_dest(mach, &OneVec, &inst->Dst[0], inst, CHAN_W, TGSI_EXEC_DATA_FLOAT);
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_scs(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_XY) {
+      union tgsi_exec_channel arg;
+      union tgsi_exec_channel result;
+
+      fetch_source(mach, &arg, &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+
+      if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+         micro_cos(&result, &arg);
+         store_dest(mach, &result, &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      }
+      if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+         micro_sin(&result, &arg);
+         store_dest(mach, &result, &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      }
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+      store_dest(mach, &ZeroVec, &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_x2d(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   union tgsi_exec_channel r[4];
+   union tgsi_exec_channel d[2];
+
+   fetch_source(mach, &r[0], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &r[1], &inst->Src[1], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_XZ) {
+      fetch_source(mach, &r[2], &inst->Src[2], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[2], &r[2], &r[0]);
+      fetch_source(mach, &r[3], &inst->Src[2], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[3], &r[3], &r[1]);
+      micro_add(&r[2], &r[2], &r[3]);
+      fetch_source(mach, &r[3], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      micro_add(&d[0], &r[2], &r[3]);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_YW) {
+      fetch_source(mach, &r[2], &inst->Src[2], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[2], &r[2], &r[0]);
+      fetch_source(mach, &r[3], &inst->Src[2], TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[3], &r[3], &r[1]);
+      micro_add(&r[2], &r[2], &r[3]);
+      fetch_source(mach, &r[3], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      micro_add(&d[1], &r[2], &r[3]);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+      store_dest(mach, &d[0], &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+      store_dest(mach, &d[1], &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+      store_dest(mach, &d[0], &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &d[1], &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_rfl(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   union tgsi_exec_channel r[9];
+
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_XYZ) {
+      /* r0 = dp3(src0, src0) */
+      fetch_source(mach, &r[2], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[0], &r[2], &r[2]);
+      fetch_source(mach, &r[4], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[8], &r[4], &r[4]);
+      micro_add(&r[0], &r[0], &r[8]);
+      fetch_source(mach, &r[6], &inst->Src[0], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[8], &r[6], &r[6]);
+      micro_add(&r[0], &r[0], &r[8]);
+
+      /* r1 = dp3(src0, src1) */
+      fetch_source(mach, &r[3], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[1], &r[2], &r[3]);
+      fetch_source(mach, &r[5], &inst->Src[1], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[8], &r[4], &r[5]);
+      micro_add(&r[1], &r[1], &r[8]);
+      fetch_source(mach, &r[7], &inst->Src[1], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&r[8], &r[6], &r[7]);
+      micro_add(&r[1], &r[1], &r[8]);
+
+      /* r1 = 2 * r1 / r0 */
+      micro_add(&r[1], &r[1], &r[1]);
+      micro_div(&r[1], &r[1], &r[0]);
+
+      if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+         micro_mul(&r[2], &r[2], &r[1]);
+         micro_sub(&r[2], &r[2], &r[3]);
+         store_dest(mach, &r[2], &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      }
+      if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+         micro_mul(&r[4], &r[4], &r[1]);
+         micro_sub(&r[4], &r[4], &r[5]);
+         store_dest(mach, &r[4], &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      }
+      if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+         micro_mul(&r[6], &r[6], &r[1]);
+         micro_sub(&r[6], &r[6], &r[7]);
+         store_dest(mach, &r[6], &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+      }
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_xpd(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   union tgsi_exec_channel r[6];
+   union tgsi_exec_channel d[3];
+
+   fetch_source(mach, &r[0], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &r[1], &inst->Src[1], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+
+   micro_mul(&r[2], &r[0], &r[1]);
+
+   fetch_source(mach, &r[3], &inst->Src[0], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   fetch_source(mach, &r[4], &inst->Src[1], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+
+   micro_mul(&r[5], &r[3], &r[4] );
+   micro_sub(&d[TGSI_CHAN_X], &r[2], &r[5]);
+
+   fetch_source(mach, &r[2], &inst->Src[1], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+
+   micro_mul(&r[3], &r[3], &r[2]);
+
+   fetch_source(mach, &r[5], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+
+   micro_mul(&r[1], &r[1], &r[5]);
+   micro_sub(&d[TGSI_CHAN_Y], &r[3], &r[1]);
+
+   micro_mul(&r[5], &r[5], &r[4]);
+   micro_mul(&r[0], &r[0], &r[2]);
+   micro_sub(&d[TGSI_CHAN_Z], &r[5], &r[0]);
+
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+      store_dest(mach, &d[TGSI_CHAN_X], &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+      store_dest(mach, &d[TGSI_CHAN_Y], &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+      store_dest(mach, &d[TGSI_CHAN_Z], &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_dst(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   union tgsi_exec_channel r[2];
+   union tgsi_exec_channel d[4];
+
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+      fetch_source(mach, &r[0], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      fetch_source(mach, &r[1], &inst->Src[1], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      micro_mul(&d[TGSI_CHAN_Y], &r[0], &r[1]);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+      fetch_source(mach, &d[TGSI_CHAN_Z], &inst->Src[0], TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      fetch_source(mach, &d[TGSI_CHAN_W], &inst->Src[1], TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+      store_dest(mach, &d[TGSI_CHAN_Y], &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+      store_dest(mach, &d[TGSI_CHAN_Z], &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &d[TGSI_CHAN_W], &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_log(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   union tgsi_exec_channel r[3];
+
+   fetch_source(mach, &r[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   micro_abs(&r[2], &r[0]);  /* r2 = abs(r0) */
+   micro_lg2(&r[1], &r[2]);  /* r1 = lg2(r2) */
+   micro_flr(&r[0], &r[1]);  /* r0 = floor(r1) */
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+      store_dest(mach, &r[0], &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+      micro_exp2(&r[0], &r[0]);       /* r0 = 2 ^ r0 */
+      micro_div(&r[0], &r[2], &r[0]); /* r0 = r2 / r0 */
+      store_dest(mach, &r[0], &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+      store_dest(mach, &r[1], &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_exp(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   union tgsi_exec_channel r[3];
+
+   fetch_source(mach, &r[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   micro_flr(&r[1], &r[0]);  /* r1 = floor(r0) */
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+      micro_exp2(&r[2], &r[1]);       /* r2 = 2 ^ r1 */
+      store_dest(mach, &r[2], &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+      micro_sub(&r[2], &r[0], &r[1]); /* r2 = r0 - r1 */
+      store_dest(mach, &r[2], &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+      micro_exp2(&r[2], &r[0]);       /* r2 = 2 ^ r0 */
+      store_dest(mach, &r[2], &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+   }
+}
+
+static void
+exec_lit(struct tgsi_exec_machine *mach,
+         const struct tgsi_full_instruction *inst)
+{
+   union tgsi_exec_channel r[3];
+   union tgsi_exec_channel d[3];
+
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_YZ) {
+      fetch_source(mach, &r[0], &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+      if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Z) {
+         fetch_source(mach, &r[1], &inst->Src[0], TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+         micro_max(&r[1], &r[1], &ZeroVec);
+
+         fetch_source(mach, &r[2], &inst->Src[0], TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
+         micro_min(&r[2], &r[2], &P128Vec);
+         micro_max(&r[2], &r[2], &M128Vec);
+         micro_pow(&r[1], &r[1], &r[2]);
+         micro_lt(&d[TGSI_CHAN_Z], &ZeroVec, &r[0], &r[1], &ZeroVec);
+         store_dest(mach, &d[TGSI_CHAN_Z], &inst->Dst[0], inst, TGSI_CHAN_Z, TGSI_EXEC_DATA_FLOAT);
+      }
+      if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_Y) {
+         micro_max(&d[TGSI_CHAN_Y], &r[0], &ZeroVec);
+         store_dest(mach, &d[TGSI_CHAN_Y], &inst->Dst[0], inst, TGSI_CHAN_Y, TGSI_EXEC_DATA_FLOAT);
+      }
+   }
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_X) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_X, TGSI_EXEC_DATA_FLOAT);
+   }
+
+   if (inst->Dst[0].Register.WriteMask & TGSI_WRITEMASK_W) {
+      store_dest(mach, &OneVec, &inst->Dst[0], inst, TGSI_CHAN_W, TGSI_EXEC_DATA_FLOAT);
    }
 }
 
@@ -2344,7 +3057,7 @@ exec_switch(struct tgsi_exec_machine *mach,
    assert(mach->BreakStackTop < TGSI_EXEC_MAX_BREAK_STACK);
 
    mach->SwitchStack[mach->SwitchStackTop++] = mach->Switch;
-   fetch_source(mach, &mach->Switch.selector, &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_UINT);
+   fetch_source(mach, &mach->Switch.selector, &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_UINT);
    mach->Switch.mask = 0x0;
    mach->Switch.defaultMask = 0x0;
 
@@ -2362,7 +3075,7 @@ exec_case(struct tgsi_exec_machine *mach,
    union tgsi_exec_channel src;
    uint mask = 0;
 
-   fetch_source(mach, &src, &inst->Src[0], CHAN_X, TGSI_EXEC_DATA_UINT);
+   fetch_source(mach, &src, &inst->Src[0], TGSI_CHAN_X, TGSI_EXEC_DATA_UINT);
 
    if (mach->Switch.selector.u[0] == src.u[0]) {
       mask |= 0x1;
@@ -2465,6 +3178,17 @@ micro_xor(union tgsi_exec_channel *dst,
    dst->u[1] = src0->u[1] ^ src1->u[1];
    dst->u[2] = src0->u[2] ^ src1->u[2];
    dst->u[3] = src0->u[3] ^ src1->u[3];
+}
+
+static void
+micro_mod(union tgsi_exec_channel *dst,
+          const union tgsi_exec_channel *src0,
+          const union tgsi_exec_channel *src1)
+{
+   dst->i[0] = src0->i[0] % src1->i[0];
+   dst->i[1] = src0->i[1] % src1->i[1];
+   dst->i[2] = src0->i[2] % src1->i[2];
+   dst->i[3] = src0->i[3] % src1->i[3];
 }
 
 static void
@@ -2697,14 +3421,34 @@ micro_usne(union tgsi_exec_channel *dst,
 }
 
 static void
+micro_uarl(union tgsi_exec_channel *dst,
+           const union tgsi_exec_channel *src)
+{
+   dst->i[0] = src->u[0];
+   dst->i[1] = src->u[1];
+   dst->i[2] = src->u[2];
+   dst->i[3] = src->u[3];
+}
+
+static void
+micro_ucmp(union tgsi_exec_channel *dst,
+           const union tgsi_exec_channel *src0,
+           const union tgsi_exec_channel *src1,
+           const union tgsi_exec_channel *src2)
+{
+   dst->u[0] = src0->u[0] ? src1->u[0] : src2->u[0];
+   dst->u[1] = src0->u[1] ? src1->u[1] : src2->u[1];
+   dst->u[2] = src0->u[2] ? src1->u[2] : src2->u[2];
+   dst->u[3] = src0->u[3] ? src1->u[3] : src2->u[3];
+}
+
+static void
 exec_instruction(
    struct tgsi_exec_machine *mach,
    const struct tgsi_full_instruction *inst,
    int *pc )
 {
-   uint chan_index;
    union tgsi_exec_channel r[10];
-   union tgsi_exec_channel d[8];
 
    (*pc)++;
 
@@ -2718,36 +3462,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_LIT:
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_Y ) || IS_CHANNEL_ENABLED( *inst, CHAN_Z )) {
-         FETCH( &r[0], 0, CHAN_X );
-         if (IS_CHANNEL_ENABLED( *inst, CHAN_Y )) {
-            micro_max(&d[CHAN_Y], &r[0], &mach->Temps[TEMP_0_I].xyzw[TEMP_0_C]);
-         }
-
-         if (IS_CHANNEL_ENABLED( *inst, CHAN_Z )) {
-            FETCH( &r[1], 0, CHAN_Y );
-            micro_max( &r[1], &r[1], &mach->Temps[TEMP_0_I].xyzw[TEMP_0_C] );
-
-            FETCH( &r[2], 0, CHAN_W );
-            micro_min( &r[2], &r[2], &mach->Temps[TEMP_128_I].xyzw[TEMP_128_C] );
-            micro_max( &r[2], &r[2], &mach->Temps[TEMP_M128_I].xyzw[TEMP_M128_C] );
-            micro_pow( &r[1], &r[1], &r[2] );
-            micro_lt(&d[CHAN_Z], &mach->Temps[TEMP_0_I].xyzw[TEMP_0_C], &r[0], &r[1], &mach->Temps[TEMP_0_I].xyzw[TEMP_0_C]);
-         }
-
-         if (IS_CHANNEL_ENABLED(*inst, CHAN_Y)) {
-            STORE(&d[CHAN_Y], 0, CHAN_Y);
-         }
-         if (IS_CHANNEL_ENABLED(*inst, CHAN_Z)) {
-            STORE(&d[CHAN_Z], 0, CHAN_Z);
-         }
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_X )) {
-         STORE( &mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_X );
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_W )) {
-         STORE( &mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_W );
-      }
+      exec_lit(mach, inst);
       break;
 
    case TGSI_OPCODE_RCP:
@@ -2759,44 +3474,11 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_EXP:
-      FETCH( &r[0], 0, CHAN_X );
-      micro_flr( &r[1], &r[0] );  /* r1 = floor(r0) */
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_X )) {
-         micro_exp2( &r[2], &r[1] );       /* r2 = 2 ^ r1 */
-         STORE( &r[2], 0, CHAN_X );        /* store r2 */
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_Y )) {
-         micro_sub( &r[2], &r[0], &r[1] ); /* r2 = r0 - r1 */
-         STORE( &r[2], 0, CHAN_Y );        /* store r2 */
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_Z )) {
-         micro_exp2( &r[2], &r[0] );       /* r2 = 2 ^ r0 */
-         STORE( &r[2], 0, CHAN_Z );        /* store r2 */
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_W )) {
-         STORE( &mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_W );
-      }
+      exec_exp(mach, inst);
       break;
 
    case TGSI_OPCODE_LOG:
-      FETCH( &r[0], 0, CHAN_X );
-      micro_abs( &r[2], &r[0] );  /* r2 = abs(r0) */
-      micro_lg2( &r[1], &r[2] );  /* r1 = lg2(r2) */
-      micro_flr( &r[0], &r[1] );  /* r0 = floor(r1) */
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_X )) {
-         STORE( &r[0], 0, CHAN_X );
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_Y )) {
-         micro_exp2( &r[0], &r[0] );       /* r0 = 2 ^ r0 */
-         micro_div( &r[0], &r[2], &r[0] ); /* r0 = r2 / r0 */
-         STORE( &r[0], 0, CHAN_Y );
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_Z )) {
-         STORE( &r[1], 0, CHAN_Z );
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_W )) {
-         STORE( &mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_W );
-      }
+      exec_log(mach, inst);
       break;
 
    case TGSI_OPCODE_MUL:
@@ -2816,30 +3498,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_DST:
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_Y )) {
-         FETCH( &r[0], 0, CHAN_Y );
-         FETCH( &r[1], 1, CHAN_Y);
-         micro_mul(&d[CHAN_Y], &r[0], &r[1]);
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_Z )) {
-         FETCH(&d[CHAN_Z], 0, CHAN_Z);
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_W )) {
-         FETCH(&d[CHAN_W], 1, CHAN_W);
-      }
-
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_X)) {
-         STORE(&mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_X);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_Y)) {
-         STORE(&d[CHAN_Y], 0, CHAN_Y);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_Z)) {
-         STORE(&d[CHAN_Z], 0, CHAN_Z);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_W)) {
-         STORE(&d[CHAN_W], 0, CHAN_W);
-      }
+      exec_dst(mach, inst);
       break;
 
    case TGSI_OPCODE_MIN:
@@ -2903,53 +3562,11 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_POW:
-      FETCH(&r[0], 0, CHAN_X);
-      FETCH(&r[1], 1, CHAN_X);
-
-      micro_pow( &r[0], &r[0], &r[1] );
-
-      FOR_EACH_ENABLED_CHANNEL( *inst, chan_index ) {
-         STORE( &r[0], 0, chan_index );
-      }
+      exec_scalar_binary(mach, inst, micro_pow, TGSI_EXEC_DATA_FLOAT, TGSI_EXEC_DATA_FLOAT);
       break;
 
    case TGSI_OPCODE_XPD:
-      FETCH(&r[0], 0, CHAN_Y);
-      FETCH(&r[1], 1, CHAN_Z);
-
-      micro_mul( &r[2], &r[0], &r[1] );
-
-      FETCH(&r[3], 0, CHAN_Z);
-      FETCH(&r[4], 1, CHAN_Y);
-
-      micro_mul( &r[5], &r[3], &r[4] );
-      micro_sub(&d[CHAN_X], &r[2], &r[5]);
-
-      FETCH(&r[2], 1, CHAN_X);
-
-      micro_mul( &r[3], &r[3], &r[2] );
-
-      FETCH(&r[5], 0, CHAN_X);
-
-      micro_mul( &r[1], &r[1], &r[5] );
-      micro_sub(&d[CHAN_Y], &r[3], &r[1]);
-
-      micro_mul( &r[5], &r[5], &r[4] );
-      micro_mul( &r[0], &r[0], &r[2] );
-      micro_sub(&d[CHAN_Z], &r[5], &r[0]);
-
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_X)) {
-         STORE(&d[CHAN_X], 0, CHAN_X);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_Y)) {
-         STORE(&d[CHAN_Y], 0, CHAN_Y);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_Z)) {
-         STORE(&d[CHAN_Z], 0, CHAN_Z);
-      }
-      if (IS_CHANNEL_ENABLED( *inst, CHAN_W )) {
-         STORE( &mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_W );
-      }
+      exec_xpd(mach, inst);
       break;
 
    case TGSI_OPCODE_ABS:
@@ -2957,12 +3574,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_RCC:
-      FETCH(&r[0], 0, CHAN_X);
-      micro_div(&r[0], &mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], &r[0]);
-      micro_float_clamp(&r[0], &r[0]);
-      FOR_EACH_ENABLED_CHANNEL(*inst, chan_index) {
-         STORE(&r[0], 0, chan_index);
-      }
+      exec_scalar_unary(mach, inst, micro_rcc, TGSI_EXEC_DATA_FLOAT, TGSI_EXEC_DATA_FLOAT);
       break;
 
    case TGSI_OPCODE_DPH:
@@ -3006,52 +3618,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_RFL:
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_X) ||
-          IS_CHANNEL_ENABLED(*inst, CHAN_Y) ||
-          IS_CHANNEL_ENABLED(*inst, CHAN_Z)) {
-         /* r0 = dp3(src0, src0) */
-         FETCH(&r[2], 0, CHAN_X);
-         micro_mul(&r[0], &r[2], &r[2]);
-         FETCH(&r[4], 0, CHAN_Y);
-         micro_mul(&r[8], &r[4], &r[4]);
-         micro_add(&r[0], &r[0], &r[8]);
-         FETCH(&r[6], 0, CHAN_Z);
-         micro_mul(&r[8], &r[6], &r[6]);
-         micro_add(&r[0], &r[0], &r[8]);
-
-         /* r1 = dp3(src0, src1) */
-         FETCH(&r[3], 1, CHAN_X);
-         micro_mul(&r[1], &r[2], &r[3]);
-         FETCH(&r[5], 1, CHAN_Y);
-         micro_mul(&r[8], &r[4], &r[5]);
-         micro_add(&r[1], &r[1], &r[8]);
-         FETCH(&r[7], 1, CHAN_Z);
-         micro_mul(&r[8], &r[6], &r[7]);
-         micro_add(&r[1], &r[1], &r[8]);
-
-         /* r1 = 2 * r1 / r0 */
-         micro_add(&r[1], &r[1], &r[1]);
-         micro_div(&r[1], &r[1], &r[0]);
-
-         if (IS_CHANNEL_ENABLED(*inst, CHAN_X)) {
-            micro_mul(&r[2], &r[2], &r[1]);
-            micro_sub(&r[2], &r[2], &r[3]);
-            STORE(&r[2], 0, CHAN_X);
-         }
-         if (IS_CHANNEL_ENABLED(*inst, CHAN_Y)) {
-            micro_mul(&r[4], &r[4], &r[1]);
-            micro_sub(&r[4], &r[4], &r[5]);
-            STORE(&r[4], 0, CHAN_Y);
-         }
-         if (IS_CHANNEL_ENABLED(*inst, CHAN_Z)) {
-            micro_mul(&r[6], &r[6], &r[1]);
-            micro_sub(&r[6], &r[6], &r[7]);
-            STORE(&r[6], 0, CHAN_Z);
-         }
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_W)) {
-         STORE(&mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_W);
-      }
+      exec_rfl(mach, inst);
       break;
 
    case TGSI_OPCODE_SEQ:
@@ -3059,9 +3626,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_SFL:
-      FOR_EACH_ENABLED_CHANNEL(*inst, chan_index) {
-         STORE(&mach->Temps[TEMP_0_I].xyzw[TEMP_0_C], 0, chan_index);
-      }
+      exec_vector(mach, inst, micro_sfl, TGSI_EXEC_DATA_FLOAT);
       break;
 
    case TGSI_OPCODE_SGT:
@@ -3081,9 +3646,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_STR:
-      FOR_EACH_ENABLED_CHANNEL(*inst, chan_index) {
-         STORE(&mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, chan_index);
-      }
+      exec_vector(mach, inst, micro_str, TGSI_EXEC_DATA_FLOAT);
       break;
 
    case TGSI_OPCODE_TEX:
@@ -3140,42 +3703,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_X2D:
-      FETCH(&r[0], 1, CHAN_X);
-      FETCH(&r[1], 1, CHAN_Y);
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_X) ||
-          IS_CHANNEL_ENABLED(*inst, CHAN_Z)) {
-         FETCH(&r[2], 2, CHAN_X);
-         micro_mul(&r[2], &r[2], &r[0]);
-         FETCH(&r[3], 2, CHAN_Y);
-         micro_mul(&r[3], &r[3], &r[1]);
-         micro_add(&r[2], &r[2], &r[3]);
-         FETCH(&r[3], 0, CHAN_X);
-         micro_add(&d[CHAN_X], &r[2], &r[3]);
-         
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_Y) ||
-          IS_CHANNEL_ENABLED(*inst, CHAN_W)) {
-         FETCH(&r[2], 2, CHAN_Z);
-         micro_mul(&r[2], &r[2], &r[0]);
-         FETCH(&r[3], 2, CHAN_W);
-         micro_mul(&r[3], &r[3], &r[1]);
-         micro_add(&r[2], &r[2], &r[3]);
-         FETCH(&r[3], 0, CHAN_Y);
-         micro_add(&d[CHAN_Y], &r[2], &r[3]);
-         
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_X)) {
-         STORE(&d[CHAN_X], 0, CHAN_X);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_Y)) {
-         STORE(&d[CHAN_Y], 0, CHAN_Y);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_Z)) {
-         STORE(&d[CHAN_X], 0, CHAN_Z);
-      }
-      if (IS_CHANNEL_ENABLED(*inst, CHAN_W)) {
-         STORE(&d[CHAN_Y], 0, CHAN_W);
-      }
+      exec_x2d(mach, inst);
       break;
 
    case TGSI_OPCODE_ARA:
@@ -3283,23 +3811,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_SCS:
-      if( IS_CHANNEL_ENABLED( *inst, CHAN_X ) || IS_CHANNEL_ENABLED( *inst, CHAN_Y ) ) {
-         FETCH( &r[0], 0, CHAN_X );
-         if (IS_CHANNEL_ENABLED(*inst, CHAN_X)) {
-            micro_cos(&r[1], &r[0]);
-            STORE(&r[1], 0, CHAN_X);
-         }
-         if (IS_CHANNEL_ENABLED(*inst, CHAN_Y)) {
-            micro_sin(&r[1], &r[0]);
-            STORE(&r[1], 0, CHAN_Y);
-         }
-      }
-      if( IS_CHANNEL_ENABLED( *inst, CHAN_Z ) ) {
-         STORE( &mach->Temps[TEMP_0_I].xyzw[TEMP_0_C], 0, CHAN_Z );
-      }
-      if( IS_CHANNEL_ENABLED( *inst, CHAN_W ) ) {
-         STORE( &mach->Temps[TEMP_1_I].xyzw[TEMP_1_C], 0, CHAN_W );
-      }
+      exec_scs(mach, inst);
       break;
 
    case TGSI_OPCODE_NRM:
@@ -3322,7 +3834,7 @@ exec_instruction(
       /* push CondMask */
       assert(mach->CondStackTop < TGSI_EXEC_MAX_COND_NESTING);
       mach->CondStack[mach->CondStackTop++] = mach->CondMask;
-      FETCH( &r[0], 0, CHAN_X );
+      FETCH( &r[0], 0, TGSI_CHAN_X );
       /* update CondMask */
       if( ! r[0].u[0] ) {
          mach->CondMask &= ~0x1;
@@ -3404,7 +3916,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_MOD:
-      assert (0);
+      exec_vector_binary(mach, inst, micro_mod, TGSI_EXEC_DATA_INT, TGSI_EXEC_DATA_INT);
       break;
 
    case TGSI_OPCODE_XOR:
@@ -3416,11 +3928,11 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_TXF:
-      assert (0);
+      exec_txf(mach, inst);
       break;
 
    case TGSI_OPCODE_TXQ:
-      assert (0);
+      exec_txq(mach, inst);
       break;
 
    case TGSI_OPCODE_EMIT:
@@ -3520,7 +4032,7 @@ exec_instruction(
       break;
 
    case TGSI_OPCODE_BREAKC:
-      FETCH(&r[0], 0, CHAN_X);
+      FETCH(&r[0], 0, TGSI_CHAN_X);
       /* update CondMask */
       if (r[0].u[0] && (mach->ExecMask & 0x1)) {
          mach->LoopMask &= ~0x1;
@@ -3642,6 +4154,70 @@ exec_instruction(
       exec_endswitch(mach);
       break;
 
+   case TGSI_OPCODE_SAMPLE_I:
+      assert(0);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_I_MS:
+      assert(0);
+      break;
+
+   case TGSI_OPCODE_SAMPLE:
+      exec_sample(mach, inst, TEX_MODIFIER_NONE);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_B:
+      exec_sample(mach, inst, TEX_MODIFIER_LOD_BIAS);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_C:
+      exec_sample(mach, inst, TEX_MODIFIER_NONE);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_C_LZ:
+      exec_sample(mach, inst, TEX_MODIFIER_LOD_BIAS);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_D:
+      exec_sample_d(mach, inst);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_L:
+      exec_sample(mach, inst, TEX_MODIFIER_EXPLICIT_LOD);
+      break;
+
+   case TGSI_OPCODE_GATHER4:
+      assert(0);
+      break;
+
+   case TGSI_OPCODE_SVIEWINFO:
+      assert(0);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_POS:
+      assert(0);
+      break;
+
+   case TGSI_OPCODE_SAMPLE_INFO:
+      assert(0);
+      break;
+
+   case TGSI_OPCODE_UARL:
+      exec_vector_unary(mach, inst, micro_uarl, TGSI_EXEC_DATA_INT, TGSI_EXEC_DATA_UINT);
+      break;
+
+   case TGSI_OPCODE_UCMP:
+      exec_vector_trinary(mach, inst, micro_ucmp, TGSI_EXEC_DATA_UINT, TGSI_EXEC_DATA_UINT);
+      break;
+
+   case TGSI_OPCODE_IABS:
+      exec_vector_unary(mach, inst, micro_iabs, TGSI_EXEC_DATA_INT, TGSI_EXEC_DATA_INT);
+      break;
+
+   case TGSI_OPCODE_ISSG:
+      exec_vector_unary(mach, inst, micro_isgn, TGSI_EXEC_DATA_INT, TGSI_EXEC_DATA_INT);
+      break;
+
    default:
       assert( 0 );
    }
@@ -3682,14 +4258,6 @@ tgsi_exec_machine_run( struct tgsi_exec_machine *mach )
    if( mach->Processor == TGSI_PROCESSOR_GEOMETRY ) {
       mach->Temps[TEMP_PRIMITIVE_I].xyzw[TEMP_PRIMITIVE_C].u[0] = 0;
       mach->Primitives[0] = 0;
-   }
-
-   for (i = 0; i < QUAD_SIZE; i++) {
-      mach->Temps[TEMP_CC_I].xyzw[TEMP_CC_C].u[i] =
-         (TGSI_EXEC_CC_EQ << TGSI_EXEC_CC_X_SHIFT) |
-         (TGSI_EXEC_CC_EQ << TGSI_EXEC_CC_Y_SHIFT) |
-         (TGSI_EXEC_CC_EQ << TGSI_EXEC_CC_Z_SHIFT) |
-         (TGSI_EXEC_CC_EQ << TGSI_EXEC_CC_W_SHIFT);
    }
 
    /* execute declarations (interpolants) */

@@ -34,6 +34,7 @@
 #include "draw/draw_pt.h"
 #include "draw/draw_vs.h"
 #include "draw/draw_llvm.h"
+#include "gallivm/lp_bld_init.h"
 
 
 struct llvm_middle_end {
@@ -70,28 +71,15 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
    struct draw_llvm_variant_key *key;
    struct draw_llvm_variant *variant = NULL;
    struct draw_llvm_variant_list_item *li;
-   unsigned i;
-   unsigned instance_id_index = ~0;
-
-
-   unsigned out_prim = (draw->gs.geometry_shader ? 
-                        draw->gs.geometry_shader->output_primitive :
-                        in_prim);
+   const unsigned out_prim = (draw->gs.geometry_shader ? 
+                              draw->gs.geometry_shader->output_primitive :
+                              in_prim);
 
    /* Add one to num_outputs because the pipeline occasionally tags on
     * an additional texcoord, eg for AA lines.
     */
-   unsigned nr = MAX2( shader->base.info.num_inputs,
-		       shader->base.info.num_outputs + 1 );
-
-   /* Scan for instanceID system value.
-    */
-   for (i = 0; i < shader->base.info.num_inputs; i++) {
-      if (shader->base.info.input_semantic_name[i] == TGSI_SEMANTIC_INSTANCEID) {
-         instance_id_index = i;
-         break;
-      }
-   }
+   const unsigned nr = MAX2( shader->base.info.num_inputs,
+                             shader->base.info.num_outputs + 1 );
 
    fpme->input_prim = in_prim;
    fpme->opt = opt;
@@ -110,6 +98,7 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
 			    draw->clip_xy,
 			    draw->clip_z,
 			    draw->clip_user,
+                            draw->guard_band_xy,
 			    draw->identity_viewport,
 			    (boolean)draw->rasterizer->gl_rasterization_rules,
 			    (draw->vs.edgeflag_output ? TRUE : FALSE) );
@@ -133,9 +122,10 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
    
    key = draw_llvm_make_variant_key(fpme->llvm, store);
 
+   /* Search shader's list of variants for the key */
    li = first_elem(&shader->variants);
-   while(!at_end(&shader->variants, li)) {
-      if(memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
+   while (!at_end(&shader->variants, li)) {
+      if (memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
          variant = li->base;
          break;
       }
@@ -143,17 +133,28 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
    }
 
    if (variant) {
+      /* found the variant, move to head of global list (for LRU) */
       move_to_head(&fpme->llvm->vs_variants_list, &variant->list_item_global);
    }
    else {
+      /* Need to create new variant */
       unsigned i;
+
+      /* First check if we've created too many variants.  If so, free
+       * 25% of the LRU to avoid using too much memory.
+       */
       if (fpme->llvm->nr_variants >= DRAW_MAX_SHADER_VARIANTS) {
          /*
           * XXX: should we flush here ?
           */
          for (i = 0; i < DRAW_MAX_SHADER_VARIANTS / 4; i++) {
-            struct draw_llvm_variant_list_item *item =
-               last_elem(&fpme->llvm->vs_variants_list);
+            struct draw_llvm_variant_list_item *item;
+            if (is_empty_list(&fpme->llvm->vs_variants_list)) {
+               break;
+            }
+            item = last_elem(&fpme->llvm->vs_variants_list);
+            assert(item);
+            assert(item->base);
             draw_llvm_destroy_variant(item->base);
          }
       }
@@ -175,6 +176,11 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
       draw->pt.user.vs_constants[0];
    fpme->llvm->jit_context.gs_constants =
       draw->pt.user.gs_constants[0];
+   fpme->llvm->jit_context.planes =
+      (float (*) [DRAW_TOTAL_CLIP_PLANES][4]) draw->pt.user.planes[0];
+   fpme->llvm->jit_context.viewport =
+      (float *)draw->viewport.scale;
+    
 }
 
 
@@ -217,20 +223,21 @@ llvm_pipeline_generic( struct draw_pt_middle_end *middle,
    struct draw_vertex_info gs_vert_info;
    struct draw_vertex_info *vert_info;
    unsigned opt = fpme->opt;
+   unsigned clipped = 0;
 
    llvm_vert_info.count = fetch_info->count;
    llvm_vert_info.vertex_size = fpme->vertex_size;
    llvm_vert_info.stride = fpme->vertex_size;
    llvm_vert_info.verts =
       (struct vertex_header *)MALLOC(fpme->vertex_size *
-                                     align(fetch_info->count,  4));
+                                     align(fetch_info->count,  lp_native_vector_width / 32));
    if (!llvm_vert_info.verts) {
       assert(0);
       return;
    }
 
    if (fetch_info->linear)
-      fpme->current_variant->jit_func( &fpme->llvm->jit_context,
+      clipped = fpme->current_variant->jit_func( &fpme->llvm->jit_context,
                                        llvm_vert_info.verts,
                                        (const char **)draw->pt.user.vbuffer,
                                        fetch_info->start,
@@ -239,7 +246,7 @@ llvm_pipeline_generic( struct draw_pt_middle_end *middle,
                                        draw->pt.vertex_buffer,
                                        draw->instance_id);
    else
-      fpme->current_variant->jit_func_elts( &fpme->llvm->jit_context,
+      clipped = fpme->current_variant->jit_func_elts( &fpme->llvm->jit_context,
                                             llvm_vert_info.verts,
                                             (const char **)draw->pt.user.vbuffer,
                                             fetch_info->elts,
@@ -266,6 +273,9 @@ llvm_pipeline_generic( struct draw_pt_middle_end *middle,
       FREE(vert_info->verts);
       vert_info = &gs_vert_info;
       prim_info = &gs_prim_info;
+
+      clipped = draw_pt_post_vs_run( fpme->post_vs, vert_info );
+
    }
 
    /* stream output needs to be done before clipping */
@@ -273,11 +283,11 @@ llvm_pipeline_generic( struct draw_pt_middle_end *middle,
 		    vert_info,
                     prim_info );
 
-   if (draw_pt_post_vs_run( fpme->post_vs, vert_info )) {
+   if (clipped) {
       opt |= PT_PIPELINE;
    }
 
-   /* Do we need to run the pipeline?
+   /* Do we need to run the pipeline? Now will come here if clipped
     */
    if (opt & PT_PIPELINE) {
       pipeline( fpme,
@@ -413,7 +423,7 @@ draw_pt_fetch_pipeline_or_emit_llvm(struct draw_context *draw)
 {
    struct llvm_middle_end *fpme = 0;
 
-   if (!draw->engine)
+   if (!draw->llvm)
       return NULL;
 
    fpme = CALLOC_STRUCT( llvm_middle_end );

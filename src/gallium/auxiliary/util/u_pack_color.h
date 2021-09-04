@@ -122,7 +122,7 @@ util_pack_color_ub(ubyte r, ubyte g, ubyte b, ubyte a,
    case PIPE_FORMAT_L8_UNORM:
    case PIPE_FORMAT_I8_UNORM:
       {
-         uc->ub = a;
+         uc->ub = r;
       }
       return;
    case PIPE_FORMAT_R32G32B32A32_FLOAT:
@@ -434,8 +434,8 @@ util_pack_color(const float rgba[4], enum pipe_format format, union util_color *
 /* Integer versions of util_pack_z and util_pack_z_stencil - useful for
  * constructing clear masks.
  */
-static INLINE uint
-util_pack_uint_z(enum pipe_format format, unsigned z)
+static INLINE uint32_t
+util_pack_mask_z(enum pipe_format format, uint32_t z)
 {
    switch (format) {
    case PIPE_FORMAT_Z16_UNORM:
@@ -443,48 +443,81 @@ util_pack_uint_z(enum pipe_format format, unsigned z)
    case PIPE_FORMAT_Z32_UNORM:
    case PIPE_FORMAT_Z32_FLOAT:
       return z;
-   case PIPE_FORMAT_Z24_UNORM_S8_USCALED:
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
    case PIPE_FORMAT_Z24X8_UNORM:
       return z & 0xffffff;
-   case PIPE_FORMAT_S8_USCALED_Z24_UNORM:
+   case PIPE_FORMAT_S8_UINT_Z24_UNORM:
    case PIPE_FORMAT_X8Z24_UNORM:
       return (z & 0xffffff) << 8;
-   case PIPE_FORMAT_S8_USCALED:
+   case PIPE_FORMAT_S8_UINT:
       return 0;
    default:
-      debug_print_format("gallium: unhandled format in util_pack_z()", format);
+      debug_print_format("gallium: unhandled format in util_pack_mask_z()", format);
       assert(0);
       return 0;
    }
 }
 
-static INLINE uint
-util_pack_uint_z_stencil(enum pipe_format format, double z, uint s)
+
+static INLINE uint64_t
+util_pack64_mask_z(enum pipe_format format, uint32_t z)
 {
-   unsigned packed = util_pack_uint_z(format, z);
-
-   s &= 0xff;
-
    switch (format) {
-   case PIPE_FORMAT_Z24_UNORM_S8_USCALED:
-      return packed | (s << 24);
-   case PIPE_FORMAT_S8_USCALED_Z24_UNORM:
-      return packed | s;
-   case PIPE_FORMAT_S8_USCALED:
-      return packed | s;
+   case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+      return z;
    default:
-      return packed;
+      return util_pack_mask_z(format, z);
    }
 }
 
+
+static INLINE uint32_t
+util_pack_mask_z_stencil(enum pipe_format format, uint32_t z, uint8_t s)
+{
+   uint32_t packed = util_pack_mask_z(format, z);
+
+   switch (format) {
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+      packed |= (uint32_t)s << 24;
+      break;
+   case PIPE_FORMAT_S8_UINT_Z24_UNORM:
+      packed |= s;
+      break;
+   case PIPE_FORMAT_S8_UINT:
+      packed |= s;
+      break;
+   default:
+      break;
+   }
+
+   return packed;
+}
+
+
+static INLINE uint64_t
+util_pack64_mask_z_stencil(enum pipe_format format, uint32_t z, uint8_t s)
+{
+   uint64_t packed;
+
+   switch (format) {
+   case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+      packed = util_pack64_mask_z(format, z);
+      packed |= (uint64_t)s << 32ull;
+      return packed;
+   default:
+      return util_pack_mask_z_stencil(format, z, s);
+   }
+}
 
 
 /**
  * Note: it's assumed that z is in [0,1]
  */
-static INLINE uint
+static INLINE uint32_t
 util_pack_z(enum pipe_format format, double z)
 {
+   union fi fui;
+
    if (z == 0.0)
       return 0;
 
@@ -492,25 +525,26 @@ util_pack_z(enum pipe_format format, double z)
    case PIPE_FORMAT_Z16_UNORM:
       if (z == 1.0)
          return 0xffff;
-      return (uint) (z * 0xffff);
+      return (uint32_t) (z * 0xffff);
    case PIPE_FORMAT_Z32_UNORM:
       /* special-case to avoid overflow */
       if (z == 1.0)
          return 0xffffffff;
-      return (uint) (z * 0xffffffff);
+      return (uint32_t) (z * 0xffffffff);
    case PIPE_FORMAT_Z32_FLOAT:
-      return (uint)z;
-   case PIPE_FORMAT_Z24_UNORM_S8_USCALED:
+      fui.f = (float)z;
+      return fui.ui;
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
    case PIPE_FORMAT_Z24X8_UNORM:
       if (z == 1.0)
          return 0xffffff;
-      return (uint) (z * 0xffffff);
-   case PIPE_FORMAT_S8_USCALED_Z24_UNORM:
+      return (uint32_t) (z * 0xffffff);
+   case PIPE_FORMAT_S8_UINT_Z24_UNORM:
    case PIPE_FORMAT_X8Z24_UNORM:
       if (z == 1.0)
          return 0xffffff00;
-      return ((uint) (z * 0xffffff)) << 8;
-   case PIPE_FORMAT_S8_USCALED:
+      return ((uint32_t) (z * 0xffffff)) << 8;
+   case PIPE_FORMAT_S8_UINT:
       /* this case can get it via util_pack_z_stencil() */
       return 0;
    default:
@@ -519,29 +553,65 @@ util_pack_z(enum pipe_format format, double z)
       return 0;
    }
 }
+
+
+static INLINE uint64_t
+util_pack64_z(enum pipe_format format, double z)
+{
+   union fi fui;
+
+   if (z == 0)
+      return 0;
+
+   switch (format) {
+   case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+      fui.f = (float)z;
+      return fui.ui;
+   default:
+      return util_pack_z(format, z);
+   }
+}
  
 
 /**
  * Pack Z and/or stencil values into a 32-bit value described by format.
  * Note: it's assumed that z is in [0,1] and s in [0,255]
  */
-static INLINE uint
-util_pack_z_stencil(enum pipe_format format, double z, uint s)
+static INLINE uint32_t
+util_pack_z_stencil(enum pipe_format format, double z, uint8_t s)
 {
-   unsigned packed = util_pack_z(format, z);
+   uint32_t packed = util_pack_z(format, z);
 
    switch (format) {
-   case PIPE_FORMAT_Z24_UNORM_S8_USCALED:
-      packed |= s << 24;
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+      packed |= (uint32_t)s << 24;
       break;
-   case PIPE_FORMAT_S8_USCALED_Z24_UNORM:
+   case PIPE_FORMAT_S8_UINT_Z24_UNORM:
       packed |= s;
       break;
-   case PIPE_FORMAT_S8_USCALED:
+   case PIPE_FORMAT_S8_UINT:
       packed |= s;
       break;
    default:
       break;
+   }
+
+   return packed;
+}
+
+
+static INLINE uint64_t
+util_pack64_z_stencil(enum pipe_format format, double z, uint8_t s)
+{
+   uint64_t packed;
+
+   switch (format) {
+   case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+      packed = util_pack64_z(format, z);
+      packed |= (uint64_t)s << 32ull;
+      break;
+   default:
+      return util_pack_z_stencil(format, z, s);
    }
 
    return packed;

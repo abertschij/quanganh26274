@@ -42,11 +42,13 @@
 #include "lp_tile_soa.h"
 #include "gallivm/lp_bld_debug.h"
 #include "lp_scene.h"
+#include "lp_tex_sample.h"
 
 
 #ifdef DEBUG
 int jit_line = 0;
 const struct lp_rast_state *jit_state = NULL;
+const struct lp_rasterizer_task *jit_task = NULL;
 #endif
 
 
@@ -119,8 +121,8 @@ lp_rast_tile_begin(struct lp_rasterizer_task *task,
           * and update the tile's layout info.
           */
          (void) llvmpipe_get_texture_tile(lpt,
-                                          zsbuf->face + zsbuf->zslice,
-                                          zsbuf->level,
+                                          zsbuf->u.tex.first_layer,
+                                          zsbuf->u.tex.level,
                                           usage,
                                           task->x,
                                           task->y);
@@ -211,8 +213,8 @@ lp_rast_clear_zstencil(struct lp_rasterizer_task *task,
                        const union lp_rast_cmd_arg arg)
 {
    const struct lp_scene *scene = task->scene;
-   unsigned clear_value = arg.clear_zstencil.value;
-   unsigned clear_mask = arg.clear_zstencil.mask;
+   uint32_t clear_value = arg.clear_zstencil.value;
+   uint32_t clear_mask = arg.clear_zstencil.mask;
    const unsigned height = TILE_SIZE / TILE_VECTOR_HEIGHT;
    const unsigned width = TILE_SIZE * TILE_VECTOR_HEIGHT;
    const unsigned block_size = scene->zsbuf.blocksize;
@@ -220,10 +222,11 @@ lp_rast_clear_zstencil(struct lp_rasterizer_task *task,
    uint8_t *dst;
    unsigned i, j;
 
-   LP_DBG(DEBUG_RAST, "%s 0x%x%x\n", __FUNCTION__, clear_value, clear_mask);
+   LP_DBG(DEBUG_RAST, "%s: value=0x%08x, mask=0x%08x\n",
+           __FUNCTION__, clear_value, clear_mask);
 
    /*
-    * Clear the aera of the swizzled depth/depth buffer matching this tile, in
+    * Clear the area of the swizzled depth/depth buffer matching this tile, in
     * stripes of TILE_VECTOR_HEIGHT x TILE_SIZE at a time.
     *
     * The swizzled depth format is such that the depths for
@@ -232,16 +235,31 @@ lp_rast_clear_zstencil(struct lp_rasterizer_task *task,
 
    dst = task->depth_tile;
 
+   clear_value &= clear_mask;
+
    switch (block_size) {
    case 1:
+      assert(clear_mask == 0xff);
       memset(dst, (uint8_t) clear_value, height * width);
       break;
    case 2:
-      for (i = 0; i < height; i++) {
-         uint16_t *row = (uint16_t *)dst;
-         for (j = 0; j < width; j++)
-            *row++ = (uint16_t) clear_value;
-         dst += dst_stride;
+      if (clear_mask == 0xffff) {
+         for (i = 0; i < height; i++) {
+            uint16_t *row = (uint16_t *)dst;
+            for (j = 0; j < width; j++)
+               *row++ = (uint16_t) clear_value;
+            dst += dst_stride;
+         }
+      }
+      else {
+         for (i = 0; i < height; i++) {
+            uint16_t *row = (uint16_t *)dst;
+            for (j = 0; j < width; j++) {
+               uint16_t tmp = ~clear_mask & *row;
+               *row++ = clear_value | tmp;
+            }
+            dst += dst_stride;
+         }
       }
       break;
    case 4:
@@ -258,7 +276,7 @@ lp_rast_clear_zstencil(struct lp_rasterizer_task *task,
             uint32_t *row = (uint32_t *)dst;
             for (j = 0; j < width; j++) {
                uint32_t tmp = ~clear_mask & *row;
-               *row++ = (clear_value & clear_mask) | tmp;
+               *row++ = clear_value | tmp;
             }
             dst += dst_stride;
          }
@@ -269,7 +287,6 @@ lp_rast_clear_zstencil(struct lp_rasterizer_task *task,
       break;
    }
 }
-
 
 
 
@@ -290,15 +307,15 @@ lp_rast_store_linear_color( struct lp_rasterizer_task *task )
 
    for (buf = 0; buf < scene->fb.nr_cbufs; buf++) {
       struct pipe_surface *cbuf = scene->fb.cbufs[buf];
-      const unsigned face_slice = cbuf->face + cbuf->zslice;
-      const unsigned level = cbuf->level;
+      const unsigned layer = cbuf->u.tex.first_layer;
+      const unsigned level = cbuf->u.tex.level;
       struct llvmpipe_resource *lpt = llvmpipe_resource(cbuf->texture);
 
       if (!task->color_tiles[buf])
          continue;
 
       llvmpipe_unswizzle_cbuf_tile(lpt,
-                                   face_slice,
+                                   layer,
                                    level,
                                    task->x, task->y,
                                    task->color_tiles[buf]);
@@ -318,8 +335,8 @@ lp_rast_shade_tile(struct lp_rasterizer_task *task,
 {
    const struct lp_scene *scene = task->scene;
    const struct lp_rast_shader_inputs *inputs = arg.shade_tile;
-   const struct lp_rast_state *state = inputs->state;
-   struct lp_fragment_shader_variant *variant = state->variant;
+   const struct lp_rast_state *state;
+   struct lp_fragment_shader_variant *variant;
    const unsigned tile_x = task->x, tile_y = task->y;
    unsigned x, y;
 
@@ -329,6 +346,13 @@ lp_rast_shade_tile(struct lp_rasterizer_task *task,
    }
 
    LP_DBG(DEBUG_RAST, "%s\n", __FUNCTION__);
+
+   state = task->state;
+   assert(state);
+   if (!state) {
+      return;
+   }
+   variant = state->variant;
 
    /* render the whole 64x64 tile in 4x4 chunks */
    for (y = 0; y < TILE_SIZE; y += 4){
@@ -346,13 +370,13 @@ lp_rast_shade_tile(struct lp_rasterizer_task *task,
          depth = lp_rast_get_depth_block_pointer(task, tile_x + x, tile_y + y);
 
          /* run shader on 4x4 block */
-         BEGIN_JIT_CALL(state);
+         BEGIN_JIT_CALL(state, task);
          variant->jit_function[RAST_WHOLE]( &state->jit_context,
                                             tile_x + x, tile_y + y,
-                                            inputs->facing,
-                                            inputs->a0,
-                                            inputs->dadx,
-                                            inputs->dady,
+                                            inputs->frontfacing,
+                                            GET_A0(inputs),
+                                            GET_DADX(inputs),
+                                            GET_DADY(inputs),
                                             color,
                                             depth,
                                             0xffff,
@@ -377,6 +401,11 @@ lp_rast_shade_tile_opaque(struct lp_rasterizer_task *task,
 
    LP_DBG(DEBUG_RAST, "%s\n", __FUNCTION__);
 
+   assert(task->state);
+   if (!task->state) {
+      return;
+   }
+
    /* this will prevent converting the layout from tiled to linear */
    for (i = 0; i < scene->fb.nr_cbufs; i++) {
       (void)lp_rast_get_color_tile_pointer(task, i, LP_TEX_USAGE_WRITE_ALL);
@@ -398,7 +427,7 @@ lp_rast_shade_quads_mask(struct lp_rasterizer_task *task,
                          unsigned x, unsigned y,
                          unsigned mask)
 {
-   const struct lp_rast_state *state = inputs->state;
+   const struct lp_rast_state *state = task->state;
    struct lp_fragment_shader_variant *variant = state->variant;
    const struct lp_scene *scene = task->scene;
    uint8_t *color[PIPE_MAX_COLOR_BUFS];
@@ -408,6 +437,8 @@ lp_rast_shade_quads_mask(struct lp_rasterizer_task *task,
    assert(state);
 
    /* Sanity checks */
+   assert(x < scene->tiles_x * TILE_SIZE);
+   assert(y < scene->tiles_y * TILE_SIZE);
    assert(x % TILE_VECTOR_WIDTH == 0);
    assert(y % TILE_VECTOR_HEIGHT == 0);
 
@@ -427,13 +458,13 @@ lp_rast_shade_quads_mask(struct lp_rasterizer_task *task,
    assert(lp_check_alignment(state->jit_context.blend_color, 16));
 
    /* run shader on 4x4 block */
-   BEGIN_JIT_CALL(state);
+   BEGIN_JIT_CALL(state, task);
    variant->jit_function[RAST_EDGE_TEST](&state->jit_context,
                                          x, y,
-                                         inputs->facing,
-                                         inputs->a0,
-                                         inputs->dadx,
-                                         inputs->dady,
+                                         inputs->frontfacing,
+                                         GET_A0(inputs),
+                                         GET_DADX(inputs),
+                                         GET_DADY(inputs),
                                          color,
                                          depth,
                                          mask,
@@ -469,8 +500,19 @@ static void
 lp_rast_end_query(struct lp_rasterizer_task *task,
                   const union lp_rast_cmd_arg arg)
 {
-   task->query->count[task->thread_index] += task->vis_counter;
-   task->query = NULL;
+   assert(task->query);
+   if (task->query) {
+      task->query->count[task->thread_index] += task->vis_counter;
+      task->query = NULL;
+   }
+}
+
+
+void
+lp_rast_set_state(struct lp_rasterizer_task *task,
+                  const union lp_rast_cmd_arg arg)
+{
+   task->state = arg.state;
 }
 
 
@@ -581,10 +623,12 @@ static lp_rast_cmd_func dispatch[LP_RAST_OP_MAX] =
    lp_rast_triangle_8,
    lp_rast_triangle_3_4,
    lp_rast_triangle_3_16,
+   lp_rast_triangle_4_16,
    lp_rast_shade_tile,
    lp_rast_shade_tile_opaque,
    lp_rast_begin_query,
    lp_rast_end_query,
+   lp_rast_set_state,
 };
 
 
@@ -658,28 +702,32 @@ rasterize_scene(struct lp_rasterizer_task *task,
                 struct lp_scene *scene)
 {
    task->scene = scene;
-   /* loop over scene bins, rasterize each */
+
+   if (!task->rast->no_rast) {
+      /* loop over scene bins, rasterize each */
 #if 0
-   {
-      unsigned i, j;
-      for (i = 0; i < scene->tiles_x; i++) {
-         for (j = 0; j < scene->tiles_y; j++) {
-            struct cmd_bin *bin = lp_scene_get_bin(scene, i, j);
-            rasterize_bin(task, bin, i, j);
+      {
+         unsigned i, j;
+         for (i = 0; i < scene->tiles_x; i++) {
+            for (j = 0; j < scene->tiles_y; j++) {
+               struct cmd_bin *bin = lp_scene_get_bin(scene, i, j);
+               rasterize_bin(task, bin, i, j);
+            }
          }
       }
-   }
 #else
-   {
-      struct cmd_bin *bin;
+      {
+         struct cmd_bin *bin;
 
-      assert(scene);
-      while ((bin = lp_scene_bin_iter_next(scene))) {
-         if (!is_empty_bin( bin ))
-            rasterize_bin(task, bin);
+         assert(scene);
+         while ((bin = lp_scene_bin_iter_next(scene))) {
+            if (!is_empty_bin( bin ))
+               rasterize_bin(task, bin);
+         }
       }
-   }
 #endif
+   }
+
 
    if (scene->fence) {
       lp_fence_signal(scene->fence);
@@ -749,7 +797,7 @@ lp_rast_finish( struct lp_rasterizer *rast )
  *   2. do work
  *   3. signal that we're done
  */
-static PIPE_THREAD_ROUTINE( thread_func, init_data )
+static PIPE_THREAD_ROUTINE( thread_function, init_data )
 {
    struct lp_rasterizer_task *task = (struct lp_rasterizer_task *) init_data;
    struct lp_rasterizer *rast = task->rast;
@@ -817,7 +865,7 @@ create_rast_threads(struct lp_rasterizer *rast)
    for (i = 0; i < rast->num_threads; i++) {
       pipe_semaphore_init(&rast->tasks[i].work_ready, 0);
       pipe_semaphore_init(&rast->tasks[i].work_done, 0);
-      rast->threads[i] = pipe_thread_create(thread_func,
+      rast->threads[i] = pipe_thread_create(thread_function,
                                             (void *) &rast->tasks[i]);
    }
 }
@@ -836,10 +884,14 @@ lp_rast_create( unsigned num_threads )
    unsigned i;
 
    rast = CALLOC_STRUCT(lp_rasterizer);
-   if(!rast)
-      return NULL;
+   if (!rast) {
+      goto no_rast;
+   }
 
    rast->full_scenes = lp_scene_queue_create();
+   if (!rast->full_scenes) {
+      goto no_full_scenes;
+   }
 
    for (i = 0; i < Elements(rast->tasks); i++) {
       struct lp_rasterizer_task *task = &rast->tasks[i];
@@ -848,6 +900,8 @@ lp_rast_create( unsigned num_threads )
    }
 
    rast->num_threads = num_threads;
+
+   rast->no_rast = debug_get_bool_option("LP_NO_RAST", FALSE);
 
    create_rast_threads(rast);
 
@@ -859,6 +913,11 @@ lp_rast_create( unsigned num_threads )
    memset(lp_dummy_tile, 0, sizeof lp_dummy_tile);
 
    return rast;
+
+no_full_scenes:
+   FREE(rast);
+no_rast:
+   return NULL;
 }
 
 

@@ -40,6 +40,7 @@
 #include "main/imports.h"
 #include "main/context.h"
 #include "main/feedback.h"
+#include "main/mfeatures.h"
 
 #include "vbo/vbo.h"
 
@@ -62,7 +63,7 @@
 struct feedback_stage
 {
    struct draw_stage stage;   /**< Base class */
-   GLcontext *ctx;            /**< Rendering context */
+   struct gl_context *ctx;            /**< Rendering context */
    GLboolean reset_stipple_counter;
 };
 
@@ -79,7 +80,7 @@ feedback_stage( struct draw_stage *stage )
 
 
 static void
-feedback_vertex(GLcontext *ctx, const struct draw_context *draw,
+feedback_vertex(struct gl_context *ctx, const struct draw_context *draw,
                 const struct vertex_header *v)
 {
    const struct st_context *st = st_context(ctx);
@@ -179,7 +180,7 @@ feedback_destroy( struct draw_stage *stage )
  * Create GL feedback drawing stage.
  */
 static struct draw_stage *
-draw_glfeedback_stage(GLcontext *ctx, struct draw_context *draw)
+draw_glfeedback_stage(struct gl_context *ctx, struct draw_context *draw)
 {
    struct feedback_stage *fs = ST_CALLOC_STRUCT(feedback_stage);
 
@@ -252,7 +253,7 @@ select_destroy( struct draw_stage *stage )
  * Create GL selection mode drawing stage.
  */
 static struct draw_stage *
-draw_glselect_stage(GLcontext *ctx, struct draw_context *draw)
+draw_glselect_stage(struct gl_context *ctx, struct draw_context *draw)
 {
    struct feedback_stage *fs = ST_CALLOC_STRUCT(feedback_stage);
 
@@ -271,7 +272,7 @@ draw_glselect_stage(GLcontext *ctx, struct draw_context *draw)
 
 
 static void
-st_RenderMode(GLcontext *ctx, GLenum newMode )
+st_RenderMode(struct gl_context *ctx, GLenum newMode )
 {
    struct st_context *st = st_context(ctx);
    struct draw_context *draw = st->draw;

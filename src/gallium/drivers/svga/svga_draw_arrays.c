@@ -53,6 +53,7 @@ static enum pipe_error generate_indices( struct svga_hwtnl *hwtnl,
 
    dst = pipe_buffer_create( pipe->screen, 
 			     PIPE_BIND_INDEX_BUFFER, 
+			     PIPE_USAGE_STATIC,
 			     size );
    if (dst == NULL)
       goto fail;
@@ -65,14 +66,14 @@ static enum pipe_error generate_indices( struct svga_hwtnl *hwtnl,
    generate( nr,
              dst_map );
 
-   pipe_buffer_unmap( pipe, dst, transfer );
+   pipe_buffer_unmap( pipe, transfer );
 
    *out_buf = dst;
    return PIPE_OK;
 
 fail:
    if (dst_map)
-      pipe_buffer_unmap( pipe, dst, transfer );
+      pipe_buffer_unmap( pipe, transfer );
 
    if (dst)
       pipe->screen->resource_destroy( pipe->screen, dst );
@@ -271,7 +272,7 @@ svga_hwtnl_draw_arrays( struct svga_hwtnl *hwtnl,
                                           gen_size,
                                           gen_func,
                                           &gen_buf );
-      if (ret)
+      if (ret != PIPE_OK)
          goto done;
 
       ret = svga_hwtnl_simple_draw_range_elements( hwtnl,
@@ -284,7 +285,7 @@ svga_hwtnl_draw_arrays( struct svga_hwtnl *hwtnl,
                                                    0,
                                                    gen_nr );
 
-      if (ret)
+      if (ret != PIPE_OK)
          goto done;
 
    done:

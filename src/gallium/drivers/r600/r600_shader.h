@@ -30,20 +30,36 @@ struct r600_shader_io {
 	unsigned		gpr;
 	unsigned		done;
 	int			sid;
+	int			spi_sid;
 	unsigned		interpolate;
+	boolean                 centroid;
+	unsigned		lds_pos; /* for evergreen */
+	unsigned		write_mask;
 };
 
 struct r600_shader {
 	unsigned		processor_type;
-	struct r600_bc		bc;
-	boolean			flat_shade;
+	struct r600_bytecode		bc;
 	unsigned		ninput;
 	unsigned		noutput;
+	unsigned		nlds;
 	struct r600_shader_io	input[32];
 	struct r600_shader_io	output[32];
-	enum radeon_family	family;
-	boolean                 uses_kill;
-	boolean                 use_mem_constant;
+	boolean			uses_kill;
+	boolean			fs_write_all;
+	boolean			vs_prohibit_ucps;
+	boolean			two_side;
+	/* Number of color outputs in the TGSI shader,
+	 * sometimes it could be higher than nr_cbufs (bug?).
+	 * Also with writes_all property on eg+ it will be set to max CB number */
+	unsigned		nr_ps_max_color_exports;
+	/* Real number of ps color exports compiled in the bytecode */
+	unsigned		nr_ps_color_exports;
+	/* bit n is set if the shader writes gl_ClipDistance[n] */
+	unsigned		clip_dist_write;
+	/* flag is set if the shader writes VS_OUT_MISC_VEC (e.g. for PSIZE) */
+	boolean			vs_out_misc_write;
+	boolean			vs_out_point_size;
 };
 
 #endif

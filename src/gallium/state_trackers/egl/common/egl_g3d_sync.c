@@ -35,8 +35,6 @@
 #include "egl_g3d.h"
 #include "egl_g3d_sync.h"
 
-#ifdef EGL_KHR_reusable_sync
-
 /**
  * Wait for the conditional variable.
  */
@@ -109,7 +107,7 @@ egl_g3d_wait_fence_sync(struct egl_g3d_sync *gsync, EGLTimeKHR timeout)
 
       _eglUnlockMutex(&dpy->Mutex);
       /* no timed finish? */
-      screen->fence_finish(screen, fence, 0x0);
+      screen->fence_finish(screen, fence, PIPE_TIMEOUT_INFINITE);
       ret = EGL_CONDITION_SATISFIED_KHR;
       _eglLockMutex(&dpy->Mutex);
 
@@ -128,13 +126,13 @@ egl_g3d_wait_fence_sync(struct egl_g3d_sync *gsync, EGLTimeKHR timeout)
 static INLINE void
 egl_g3d_ref_sync(struct egl_g3d_sync *gsync)
 {
-   p_atomic_inc(&gsync->refs);
+   _eglGetSync(&gsync->base);
 }
 
 static INLINE void
 egl_g3d_unref_sync(struct egl_g3d_sync *gsync)
 {
-   if (p_atomic_dec_zero(&gsync->refs)) {
+   if (_eglPutSync(&gsync->base)) {
       pipe_condvar_destroy(gsync->condvar);
       pipe_mutex_destroy(gsync->mutex);
 
@@ -194,7 +192,6 @@ egl_g3d_create_sync(_EGLDriver *drv, _EGLDisplay *dpy,
 
    pipe_mutex_init(gsync->mutex);
    pipe_condvar_init(gsync->condvar);
-   p_atomic_set(&gsync->refs, 1);
 
    return &gsync->base;
 }
@@ -235,7 +232,7 @@ egl_g3d_client_wait_sync(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
          struct egl_g3d_context *gctx = egl_g3d_context(ctx);
 
          if (gctx)
-            gctx->stctxi->flush(gctx->stctxi, PIPE_FLUSH_RENDER_CACHE , NULL);
+            gctx->stctxi->flush(gctx->stctxi, ST_FLUSH_FRONT, NULL);
       }
 
       if (timeout) {
@@ -280,5 +277,3 @@ egl_g3d_signal_sync(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
 
    return EGL_TRUE;
 }
-
-#endif /* EGL_KHR_reusable_sync */

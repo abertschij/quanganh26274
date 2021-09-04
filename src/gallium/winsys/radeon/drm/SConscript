@@ -2,14 +2,9 @@ Import('*')
 
 env = env.Clone()
 
-radeon_sources = [
-    'radeon_drm_buffer.c',
-    'radeon_drm.c',
-    'radeon_r300.c',
-]
+radeon_sources = env.ParseSourceList('Makefile.sources', 'C_SOURCES')
 
-env.ParseConfig('pkg-config --cflags libdrm_radeon')
-env.Append(CPPPATH = '#/src/gallium/drivers/r300')
+env.PkgUseModules('DRM_RADEON')
 
 radeonwinsys = env.ConvenienceLibrary(
     target ='radeonwinsys',

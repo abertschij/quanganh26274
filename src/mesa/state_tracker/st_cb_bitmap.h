@@ -31,9 +31,12 @@
 
 
 #include "main/compiler.h"
+#include "main/mfeatures.h"
 
 struct dd_function_table;
 struct st_context;
+struct gl_fragment_program;
+struct st_fragment_program;
 
 #if FEATURE_drawpix
 
@@ -47,13 +50,13 @@ extern void
 st_destroy_bitmap(struct st_context *st);
 
 extern void
-st_flush_bitmap_cache(struct st_context *st);
+st_make_bitmap_fragment_program(struct st_context *st,
+                                struct gl_fragment_program *fpIn,
+                                struct gl_fragment_program **fpOut,
+                                GLuint *bitmap_sampler);
 
-/* Flush bitmap cache and release vertex buffer.  Needed at end of
- * frame to avoid synchronous rendering.
- */
 extern void
-st_flush_bitmap(struct st_context *st);
+st_flush_bitmap_cache(struct st_context *st);
 
 #else
 

@@ -79,7 +79,8 @@ rbug_resource_destroy(struct rbug_resource *rb_resource)
 
 
 struct pipe_surface *
-rbug_surface_create(struct rbug_resource *rb_resource,
+rbug_surface_create(struct rbug_context *rb_context,
+                    struct rbug_resource *rb_resource,
                     struct pipe_surface *surface)
 {
    struct rbug_surface *rb_surface;
@@ -97,8 +98,9 @@ rbug_surface_create(struct rbug_resource *rb_resource,
 
    pipe_reference_init(&rb_surface->base.reference, 1);
    rb_surface->base.texture = NULL;
+   rb_surface->base.context = &rb_context->base;
+   rb_surface->surface = surface; /* we own the surface already */
    pipe_resource_reference(&rb_surface->base.texture, &rb_resource->base);
-   rb_surface->surface = surface;
 
    return &rb_surface->base;
 
@@ -108,7 +110,8 @@ error:
 }
 
 void
-rbug_surface_destroy(struct rbug_surface *rb_surface)
+rbug_surface_destroy(struct rbug_context *rb_context,
+                     struct rbug_surface *rb_surface)
 {
    pipe_resource_reference(&rb_surface->base.texture, NULL);
    pipe_surface_reference(&rb_surface->surface, NULL);

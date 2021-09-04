@@ -51,7 +51,7 @@
 static INLINE GLboolean
 is_front_buffer_dirty(struct st_context *st)
 {
-   GLframebuffer *fb = st->ctx->DrawBuffer;
+   struct gl_framebuffer *fb = st->ctx->DrawBuffer;
    struct st_renderbuffer *strb
       = st_renderbuffer(fb->Attachment[BUFFER_FRONT_LEFT].Renderbuffer);
    return strb && strb->defined;
@@ -64,7 +64,7 @@ is_front_buffer_dirty(struct st_context *st)
 static void
 display_front_buffer(struct st_context *st)
 {
-   GLframebuffer *fb = st->ctx->DrawBuffer;
+   struct gl_framebuffer *fb = st->ctx->DrawBuffer;
    struct st_renderbuffer *strb
       = st_renderbuffer(fb->Attachment[BUFFER_FRONT_LEFT].Renderbuffer);
 
@@ -76,20 +76,14 @@ display_front_buffer(struct st_context *st)
 }
 
 
-void st_flush( struct st_context *st, uint pipeFlushFlags,
+void st_flush( struct st_context *st,
                struct pipe_fence_handle **fence )
 {
    FLUSH_CURRENT(st->ctx, 0);
 
-   /* Release any vertex buffers that might potentially be accessed in
-    * successive frames:
-    */
-   st_flush_bitmap(st);
-   st_flush_clear(st);
-   util_blit_flush(st->blit);
-   util_gen_mipmap_flush(st->gen_mipmap);
+   st_flush_bitmap_cache(st);
 
-   st->pipe->flush( st->pipe, pipeFlushFlags, fence );
+   st->pipe->flush( st->pipe, fence );
 }
 
 
@@ -100,10 +94,11 @@ void st_finish( struct st_context *st )
 {
    struct pipe_fence_handle *fence = NULL;
 
-   st_flush(st, PIPE_FLUSH_RENDER_CACHE | PIPE_FLUSH_FRAME, &fence);
+   st_flush(st, &fence);
 
    if(fence) {
-      st->pipe->screen->fence_finish(st->pipe->screen, fence, 0);
+      st->pipe->screen->fence_finish(st->pipe->screen, fence,
+                                     PIPE_TIMEOUT_INFINITE);
       st->pipe->screen->fence_reference(st->pipe->screen, &fence, NULL);
    }
 }
@@ -113,7 +108,7 @@ void st_finish( struct st_context *st )
 /**
  * Called via ctx->Driver.Flush()
  */
-static void st_glFlush(GLcontext *ctx)
+static void st_glFlush(struct gl_context *ctx)
 {
    struct st_context *st = st_context(ctx);
 
@@ -122,7 +117,7 @@ static void st_glFlush(GLcontext *ctx)
     * synchronization issues.  Calling finish() here will just hide
     * problems that need to be fixed elsewhere.
     */
-   st_flush(st, PIPE_FLUSH_RENDER_CACHE | PIPE_FLUSH_FRAME, NULL);
+   st_flush(st, NULL);
 
    if (is_front_buffer_dirty(st)) {
       display_front_buffer(st);
@@ -133,7 +128,7 @@ static void st_glFlush(GLcontext *ctx)
 /**
  * Called via ctx->Driver.Finish()
  */
-static void st_glFinish(GLcontext *ctx)
+static void st_glFinish(struct gl_context *ctx)
 {
    struct st_context *st = st_context(ctx);
 

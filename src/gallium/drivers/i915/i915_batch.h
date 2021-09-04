@@ -29,25 +29,30 @@
 #define I915_BATCH_H
 
 #include "i915_batchbuffer.h"
+#include "i915_context.h"
 
 
-#define BEGIN_BATCH(dwords, relocs) \
-   (i915_winsys_batchbuffer_check(i915->batch, dwords, relocs))
+#define BEGIN_BATCH(dwords) \
+   (i915_winsys_batchbuffer_check(i915->batch, dwords))
 
 #define OUT_BATCH(dword) \
    i915_winsys_batchbuffer_dword(i915->batch, dword)
 
+#define OUT_BATCH_F(f) \
+   i915_winsys_batchbuffer_float(i915->batch, f)
+
 #define OUT_RELOC(buf, usage, offset) \
-   i915_winsys_batchbuffer_reloc(i915->batch, buf, usage, offset)
+   i915_winsys_batchbuffer_reloc(i915->batch, buf, usage, offset, false)
+
+#define OUT_RELOC_FENCED(buf, usage, offset) \
+   i915_winsys_batchbuffer_reloc(i915->batch, buf, usage, offset, true)
 
 #define FLUSH_BATCH(fence) \
    i915_flush(i915, fence)
-
 
 /************************************************************************
  * i915_flush.c
  */
 void i915_flush(struct i915_context *i915, struct pipe_fence_handle **fence);
-
 
 #endif

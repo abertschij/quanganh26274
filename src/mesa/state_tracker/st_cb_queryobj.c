@@ -35,18 +35,20 @@
 
 #include "main/imports.h"
 #include "main/context.h"
-#include "main/image.h"
+#include "main/mfeatures.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
+#include "pipe/p_screen.h"
 #include "st_context.h"
 #include "st_cb_queryobj.h"
+#include "st_cb_bitmap.h"
 
 
 #if FEATURE_queryobj
 
 static struct gl_query_object *
-st_NewQueryObject(GLcontext *ctx, GLuint id)
+st_NewQueryObject(struct gl_context *ctx, GLuint id)
 {
    struct st_query_object *stq = ST_CALLOC_STRUCT(st_query_object);
    if (stq) {
@@ -62,7 +64,7 @@ st_NewQueryObject(GLcontext *ctx, GLuint id)
 
 
 static void
-st_DeleteQuery(GLcontext *ctx, struct gl_query_object *q)
+st_DeleteQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_query_object *stq = st_query_object(q);
@@ -77,14 +79,18 @@ st_DeleteQuery(GLcontext *ctx, struct gl_query_object *q)
 
 
 static void
-st_BeginQuery(GLcontext *ctx, struct gl_query_object *q)
+st_BeginQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_query_object *stq = st_query_object(q);
    unsigned type;
 
+   st_flush_bitmap_cache(st_context(ctx));
+
    /* convert GL query type to Gallium query type */
    switch (q->Target) {
+   case GL_ANY_SAMPLES_PASSED:
+      /* fall-through */
    case GL_SAMPLES_PASSED_ARB:
       type = PIPE_QUERY_OCCLUSION_COUNTER;
       break;
@@ -121,17 +127,24 @@ st_BeginQuery(GLcontext *ctx, struct gl_query_object *q)
 
 
 static void
-st_EndQuery(GLcontext *ctx, struct gl_query_object *q)
+st_EndQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_query_object *stq = st_query_object(q);
+
+   st_flush_bitmap_cache(st_context(ctx));
+
+   if (q->Target == GL_TIMESTAMP && !stq->pq) {
+      stq->pq = pipe->create_query(pipe, PIPE_QUERY_TIMESTAMP);
+      stq->type = PIPE_QUERY_TIMESTAMP;
+   }
 
    pipe->end_query(pipe, stq->pq);
 }
 
 
 static void
-st_WaitQuery(GLcontext *ctx, struct gl_query_object *q)
+st_WaitQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_query_object *stq = st_query_object(q);
@@ -143,7 +156,7 @@ st_WaitQuery(GLcontext *ctx, struct gl_query_object *q)
 	  !pipe->get_query_result(pipe, 
 				  stq->pq,
 				  TRUE,
-				  &q->Result))
+				  (void*)&q->Result))
    {
       /* nothing */
    }
@@ -153,15 +166,22 @@ st_WaitQuery(GLcontext *ctx, struct gl_query_object *q)
 
 
 static void
-st_CheckQuery(GLcontext *ctx, struct gl_query_object *q)
+st_CheckQuery(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = st_context(ctx)->pipe;
    struct st_query_object *stq = st_query_object(q);
    assert(!q->Ready);   /* we should not get called if Ready is TRUE */
-   q->Ready = pipe->get_query_result(pipe, stq->pq, FALSE, &q->Result);
+   q->Ready = pipe->get_query_result(pipe, stq->pq, FALSE, (void*)&q->Result);
 }
 
 
+static uint64_t
+st_GetTimestamp(struct gl_context *ctx)
+{
+   struct pipe_screen *screen = st_context(ctx)->pipe->screen;
+
+   return screen->get_timestamp(screen);
+}
 
 
 void st_init_query_functions(struct dd_function_table *functions)
@@ -172,6 +192,7 @@ void st_init_query_functions(struct dd_function_table *functions)
    functions->EndQuery = st_EndQuery;
    functions->WaitQuery = st_WaitQuery;
    functions->CheckQuery = st_CheckQuery;
+   functions->GetTimestamp = st_GetTimestamp;
 }
 
 #endif /* FEATURE_queryobj */

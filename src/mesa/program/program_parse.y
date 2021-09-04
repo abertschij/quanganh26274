@@ -382,6 +382,8 @@ ARL_instruction: ARL maskedAddrReg ',' scalarSrcReg
 
 VECTORop_instruction: VECTOR_OP maskedDstReg ',' swizzleSrcReg
 	{
+	   if ($1.Opcode == OPCODE_DDY)
+	      state->fragment.UsesDFdy = 1;
 	   $$ = asm_instruction_copy_ctor(& $1, & $2, & $4, NULL, NULL);
 	}
 	;
@@ -802,7 +804,7 @@ srcReg: USED_IDENTIFIER /* temporaryReg | progParamSingle */
 	      break;
 	   case at_attrib:
 	      set_src_reg(& $$, PROGRAM_INPUT, s->attrib_binding);
-	      state->prog->InputsRead |= (1U << $$.Base.Index);
+	      state->prog->InputsRead |= BITFIELD64_BIT($$.Base.Index);
 
 	      if (!validate_inputs(& @1, state)) {
 		 YYERROR;
@@ -817,7 +819,7 @@ srcReg: USED_IDENTIFIER /* temporaryReg | progParamSingle */
 	| attribBinding
 	{
 	   set_src_reg(& $$, PROGRAM_INPUT, $1);
-	   state->prog->InputsRead |= (1U << $$.Base.Index);
+	   state->prog->InputsRead |= BITFIELD64_BIT($$.Base.Index);
 
 	   if (!validate_inputs(& @1, state)) {
 	      YYERROR;
@@ -935,7 +937,7 @@ addrRegRelOffset:              { $$ = 0; }
 
 addrRegPosOffset: INTEGER
 	{
-	   if (($1 < 0) || ($1 > 4095)) {
+	   if (($1 < 0) || ($1 > (state->limits->MaxAddressOffset - 1))) {
               char s[100];
               _mesa_snprintf(s, sizeof(s),
                              "relative address offset too large (%d)", $1);
@@ -949,7 +951,7 @@ addrRegPosOffset: INTEGER
 
 addrRegNegOffset: INTEGER
 	{
-	   if (($1 < 0) || ($1 > 4096)) {
+	   if (($1 < 0) || ($1 > state->limits->MaxAddressOffset)) {
               char s[100];
               _mesa_snprintf(s, sizeof(s),
                              "relative address offset too large (%d)", $1);
@@ -1110,7 +1112,7 @@ ATTRIB_statement: ATTRIB IDENTIFIER '=' attribBinding
 	      YYERROR;
 	   } else {
 	      s->attrib_binding = $4;
-	      state->InputsBound |= (1U << s->attrib_binding);
+	      state->InputsBound |= BITFIELD64_BIT(s->attrib_binding);
 
 	      if (!validate_inputs(& @4, state)) {
 		 YYERROR;
@@ -1258,7 +1260,11 @@ optArraySize:
 	| INTEGER
         {
 	   if (($1 < 1) || ((unsigned) $1 > state->limits->MaxParameters)) {
-	      yyerror(& @1, state, "invalid parameter array size");
+              char msg[100];
+              _mesa_snprintf(msg, sizeof(msg),
+                             "invalid parameter array size (size=%d max=%u)",
+                             $1, state->limits->MaxParameters);
+	      yyerror(& @1, state, msg);
 	      YYERROR;
 	   } else {
 	      $$ = $1;
@@ -1850,64 +1856,64 @@ paramConstUse: paramConstScalarUse | paramConstVector;
 paramConstScalarDecl: signedFloatConstant
 	{
 	   $$.count = 4;
-	   $$.data[0] = $1;
-	   $$.data[1] = $1;
-	   $$.data[2] = $1;
-	   $$.data[3] = $1;
+	   $$.data[0].f = $1;
+	   $$.data[1].f = $1;
+	   $$.data[2].f = $1;
+	   $$.data[3].f = $1;
 	}
 	;
 
 paramConstScalarUse: REAL
 	{
 	   $$.count = 1;
-	   $$.data[0] = $1;
-	   $$.data[1] = $1;
-	   $$.data[2] = $1;
-	   $$.data[3] = $1;
+	   $$.data[0].f = $1;
+	   $$.data[1].f = $1;
+	   $$.data[2].f = $1;
+	   $$.data[3].f = $1;
 	}
 	| INTEGER
 	{
 	   $$.count = 1;
-	   $$.data[0] = (float) $1;
-	   $$.data[1] = (float) $1;
-	   $$.data[2] = (float) $1;
-	   $$.data[3] = (float) $1;
+	   $$.data[0].f = (float) $1;
+	   $$.data[1].f = (float) $1;
+	   $$.data[2].f = (float) $1;
+	   $$.data[3].f = (float) $1;
 	}
 	;
 
 paramConstVector: '{' signedFloatConstant '}'
 	{
 	   $$.count = 4;
-	   $$.data[0] = $2;
-	   $$.data[1] = 0.0f;
-	   $$.data[2] = 0.0f;
-	   $$.data[3] = 1.0f;
+	   $$.data[0].f = $2;
+	   $$.data[1].f = 0.0f;
+	   $$.data[2].f = 0.0f;
+	   $$.data[3].f = 1.0f;
 	}
 	| '{' signedFloatConstant ',' signedFloatConstant '}'
 	{
 	   $$.count = 4;
-	   $$.data[0] = $2;
-	   $$.data[1] = $4;
-	   $$.data[2] = 0.0f;
-	   $$.data[3] = 1.0f;
+	   $$.data[0].f = $2;
+	   $$.data[1].f = $4;
+	   $$.data[2].f = 0.0f;
+	   $$.data[3].f = 1.0f;
 	}
 	| '{' signedFloatConstant ',' signedFloatConstant ','
               signedFloatConstant '}'
 	{
 	   $$.count = 4;
-	   $$.data[0] = $2;
-	   $$.data[1] = $4;
-	   $$.data[2] = $6;
-	   $$.data[3] = 1.0f;
+	   $$.data[0].f = $2;
+	   $$.data[1].f = $4;
+	   $$.data[2].f = $6;
+	   $$.data[3].f = 1.0f;
 	}
 	| '{' signedFloatConstant ',' signedFloatConstant ','
               signedFloatConstant ',' signedFloatConstant '}'
 	{
 	   $$.count = 4;
-	   $$.data[0] = $2;
-	   $$.data[1] = $4;
-	   $$.data[2] = $6;
-	   $$.data[3] = $8;
+	   $$.data[0].f = $2;
+	   $$.data[1].f = $4;
+	   $$.data[2].f = $6;
+	   $$.data[3].f = $8;
 	}
 	;
 
@@ -2060,9 +2066,42 @@ resultColBinding: COLOR optResultFaceType optResultColorType
 
 optResultFaceType:
 	{
-	   $$ = (state->mode == ARB_vertex)
-	      ? VERT_RESULT_COL0
-	      : FRAG_RESULT_COLOR;
+	   if (state->mode == ARB_vertex) {
+	      $$ = VERT_RESULT_COL0;
+	   } else {
+	      if (state->option.DrawBuffers)
+		 $$ = FRAG_RESULT_DATA0;
+	      else
+		 $$ = FRAG_RESULT_COLOR;
+	   }
+	}
+	| '[' INTEGER ']'
+	{
+	   if (state->mode == ARB_vertex) {
+	      yyerror(& @1, state, "invalid program result name");
+	      YYERROR;
+	   } else {
+	      if (!state->option.DrawBuffers) {
+		 /* From the ARB_draw_buffers spec (same text exists
+		  * for ATI_draw_buffers):
+		  *
+		  *     If this option is not specified, a fragment
+		  *     program that attempts to bind
+		  *     "result.color[n]" will fail to load, and only
+		  *     "result.color" will be allowed.
+		  */
+		 yyerror(& @1, state,
+			 "result.color[] used without "
+			 "`OPTION ARB_draw_buffers' or "
+			 "`OPTION ATI_draw_buffers'");
+		 YYERROR;
+	      } else if ($2 >= state->MaxDrawBuffers) {
+		 yyerror(& @1, state,
+			 "result.color[] exceeds MAX_DRAW_BUFFERS_ARB");
+		 YYERROR;
+	      }
+	      $$ = FRAG_RESULT_DATA0 + $2;
+	   }
 	}
 	| FRONT
 	{
@@ -2366,9 +2405,9 @@ set_src_reg_swz(struct asm_src_register *r, gl_register_file file, GLint index,
 int
 validate_inputs(struct YYLTYPE *locp, struct asm_parser_state *state)
 {
-   const int inputs = state->prog->InputsRead | state->InputsBound;
+   const GLbitfield64 inputs = state->prog->InputsRead | state->InputsBound;
 
-   if (((inputs & 0x0ffff) & (inputs >> 16)) != 0) {
+   if (((inputs & VERT_BIT_FF_ALL) & (inputs >> VERT_ATTRIB_GENERIC0)) != 0) {
       yyerror(locp, state, "illegal use of generic attribute and name attribute");
       return 0;
    }
@@ -2643,7 +2682,7 @@ yyerror(YYLTYPE *locp, struct asm_parser_state *state, const char *s)
 
 
 GLboolean
-_mesa_parse_arb_program(GLcontext *ctx, GLenum target, const GLubyte *str,
+_mesa_parse_arb_program(struct gl_context *ctx, GLenum target, const GLubyte *str,
 			GLsizei len, struct asm_parser_state *state)
 {
    struct asm_instruction *inst;
@@ -2681,6 +2720,7 @@ _mesa_parse_arb_program(GLcontext *ctx, GLenum target, const GLubyte *str,
    state->MaxClipPlanes = ctx->Const.MaxClipPlanes;
    state->MaxLights = ctx->Const.MaxLights;
    state->MaxProgramMatrices = ctx->Const.MaxProgramMatrices;
+   state->MaxDrawBuffers = ctx->Const.MaxDrawBuffers;
 
    state->state_param_enum = (target == GL_VERTEX_PROGRAM_ARB)
       ? STATE_VERTEX_PROGRAM : STATE_FRAGMENT_PROGRAM;
@@ -2730,7 +2770,7 @@ _mesa_parse_arb_program(GLcontext *ctx, GLenum target, const GLubyte *str,
    state->prog->NumInstructions++;
 
    state->prog->NumParameters = state->prog->Parameters->NumParameters;
-   state->prog->NumAttributes = _mesa_bitcount(state->prog->InputsRead);
+   state->prog->NumAttributes = _mesa_bitcount_64(state->prog->InputsRead);
 
    /*
     * Initialize native counts to logical counts.  The device driver may

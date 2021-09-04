@@ -201,12 +201,13 @@ aa_transform_inst(struct tgsi_transform_context *ctx,
       decl = tgsi_default_full_declaration();
       decl.Declaration.File = TGSI_FILE_INPUT;
       /* XXX this could be linear... */
-      decl.Declaration.Interpolate = TGSI_INTERPOLATE_PERSPECTIVE;
+      decl.Declaration.Interpolate = 1;
       decl.Declaration.Semantic = 1;
       decl.Semantic.Name = TGSI_SEMANTIC_GENERIC;
       decl.Semantic.Index = aactx->maxGeneric + 1;
       decl.Range.First = 
       decl.Range.Last = texInput;
+      decl.Interp.Interpolate = TGSI_INTERPOLATE_PERSPECTIVE;
       ctx->emit_declaration(ctx, &decl);
 
       /* declare new temp regs */
@@ -519,9 +520,9 @@ generate_aapoint_fs(struct aapoint_stage *aapoint)
                          newLen, &transform.base);
 
 #if 0 /* DEBUG */
-   printf("draw_aapoint, orig shader:\n");
+   debug_printf("draw_aapoint, orig shader:\n");
    tgsi_dump(orig_fs->tokens, 0);
-   printf("draw_aapoint, new shader:\n");
+   debug_printf("draw_aapoint, new shader:\n");
    tgsi_dump(aapoint_fs.tokens, 0);
 #endif
 
@@ -696,23 +697,22 @@ aapoint_first_point(struct draw_stage *stage, struct prim_header *header)
    bind_aapoint_fragment_shader(aapoint);
 
    /* update vertex attrib info */
-   aapoint->tex_slot = draw_current_shader_outputs(draw);
-   assert(aapoint->tex_slot > 0); /* output[0] is vertex pos */
-
    aapoint->pos_slot = draw_current_shader_position_output(draw);
 
-   draw->extra_shader_outputs.semantic_name = TGSI_SEMANTIC_GENERIC;
-   draw->extra_shader_outputs.semantic_index = aapoint->fs->generic_attrib;
-   draw->extra_shader_outputs.slot = aapoint->tex_slot;
+   /* allocate the extra post-transformed vertex attribute */
+   aapoint->tex_slot = draw_alloc_extra_vertex_attrib(draw,
+                                                      TGSI_SEMANTIC_GENERIC,
+                                                      aapoint->fs->generic_attrib);
+   assert(aapoint->tex_slot > 0); /* output[0] is vertex pos */
 
    /* find psize slot in post-transform vertex */
    aapoint->psize_slot = -1;
    if (draw->rasterizer->point_size_per_vertex) {
-      /* find PSIZ vertex output */
-      const struct draw_vertex_shader *vs = draw->vs.vertex_shader;
+      const struct tgsi_shader_info *info = draw_get_shader_info(draw);
       uint i;
-      for (i = 0; i < vs->info.num_outputs; i++) {
-         if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_PSIZE) {
+      /* find PSIZ vertex output */
+      for (i = 0; i < info->num_outputs; i++) {
+         if (info->output_semantic_name[i] == TGSI_SEMANTIC_PSIZE) {
             aapoint->psize_slot = i;
             break;
          }
@@ -745,7 +745,7 @@ aapoint_flush(struct draw_stage *stage, unsigned flags)
 
    /* restore original frag shader */
    draw->suspend_flushing = TRUE;
-   aapoint->driver_bind_fs_state(pipe, aapoint->fs->driver_fs);
+   aapoint->driver_bind_fs_state(pipe, aapoint->fs ? aapoint->fs->driver_fs : NULL);
 
    /* restore original rasterizer state */
    if (draw->rast_handle) {
@@ -754,7 +754,7 @@ aapoint_flush(struct draw_stage *stage, unsigned flags)
 
    draw->suspend_flushing = FALSE;
 
-   draw->extra_shader_outputs.slot = 0;
+   draw_remove_extra_vertex_attribs(draw);
 }
 
 
@@ -768,7 +768,16 @@ aapoint_reset_stipple_counter(struct draw_stage *stage)
 static void
 aapoint_destroy(struct draw_stage *stage)
 {
+   struct aapoint_stage* aapoint = aapoint_stage(stage);
+   struct pipe_context *pipe = stage->draw->pipe;
+
    draw_free_temp_verts( stage );
+
+   /* restore the old entry points */
+   pipe->create_fs_state = aapoint->driver_create_fs_state;
+   pipe->bind_fs_state = aapoint->driver_bind_fs_state;
+   pipe->delete_fs_state = aapoint->driver_delete_fs_state;
+
    FREE( stage );
 }
 
@@ -825,7 +834,7 @@ aapoint_create_fs_state(struct pipe_context *pipe,
    if (aafs == NULL) 
       return NULL;
 
-   aafs->state = *fs;
+   aafs->state.tokens = tgsi_dup_tokens(fs->tokens);
 
    /* pass-through */
    aafs->driver_fs = aapoint->driver_create_fs_state(pipe, fs);
@@ -859,6 +868,8 @@ aapoint_delete_fs_state(struct pipe_context *pipe, void *fs)
    if (aafs->aapoint_fs)
       aapoint->driver_delete_fs_state(pipe, aafs->aapoint_fs);
 
+   FREE((void*)aafs->state.tokens);
+
    FREE(aafs);
 }
 
@@ -873,6 +884,8 @@ draw_install_aapoint_stage(struct draw_context *draw,
                            struct pipe_context *pipe)
 {
    struct aapoint_stage *aapoint;
+
+   pipe->draw = (void *) draw;
 
    /*
     * Create / install AA point drawing / prim stage

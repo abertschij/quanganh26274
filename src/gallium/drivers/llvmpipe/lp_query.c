@@ -69,7 +69,7 @@ llvmpipe_destroy_query(struct pipe_context *pipe, struct pipe_query *q)
     */
    if (pq->fence) {
       if (!lp_fence_issued(pq->fence))
-         llvmpipe_flush(pipe, 0, NULL, __FUNCTION__);
+         llvmpipe_flush(pipe, NULL, __FUNCTION__);
 
       if (!lp_fence_signalled(pq->fence))
          lp_fence_wait(pq->fence);
@@ -85,7 +85,7 @@ static boolean
 llvmpipe_get_query_result(struct pipe_context *pipe, 
                           struct pipe_query *q,
                           boolean wait,
-                          void *vresult)
+                          union pipe_query_result *vresult)
 {
    struct llvmpipe_query *pq = llvmpipe_query(q);
    uint64_t *result = (uint64_t *)vresult;
@@ -99,7 +99,7 @@ llvmpipe_get_query_result(struct pipe_context *pipe,
 
    if (!lp_fence_signalled(pq->fence)) {
       if (!lp_fence_issued(pq->fence))
-         llvmpipe_flush(pipe, 0, NULL, __FUNCTION__);
+         llvmpipe_flush(pipe, NULL, __FUNCTION__);
          
       if (!wait)
          return FALSE;
@@ -154,6 +154,24 @@ llvmpipe_end_query(struct pipe_context *pipe, struct pipe_query *q)
    llvmpipe->dirty |= LP_NEW_QUERY;
 }
 
+boolean
+llvmpipe_check_render_cond(struct llvmpipe_context *lp)
+{
+   struct pipe_context *pipe = &lp->pipe;
+   boolean b, wait;
+   uint64_t result;
+
+   if (!lp->render_cond_query)
+      return TRUE; /* no query predicate, draw normally */
+   wait = (lp->render_cond_mode == PIPE_RENDER_COND_WAIT ||
+           lp->render_cond_mode == PIPE_RENDER_COND_BY_REGION_WAIT);
+
+   b = pipe->get_query_result(pipe, lp->render_cond_query, wait, (void*)&result);
+   if (b)
+      return result > 0;
+   else
+      return TRUE;
+}
 
 void llvmpipe_init_query_funcs(struct llvmpipe_context *llvmpipe )
 {

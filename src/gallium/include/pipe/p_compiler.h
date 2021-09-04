@@ -67,7 +67,9 @@ extern "C" {
 
 
 #if !defined(__HAIKU__) && !defined(__USE_MISC)
+#if !defined(PIPE_OS_ANDROID)
 typedef unsigned int       uint;
+#endif
 typedef unsigned short     ushort;
 #endif
 typedef unsigned char      ubyte;
@@ -89,26 +91,29 @@ typedef unsigned char boolean;
 #endif
 
 /* Function inlining */
-#ifndef INLINE
+#ifndef inline
 #  ifdef __cplusplus
-#    define INLINE inline
+     /* C++ supports inline keyword */
 #  elif defined(__GNUC__)
-#    define INLINE __inline__
+#    define inline __inline__
 #  elif defined(_MSC_VER)
-#    define INLINE __inline
+#    define inline __inline
 #  elif defined(__ICL)
-#    define INLINE __inline
+#    define inline __inline
 #  elif defined(__INTEL_COMPILER)
-#    define INLINE inline
+     /* Intel compiler supports inline keyword */
 #  elif defined(__WATCOMC__) && (__WATCOMC__ >= 1100)
-#    define INLINE __inline
+#    define inline __inline
 #  elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
-#    define INLINE inline
-#  elif (__STDC_VERSION__ >= 199901L) /* C99 */
-#    define INLINE inline
+     /* C99 supports inline keyword */
+#  elif (__STDC_VERSION__ >= 199901L)
+     /* C99 supports inline keyword */
 #  else
-#    define INLINE
+#    define inline
 #  endif
+#endif
+#ifndef INLINE
+#  define INLINE inline
 #endif
 
 /* Forced function inlining */
@@ -121,6 +126,27 @@ typedef unsigned char boolean;
 #    define ALWAYS_INLINE INLINE
 #  endif
 #endif
+
+/*
+ * Define the C99 restrict keyword.
+ *
+ * See also:
+ * - http://cellperformance.beyond3d.com/articles/2006/05/demystifying-the-restrict-keyword.html
+ */
+#ifndef restrict
+#  if (__STDC_VERSION__ >= 199901L)
+     /* C99 */
+#  elif defined(__SUNPRO_C) && defined(__C99FEATURES__)
+     /* C99 */
+#  elif defined(__GNUC__)
+#    define restrict __restrict__
+#  elif defined(_MSC_VER)
+#    define restrict __restrict
+#  else
+#    define restrict /* */
+#  endif
+#endif
+
 
 /* Function visibility */
 #ifndef PUBLIC
@@ -150,6 +176,18 @@ typedef unsigned char boolean;
 #  define __FUNCTION__ "<unknown>"
 # endif
 #endif
+#ifndef __func__
+#  if (__STDC_VERSION__ >= 199901L) || \
+      (defined(__SUNPRO_C) && defined(__C99FEATURES__))
+       /* __func__ is part of C99 */
+#  elif defined(_MSC_VER)
+#    if _MSC_VER >= 1300
+#      define __func__ __FUNCTION__
+#    else
+#      define __func__ "<unknown>"
+#    endif
+#  endif
+#endif
 
 
 
@@ -173,7 +211,7 @@ typedef unsigned char boolean;
 
 
 /* Macros for data alignment. */
-#if defined(__GNUC__) || (defined(__SUNPRO_C) && (__SUNPRO_C >= 0x590))
+#if defined(__GNUC__) || (defined(__SUNPRO_C) && (__SUNPRO_C >= 0x590)) || defined(__SUNPRO_CC)
 
 /* See http://gcc.gnu.org/onlinedocs/gcc-4.4.2/gcc/Type-Attributes.html */
 #define PIPE_ALIGN_TYPE(_alignment, _type) _type __attribute__((aligned(_alignment)))
@@ -219,6 +257,10 @@ void _ReadWriteBarrier(void);
 #pragma intrinsic(_ReadWriteBarrier)
 #define PIPE_READ_WRITE_BARRIER() _ReadWriteBarrier()
 
+#elif defined(__SUNPRO_C) || defined(__SUNPRO_CC)
+
+#define PIPE_READ_WRITE_BARRIER() __machine_rw_barrier()
+
 #else
 
 #warning "Unsupported compiler"
@@ -259,13 +301,26 @@ void _ReadWriteBarrier(void);
  * Note that profile guided optimization can offer better results, but
  * needs an appropriate coverage suite and does not inform human readers.
  */
-#ifdef __GNUC__
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
-#else
-#define likely(x) !!(x)
-#define unlikely(x) !!(x)
+#ifndef likely
+#  if defined(__GNUC__)
+#    define likely(x)   __builtin_expect(!!(x), 1)
+#    define unlikely(x) __builtin_expect(!!(x), 0)
+#  else
+#    define likely(x)   (x)
+#    define unlikely(x) (x)
+#  endif
 #endif
+
+
+/**
+ * Static (compile-time) assertion.
+ * Basically, use COND to dimension an array.  If COND is false/zero the
+ * array size will be -1 and we'll get a compilation error.
+ */
+#define STATIC_ASSERT(COND) \
+   do { \
+      typedef int static_assertion_failed[(!!(COND))*2-1]; \
+   } while (0)
 
 
 #if defined(__cplusplus)

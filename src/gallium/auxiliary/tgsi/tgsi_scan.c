@@ -68,7 +68,8 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
    procType = parse.FullHeader.Processor.Processor;
    assert(procType == TGSI_PROCESSOR_FRAGMENT ||
           procType == TGSI_PROCESSOR_VERTEX ||
-          procType == TGSI_PROCESSOR_GEOMETRY);
+          procType == TGSI_PROCESSOR_GEOMETRY ||
+          procType == TGSI_PROCESSOR_COMPUTE);
 
 
    /**
@@ -108,6 +109,17 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                      assert(ind < PIPE_MAX_SHADER_INPUTS);
                      info->input_usage_mask[ind] |= usage_mask;
                   }
+
+                  if (procType == TGSI_PROCESSOR_FRAGMENT &&
+                      src->Register.File == TGSI_FILE_INPUT &&
+                      info->reads_position &&
+                      src->Register.Index == 0 &&
+                      (src->Register.SwizzleX == TGSI_SWIZZLE_Z ||
+                       src->Register.SwizzleY == TGSI_SWIZZLE_Z ||
+                       src->Register.SwizzleZ == TGSI_SWIZZLE_Z ||
+                       src->Register.SwizzleW == TGSI_SWIZZLE_Z)) {
+                     info->reads_z = TRUE;
+                  }
                }
 
                /* check for indirect register reads */
@@ -143,23 +155,54 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                info->file_count[file]++;
                info->file_max[file] = MAX2(info->file_max[file], (int)reg);
 
-               if (file == TGSI_FILE_INPUT || file == TGSI_FILE_SYSTEM_VALUE) {
+               if (file == TGSI_FILE_INPUT) {
                   info->input_semantic_name[reg] = (ubyte)fulldecl->Semantic.Name;
                   info->input_semantic_index[reg] = (ubyte)fulldecl->Semantic.Index;
-                  info->input_interpolate[reg] = (ubyte)fulldecl->Declaration.Interpolate;
-                  info->input_cylindrical_wrap[reg] = (ubyte)fulldecl->Declaration.CylindricalWrap;
+                  info->input_interpolate[reg] = (ubyte)fulldecl->Interp.Interpolate;
+                  info->input_centroid[reg] = (ubyte)fulldecl->Interp.Centroid;
+                  info->input_cylindrical_wrap[reg] = (ubyte)fulldecl->Interp.CylindricalWrap;
                   info->num_inputs++;
+
+                  if (procType == TGSI_PROCESSOR_FRAGMENT &&
+                      fulldecl->Semantic.Name == TGSI_SEMANTIC_POSITION)
+                        info->reads_position = TRUE;
+               }
+               else if (file == TGSI_FILE_SYSTEM_VALUE) {
+                  unsigned index = fulldecl->Range.First;
+                  unsigned semName = fulldecl->Semantic.Name;
+
+                  info->system_value_semantic_name[index] = semName;
+                  info->num_system_values = MAX2(info->num_system_values,
+                                                 index + 1);
+
+                  /*
+                  info->system_value_semantic_name[info->num_system_values++] = 
+                     fulldecl->Semantic.Name;
+                  */
+
+                  if (fulldecl->Semantic.Name == TGSI_SEMANTIC_INSTANCEID) {
+                     info->uses_instanceid = TRUE;
+                  }
+                  else if (fulldecl->Semantic.Name == TGSI_SEMANTIC_VERTEXID) {
+                     info->uses_vertexid = TRUE;
+                  }
                }
                else if (file == TGSI_FILE_OUTPUT) {
                   info->output_semantic_name[reg] = (ubyte)fulldecl->Semantic.Name;
                   info->output_semantic_index[reg] = (ubyte)fulldecl->Semantic.Index;
                   info->num_outputs++;
 
+                  if (procType == TGSI_PROCESSOR_VERTEX &&
+                      fulldecl->Semantic.Name == TGSI_SEMANTIC_CLIPDIST) {
+                     info->num_written_clipdistance += util_bitcount(fulldecl->Declaration.UsageMask);
+                  }
                   /* extra info for special outputs */
                   if (procType == TGSI_PROCESSOR_FRAGMENT &&
-                      fulldecl->Semantic.Name == TGSI_SEMANTIC_POSITION) {
-                     info->writes_z = TRUE;
-                  }
+                      fulldecl->Semantic.Name == TGSI_SEMANTIC_POSITION)
+                        info->writes_z = TRUE;
+                  if (procType == TGSI_PROCESSOR_FRAGMENT &&
+                      fulldecl->Semantic.Name == TGSI_SEMANTIC_STENCIL)
+                        info->writes_stencil = TRUE;
                   if (procType == TGSI_PROCESSOR_VERTEX &&
                       fulldecl->Semantic.Name == TGSI_SEMANTIC_EDGEFLAG) {
                      info->writes_edgeflag = TRUE;
@@ -180,19 +223,20 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
             info->file_max[file] = MAX2(info->file_max[file], (int)reg);
          }
          break;
+
       case TGSI_TOKEN_TYPE_PROPERTY:
-      {
-         const struct tgsi_full_property *fullprop
-            = &parse.FullToken.FullProperty;
+         {
+            const struct tgsi_full_property *fullprop
+               = &parse.FullToken.FullProperty;
 
-         info->properties[info->num_properties].name =
-            fullprop->Property.PropertyName;
-         memcpy(info->properties[info->num_properties].data,
-                fullprop->u, 8 * sizeof(unsigned));;
+            info->properties[info->num_properties].name =
+               fullprop->Property.PropertyName;
+            memcpy(info->properties[info->num_properties].data,
+                   fullprop->u, 8 * sizeof(unsigned));;
 
-         ++info->num_properties;
-      }
-      break;
+            ++info->num_properties;
+         }
+         break;
 
       default:
          assert( 0 );
@@ -201,6 +245,23 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
 
    info->uses_kill = (info->opcode_count[TGSI_OPCODE_KIL] ||
                       info->opcode_count[TGSI_OPCODE_KILP]);
+
+   /* extract simple properties */
+   for (i = 0; i < info->num_properties; ++i) {
+      switch (info->properties[i].name) {
+      case TGSI_PROPERTY_FS_COORD_ORIGIN:
+         info->origin_lower_left = info->properties[i].data[0];
+         break;
+      case TGSI_PROPERTY_FS_COORD_PIXEL_CENTER:
+         info->pixel_center_integer = info->properties[i].data[0];
+         break;
+      case TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS:
+         info->color0_writes_all_cbufs = info->properties[i].data[0];
+         break;
+      default:
+         ;
+      }
+   }
 
    tgsi_parse_free (&parse);
 }

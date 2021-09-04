@@ -35,11 +35,7 @@
 
 #include "native.h"
 #include "egl_g3d.h"
-#include "egl_g3d_api.h"
 #include "egl_g3d_image.h"
-
-/* move this to native display? */
-#include "state_tracker/drm_driver.h"
 
 /**
  * Reference and return the front left buffer of the native pixmap.
@@ -48,17 +44,11 @@ static struct pipe_resource *
 egl_g3d_reference_native_pixmap(_EGLDisplay *dpy, EGLNativePixmapType pix)
 {
    struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
-   struct egl_g3d_config *gconf;
    struct native_surface *nsurf;
    struct pipe_resource *textures[NUM_NATIVE_ATTACHMENTS];
    enum native_attachment natt;
 
-   gconf = egl_g3d_config(egl_g3d_find_pixmap_config(dpy, pix));
-   if (!gconf)
-      return NULL;
-
-   nsurf = gdpy->native->create_pixmap_surface(gdpy->native,
-         pix, gconf->native);
+   nsurf = gdpy->native->create_pixmap_surface(gdpy->native, pix, NULL);
    if (!nsurf)
       return NULL;
 
@@ -74,62 +64,41 @@ egl_g3d_reference_native_pixmap(_EGLDisplay *dpy, EGLNativePixmapType pix)
 #ifdef EGL_MESA_drm_image
 
 static struct pipe_resource *
-egl_g3d_create_drm_buffer(_EGLDisplay *dpy, const EGLint *attribs)
+egl_g3d_create_drm_buffer(_EGLDisplay *dpy, _EGLImage *img,
+                          const EGLint *attribs)
 {
    struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
    struct pipe_screen *screen = gdpy->native->screen;
    struct pipe_resource templ;
-   EGLint width = 0, height = 0, format = 0, use = 0;
-   EGLint valid_use;
-   EGLint i, err = EGL_SUCCESS;
+   _EGLImageAttribs attrs;
+   EGLint format, valid_use;
 
-   for (i = 0; attribs[i] != EGL_NONE; i++) {
-      EGLint attr = attribs[i++];
-      EGLint val = attribs[i];
+   if (_eglParseImageAttribList(&attrs, dpy, attribs) != EGL_SUCCESS)
+      return NULL;
 
-      switch (attr) {
-      case EGL_WIDTH:
-	 width = val;
-         break;
-      case EGL_HEIGHT:
-	 height = val;
-         break;
-      case EGL_DRM_BUFFER_FORMAT_MESA:
-	 format = val;
-         break;
-      case EGL_DRM_BUFFER_USE_MESA:
-	 use = val;
-         break;
-      default:
-         err = EGL_BAD_ATTRIBUTE;
-         break;
-      }
-
-      if (err != EGL_SUCCESS) {
-         _eglLog(_EGL_DEBUG, "bad image attribute 0x%04x", attr);
-         return NULL;
-      }
-   }
-
-   if (width <= 0 || height <= 0) {
-      _eglLog(_EGL_DEBUG, "bad width or height (%dx%d)", width, height);
+   if (attrs.Width <= 0 || attrs.Height <= 0) {
+      _eglLog(_EGL_DEBUG, "bad width or height (%dx%d)",
+            attrs.Width, attrs.Height);
       return NULL;
    }
 
-   switch (format) {
+   switch (attrs.DRMBufferFormatMESA) {
    case EGL_DRM_BUFFER_FORMAT_ARGB32_MESA:
       format = PIPE_FORMAT_B8G8R8A8_UNORM;
       break;
    default:
-      _eglLog(_EGL_DEBUG, "bad image format value 0x%04x", format);
+      _eglLog(_EGL_DEBUG, "bad image format value 0x%04x",
+            attrs.DRMBufferFormatMESA);
       return NULL;
       break;
    }
 
    valid_use = EGL_DRM_BUFFER_USE_SCANOUT_MESA |
-               EGL_DRM_BUFFER_USE_SHARE_MESA;
-   if (use & ~valid_use) {
-      _eglLog(_EGL_DEBUG, "bad image use bit 0x%04x", use);
+               EGL_DRM_BUFFER_USE_SHARE_MESA |
+               EGL_DRM_BUFFER_USE_CURSOR_MESA;
+   if (attrs.DRMBufferUseMESA & ~valid_use) {
+      _eglLog(_EGL_DEBUG, "bad image use bit 0x%04x",
+            attrs.DRMBufferUseMESA);
       return NULL;
    }
 
@@ -137,98 +106,119 @@ egl_g3d_create_drm_buffer(_EGLDisplay *dpy, const EGLint *attribs)
    templ.target = PIPE_TEXTURE_2D;
    templ.format = format;
    templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
-   templ.width0 = width;
-   templ.height0 = height;
+   templ.width0 = attrs.Width;
+   templ.height0 = attrs.Height;
    templ.depth0 = 1;
+   templ.array_size = 1;
 
    /*
     * XXX fix apps (e.g. wayland) and pipe drivers (e.g. i915) and remove the
     * size check
     */
-   if ((use & EGL_DRM_BUFFER_USE_SCANOUT_MESA) &&
-       width >= 640 && height >= 480)
+   if ((attrs.DRMBufferUseMESA & EGL_DRM_BUFFER_USE_SCANOUT_MESA) &&
+       attrs.Width >= 640 && attrs.Height >= 480)
       templ.bind |= PIPE_BIND_SCANOUT;
-   if (use & EGL_DRM_BUFFER_USE_SHARE_MESA)
+   if (attrs.DRMBufferUseMESA & EGL_DRM_BUFFER_USE_SHARE_MESA)
       templ.bind |= PIPE_BIND_SHARED;
+   if (attrs.DRMBufferUseMESA & EGL_DRM_BUFFER_USE_CURSOR_MESA) {
+      if (attrs.Width != 64 || attrs.Height != 64)
+         return NULL;
+      templ.bind |= PIPE_BIND_CURSOR;
+   }
 
    return screen->resource_create(screen, &templ);
 }
 
 static struct pipe_resource *
 egl_g3d_reference_drm_buffer(_EGLDisplay *dpy, EGLint name,
-                             const EGLint *attribs)
+                             _EGLImage *img, const EGLint *attribs)
 {
    struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
-   struct pipe_screen *screen = gdpy->native->screen;
-   struct pipe_resource templ;
-   struct winsys_handle wsh;
-   EGLint width = 0, height = 0, format = 0, stride = 0;
-   EGLint i, err = EGL_SUCCESS;
+   _EGLImageAttribs attrs;
+   EGLint format;
+   struct native_buffer nbuf;
 
-   /* winsys_handle is in theory platform-specific */
-   if (dpy->Platform != _EGL_PLATFORM_DRM)
+   if (!dpy->Extensions.MESA_drm_image)
       return NULL;
 
-   for (i = 0; attribs[i] != EGL_NONE; i++) {
-      EGLint attr = attribs[i++];
-      EGLint val = attribs[i];
+   if (_eglParseImageAttribList(&attrs, dpy, attribs) != EGL_SUCCESS)
+      return NULL;
 
-      switch (attr) {
-      case EGL_WIDTH:
-	 width = val;
-         break;
-      case EGL_HEIGHT:
-	 height = val;
-         break;
-      case EGL_DRM_BUFFER_FORMAT_MESA:
-	 format = val;
-         break;
-      case EGL_DRM_BUFFER_STRIDE_MESA:
-	 stride = val;
-         break;
-      default:
-         err = EGL_BAD_ATTRIBUTE;
-         break;
-      }
-
-      if (err != EGL_SUCCESS) {
-         _eglLog(_EGL_DEBUG, "bad image attribute 0x%04x", attr);
-         return NULL;
-      }
-   }
-
-   if (width <= 0 || height <= 0 || stride <= 0) {
+   if (attrs.Width <= 0 || attrs.Height <= 0 ||
+       attrs.DRMBufferStrideMESA <= 0) {
       _eglLog(_EGL_DEBUG, "bad width, height, or stride (%dx%dx%d)",
-            width, height, stride);
+            attrs.Width, attrs.Height, attrs.DRMBufferStrideMESA);
       return NULL;
    }
 
-   switch (format) {
+   switch (attrs.DRMBufferFormatMESA) {
    case EGL_DRM_BUFFER_FORMAT_ARGB32_MESA:
       format = PIPE_FORMAT_B8G8R8A8_UNORM;
       break;
    default:
-      _eglLog(_EGL_DEBUG, "bad image format value 0x%04x", format);
+      _eglLog(_EGL_DEBUG, "bad image format value 0x%04x",
+            attrs.DRMBufferFormatMESA);
       return NULL;
       break;
    }
 
-   memset(&templ, 0, sizeof(templ));
-   templ.target = PIPE_TEXTURE_2D;
-   templ.format = format;
-   templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
-   templ.width0 = width;
-   templ.height0 = height;
-   templ.depth0 = 1;
+   memset(&nbuf, 0, sizeof(nbuf));
+   nbuf.type = NATIVE_BUFFER_DRM;
+   nbuf.u.drm.templ.target = PIPE_TEXTURE_2D;
+   nbuf.u.drm.templ.format = format;
+   nbuf.u.drm.templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+   nbuf.u.drm.templ.width0 = attrs.Width;
+   nbuf.u.drm.templ.height0 = attrs.Height;
+   nbuf.u.drm.templ.depth0 = 1;
+   nbuf.u.drm.templ.array_size = 1;
 
-   memset(&wsh, 0, sizeof(wsh));
-   wsh.handle = (unsigned) name;
-   wsh.stride = stride;
+   nbuf.u.drm.name = name;
+   nbuf.u.drm.stride =
+      attrs.DRMBufferStrideMESA * util_format_get_blocksize(format);
 
-   return screen->resource_from_handle(screen, &templ, &wsh);
+   return gdpy->native->buffer->import_buffer(gdpy->native, &nbuf);
 }
 
 #endif /* EGL_MESA_drm_image */
+
+#ifdef EGL_WL_bind_wayland_display
+
+static struct pipe_resource *
+egl_g3d_reference_wl_buffer(_EGLDisplay *dpy, struct wl_buffer *buffer,
+                            _EGLImage *img, const EGLint *attribs)
+{
+   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
+   struct pipe_resource *resource = NULL, *tmp = NULL;
+
+   if (!gdpy->native->wayland_bufmgr)
+      return NULL;
+
+   tmp = gdpy->native->wayland_bufmgr->buffer_get_resource(gdpy->native, buffer);
+
+   pipe_resource_reference(&resource, tmp);
+
+   return resource;
+}
+
+#endif /* EGL_WL_bind_wayland_display */
+
+#ifdef EGL_ANDROID_image_native_buffer
+
+static struct pipe_resource *
+egl_g3d_reference_android_native_buffer(_EGLDisplay *dpy,
+                                        struct ANativeWindowBuffer *buf)
+{
+   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
+   struct native_buffer nbuf;
+
+   memset(&nbuf, 0, sizeof(nbuf));
+   nbuf.type = NATIVE_BUFFER_ANDROID;
+   nbuf.u.android = buf;
+    
+   return gdpy->native->buffer->import_buffer(gdpy->native, &nbuf);
+}
+
+#endif /* EGL_ANDROID_image_native_buffer */
 
 _EGLImage *
 egl_g3d_create_image(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx,
@@ -237,7 +227,7 @@ egl_g3d_create_image(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx,
 {
    struct pipe_resource *ptex;
    struct egl_g3d_image *gimg;
-   unsigned face = 0, level = 0, zslice = 0;
+   unsigned level = 0, layer = 0;
 
    gimg = CALLOC_STRUCT(egl_g3d_image);
    if (!gimg) {
@@ -245,7 +235,7 @@ egl_g3d_create_image(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx,
       return NULL;
    }
 
-   if (!_eglInitImage(&gimg->base, dpy, attribs)) {
+   if (!_eglInitImage(&gimg->base, dpy)) {
       FREE(gimg);
       return NULL;
    }
@@ -257,7 +247,20 @@ egl_g3d_create_image(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx,
       break;
 #ifdef EGL_MESA_drm_image
    case EGL_DRM_BUFFER_MESA:
-      ptex = egl_g3d_reference_drm_buffer(dpy, (EGLint) buffer, attribs);
+      ptex = egl_g3d_reference_drm_buffer(dpy,
+            (EGLint) pointer_to_intptr(buffer), &gimg->base, attribs);
+      break;
+#endif
+#ifdef EGL_WL_bind_wayland_display
+   case EGL_WAYLAND_BUFFER_WL:
+      ptex = egl_g3d_reference_wl_buffer(dpy,
+            (struct wl_buffer *) buffer, &gimg->base, attribs);
+      break;
+#endif
+#ifdef EGL_ANDROID_image_native_buffer
+   case EGL_NATIVE_BUFFER_ANDROID:
+      ptex = egl_g3d_reference_android_native_buffer(dpy,
+            (struct ANativeWindowBuffer *) buffer);
       break;
 #endif
    default:
@@ -276,7 +279,7 @@ egl_g3d_create_image(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx,
       FREE(gimg);
       return NULL;
    }
-   if (zslice > ptex->depth0) {
+   if (layer >= (u_minify(ptex->depth0, level) + ptex->array_size - 1)) {
       _eglError(EGL_BAD_PARAMETER, "eglCreateEGLImageKHR");
       pipe_resource_reference(&gimg->texture, NULL);
       FREE(gimg);
@@ -285,9 +288,8 @@ egl_g3d_create_image(_EGLDriver *drv, _EGLDisplay *dpy, _EGLContext *ctx,
 
    /* transfer the ownership to the image */
    gimg->texture = ptex;
-   gimg->face = face;
    gimg->level = level;
-   gimg->zslice = zslice;
+   gimg->layer = layer;
 
    return &gimg->base;
 }
@@ -316,13 +318,13 @@ egl_g3d_create_drm_image(_EGLDriver *drv, _EGLDisplay *dpy,
       return NULL;
    }
 
-   if (!_eglInitImage(&gimg->base, dpy, attribs)) {
+   if (!_eglInitImage(&gimg->base, dpy)) {
       FREE(gimg);
       return NULL;
    }
 
 #ifdef EGL_MESA_drm_image
-   ptex = egl_g3d_create_drm_buffer(dpy, attribs);
+   ptex = egl_g3d_create_drm_buffer(dpy, &gimg->base, attribs);
 #else
    ptex = NULL;
 #endif
@@ -333,9 +335,8 @@ egl_g3d_create_drm_image(_EGLDriver *drv, _EGLDisplay *dpy,
 
    /* transfer the ownership to the image */
    gimg->texture = ptex;
-   gimg->face = 0;
    gimg->level = 0;
-   gimg->zslice = 0;
+   gimg->layer = 0;
 
    return &gimg->base;
 }
@@ -346,36 +347,26 @@ egl_g3d_export_drm_image(_EGLDriver *drv, _EGLDisplay *dpy, _EGLImage *img,
 {
    struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
    struct egl_g3d_image *gimg = egl_g3d_image(img);
-   struct pipe_screen *screen = gdpy->native->screen;
-   struct winsys_handle wsh;
+   struct native_buffer nbuf;
 
-   /* winsys_handle is in theory platform-specific */
-   if (dpy->Platform != _EGL_PLATFORM_DRM)
+   if (!dpy->Extensions.MESA_drm_image)
       return EGL_FALSE;
 
-   /* get shared handle */
-   if (name) {
-      memset(&handle, 0, sizeof(handle));
-      wsh.type = DRM_API_HANDLE_TYPE_SHARED;
-      if (!screen->resource_get_handle(screen, gimg->texture, &wsh)) {
-         return EGL_FALSE;
-      }
+   memset(&nbuf, 0, sizeof(nbuf));
+   nbuf.type = NATIVE_BUFFER_DRM;
+   if (name)
+      nbuf.u.drm.templ.bind |= PIPE_BIND_SHARED;
 
-      *name = wsh.handle;
-   }
+   if (!gdpy->native->buffer->export_buffer(gdpy->native,
+                                            gimg->texture, &nbuf))
+      return EGL_FALSE;
 
-   /* get KMS handle */
-   if (handle || stride) {
-      memset(&wsh, 0, sizeof(wsh));
-      wsh.type = DRM_API_HANDLE_TYPE_KMS;
-      if (!screen->resource_get_handle(screen, gimg->texture, &wsh))
-         return EGL_FALSE;
-
-      if (handle)
-         *handle = wsh.handle;
-      if (stride)
-         *stride = wsh.stride;
-   }
+   if (name)
+      *name = nbuf.u.drm.name;
+   if (handle)
+      *handle = nbuf.u.drm.handle;
+   if (stride)
+      *stride = nbuf.u.drm.stride;
 
    return EGL_TRUE;
 }

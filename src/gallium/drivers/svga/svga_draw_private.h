@@ -93,7 +93,9 @@ struct index_cache {
    struct pipe_resource *buffer;
 };
 
-#define QSZ 32
+
+/** Max number of primitives per draw call */
+#define QSZ SVGA3D_MAX_DRAW_PRIMITIVE_RANGES
 
 struct draw_cmd {
    struct svga_winsys_context *swc;
@@ -114,6 +116,13 @@ struct draw_cmd {
 struct svga_hwtnl {
    struct svga_context *svga;
    struct u_upload_mgr *upload_ib;
+
+   /* Additional negative index bias due to partial buffer uploads
+    * This is compensated for in the offset associated with all
+    * vertex buffers.
+    */
+
+   int index_bias;
    
    /* Flatshade information:
     */

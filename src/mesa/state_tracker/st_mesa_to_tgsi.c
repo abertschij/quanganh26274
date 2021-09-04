@@ -72,12 +72,7 @@ struct st_translate {
    struct ureg_src inputs[PIPE_MAX_SHADER_INPUTS];
    struct ureg_dst address[1];
    struct ureg_src samplers[PIPE_MAX_SAMPLERS];
-
-   /* Extra info for handling point size clamping in vertex shader */
-   struct ureg_dst pointSizeResult; /**< Actual point size output register */
-   struct ureg_src pointSizeConst;  /**< Point size range constant register */
-   GLint pointSizeOutIndex;         /**< Temp point size output register */
-   GLboolean prevInstWrotePointSize;
+   struct ureg_src systemValues[SYSTEM_VALUE_MAX];
 
    const GLuint *inputMapping;
    const GLuint *outputMapping;
@@ -104,6 +99,14 @@ struct st_translate {
 };
 
 
+/** Map Mesa's SYSTEM_VALUE_x to TGSI_SEMANTIC_x */
+static unsigned mesa_sysval_to_semantic[SYSTEM_VALUE_MAX] = {
+   TGSI_SEMANTIC_FACE,
+   TGSI_SEMANTIC_VERTEXID,
+   TGSI_SEMANTIC_INSTANCEID
+};
+
+
 /**
  * Make note of a branch to a label in the TGSI code.
  * After we've emitted all instructions, we'll go over the list
@@ -116,11 +119,8 @@ static unsigned *get_label( struct st_translate *t,
    unsigned i;
 
    if (t->labels_count + 1 >= t->labels_size) {
-      unsigned old_size = t->labels_size;
       t->labels_size = 1 << (util_logbase2(t->labels_size) + 1);
-      t->labels = REALLOC( t->labels, 
-                           old_size * sizeof t->labels[0], 
-                           t->labels_size * sizeof t->labels[0] );
+      t->labels = realloc(t->labels, t->labels_size * sizeof t->labels[0]);
       if (t->labels == NULL) {
          static unsigned dummy;
          t->error = TRUE;
@@ -144,11 +144,8 @@ static void set_insn_start( struct st_translate *t,
                             unsigned start )
 {
    if (t->insn_count + 1 >= t->insn_size) {
-      unsigned old_size = t->insn_size;
       t->insn_size = 1 << (util_logbase2(t->insn_size) + 1);
-      t->insn = REALLOC( t->insn, 
-                         old_size * sizeof t->insn[0], 
-                         t->insn_size * sizeof t->insn[0] );
+      t->insn = realloc(t->insn, t->insn_size * sizeof t->insn[0]);
       if (t->insn == NULL) {
          t->error = TRUE;
          return;
@@ -178,9 +175,6 @@ dst_register( struct st_translate *t,
       return t->temps[index];
 
    case PROGRAM_OUTPUT:
-      if (t->procType == TGSI_PROCESSOR_VERTEX && index == VERT_RESULT_PSIZ)
-         t->prevInstWrotePointSize = GL_TRUE;
-
       if (t->procType == TGSI_PROCESSOR_VERTEX)
          assert(index < VERT_RESULT_MAX);
       else if (t->procType == TGSI_PROCESSOR_FRAGMENT)
@@ -216,9 +210,9 @@ src_register( struct st_translate *t,
 
    case PROGRAM_TEMPORARY:
       assert(index >= 0);
+      assert(index < Elements(t->temps));
       if (ureg_dst_is_undef(t->temps[index]))
          t->temps[index] = ureg_DECL_temporary( t->ureg );
-      assert(index < Elements(t->temps));
       return ureg_src(t->temps[index]);
 
    case PROGRAM_NAMED_PARAM:
@@ -245,6 +239,10 @@ src_register( struct st_translate *t,
    case PROGRAM_ADDRESS:
       return ureg_src(t->address[index]);
 
+   case PROGRAM_SYSTEM_VALUE:
+      assert(index < Elements(t->systemValues));
+      return t->systemValues[index];
+
    default:
       debug_assert( 0 );
       return ureg_src_undef();
@@ -255,8 +253,8 @@ src_register( struct st_translate *t,
 /**
  * Map mesa texture target to TGSI texture target.
  */
-static unsigned
-translate_texture_target( GLuint textarget,
+unsigned
+st_translate_texture_target( GLuint textarget,
                           GLboolean shadow )
 {
    if (shadow) {
@@ -264,6 +262,9 @@ translate_texture_target( GLuint textarget,
       case TEXTURE_1D_INDEX:   return TGSI_TEXTURE_SHADOW1D;
       case TEXTURE_2D_INDEX:   return TGSI_TEXTURE_SHADOW2D;
       case TEXTURE_RECT_INDEX: return TGSI_TEXTURE_SHADOWRECT;
+      case TEXTURE_1D_ARRAY_INDEX: return TGSI_TEXTURE_SHADOW1D_ARRAY;
+      case TEXTURE_2D_ARRAY_INDEX: return TGSI_TEXTURE_SHADOW2D_ARRAY;
+      case TEXTURE_CUBE_INDEX: return TGSI_TEXTURE_SHADOWCUBE;
       default: break;
       }
    }
@@ -274,6 +275,9 @@ translate_texture_target( GLuint textarget,
    case TEXTURE_3D_INDEX:   return TGSI_TEXTURE_3D;
    case TEXTURE_CUBE_INDEX: return TGSI_TEXTURE_CUBE;
    case TEXTURE_RECT_INDEX: return TGSI_TEXTURE_RECT;
+   case TEXTURE_1D_ARRAY_INDEX:   return TGSI_TEXTURE_1D_ARRAY;
+   case TEXTURE_2D_ARRAY_INDEX:   return TGSI_TEXTURE_2D_ARRAY;
+   case TEXTURE_EXTERNAL_INDEX:   return TGSI_TEXTURE_2D;
    default:
       debug_assert( 0 );
       return TGSI_TEXTURE_1D;
@@ -287,7 +291,8 @@ translate_texture_target( GLuint textarget,
 static struct ureg_dst
 translate_dst( struct st_translate *t,
                const struct prog_dst_register *DstReg,
-               boolean saturate )
+               boolean saturate,
+               boolean clamp_color)
 {
    struct ureg_dst dst = dst_register( t, 
                                        DstReg->File,
@@ -298,6 +303,27 @@ translate_dst( struct st_translate *t,
    
    if (saturate)
       dst = ureg_saturate( dst );
+   else if (clamp_color && DstReg->File == PROGRAM_OUTPUT) {
+      /* Clamp colors for ARB_color_buffer_float. */
+      switch (t->procType) {
+      case TGSI_PROCESSOR_VERTEX:
+         /* XXX if the geometry shader is present, this must be done there
+          * instead of here. */
+         if (DstReg->Index == VERT_RESULT_COL0 ||
+             DstReg->Index == VERT_RESULT_COL1 ||
+             DstReg->Index == VERT_RESULT_BFC0 ||
+             DstReg->Index == VERT_RESULT_BFC1) {
+            dst = ureg_saturate(dst);
+         }
+         break;
+
+      case TGSI_PROCESSOR_FRAGMENT:
+         if (DstReg->Index >= FRAG_RESULT_COLOR) {
+            dst = ureg_saturate(dst);
+         }
+         break;
+      }
+   }
 
    if (DstReg->RelAddr)
       dst = ureg_dst_indirect( dst, ureg_src(t->address[0]) );
@@ -643,11 +669,12 @@ translate_opcode( unsigned op )
 static void
 compile_instruction(
    struct st_translate *t,
-   const struct prog_instruction *inst )
+   const struct prog_instruction *inst,
+   boolean clamp_dst_color_output)
 {
    struct ureg_program *ureg = t->ureg;
    GLuint i;
-   struct ureg_dst dst[1];
+   struct ureg_dst dst[1] = { { 0 } };
    struct ureg_src src[4];
    unsigned num_dst;
    unsigned num_src;
@@ -658,7 +685,8 @@ compile_instruction(
    if (num_dst) 
       dst[0] = translate_dst( t, 
                               &inst->DstReg,
-                              inst->SaturateMode );
+                              inst->SaturateMode,
+                              clamp_dst_color_output);
 
    for (i = 0; i < num_src; i++) 
       src[i] = translate_src( t, &inst->SrcReg[i] );
@@ -689,8 +717,9 @@ compile_instruction(
       ureg_tex_insn( ureg,
                      translate_opcode( inst->Opcode ),
                      dst, num_dst, 
-                     translate_texture_target( inst->TexSrcTarget,
+                     st_translate_texture_target( inst->TexSrcTarget,
                                                inst->TexShadow ),
+                     NULL, 0,
                      src, num_src );
       return;
 
@@ -738,32 +767,15 @@ compile_instruction(
 
 
 /**
- * Emit the TGSI instructions to adjust the WPOS pixel center convention
+ * Emit the TGSI instructions for inverting and adjusting WPOS.
+ * This code is unavoidable because it also depends on whether
+ * a FBO is bound (STATE_FB_WPOS_Y_TRANSFORM).
  */
 static void
-emit_adjusted_wpos( struct st_translate *t,
-                    const struct gl_program *program, GLfloat value)
-{
-   struct ureg_program *ureg = t->ureg;
-   struct ureg_dst wpos_temp = ureg_DECL_temporary(ureg);
-   struct ureg_src wpos_input = t->inputs[t->inputMapping[FRAG_ATTRIB_WPOS]];
-
-   /* Note that we bias X and Y and pass Z and W through unchanged.
-    * The shader might also use gl_FragCoord.w and .z.
-    */
-   ureg_ADD(ureg, wpos_temp, wpos_input,
-            ureg_imm4f(ureg, value, value, 0.0f, 0.0f));
-
-   t->inputs[t->inputMapping[FRAG_ATTRIB_WPOS]] = ureg_src(wpos_temp);
-}
-
-
-/**
- * Emit the TGSI instructions for inverting the WPOS y coordinate.
- */
-static void
-emit_inverted_wpos( struct st_translate *t,
-                    const struct gl_program *program )
+emit_wpos_adjustment( struct st_translate *t,
+                      const struct gl_program *program,
+                      boolean invert,
+                      GLfloat adjX, GLfloat adjY[2])
 {
    struct ureg_program *ureg = t->ureg;
 
@@ -771,35 +783,66 @@ emit_inverted_wpos( struct st_translate *t,
     * Need to replace instances of INPUT[WPOS] with temp T
     * where T = INPUT[WPOS] by y is inverted.
     */
-   static const gl_state_index winSizeState[STATE_LENGTH]
-      = { STATE_INTERNAL, STATE_FB_SIZE, 0, 0, 0 };
+   static const gl_state_index wposTransformState[STATE_LENGTH]
+      = { STATE_INTERNAL, STATE_FB_WPOS_Y_TRANSFORM, 0, 0, 0 };
    
    /* XXX: note we are modifying the incoming shader here!  Need to
     * do this before emitting the constant decls below, or this
     * will be missed:
     */
-   unsigned winHeightConst = _mesa_add_state_reference(program->Parameters,
-                                                       winSizeState);
+   unsigned wposTransConst = _mesa_add_state_reference(program->Parameters,
+                                                       wposTransformState);
 
-   struct ureg_src winsize = ureg_DECL_constant( ureg, winHeightConst );
-   struct ureg_dst wpos_temp;
+   struct ureg_src wpostrans = ureg_DECL_constant( ureg, wposTransConst );
+   struct ureg_dst wpos_temp = ureg_DECL_temporary( ureg );
    struct ureg_src wpos_input = t->inputs[t->inputMapping[FRAG_ATTRIB_WPOS]];
 
-   /* MOV wpos_temp, input[wpos]
-    */
-   if (wpos_input.File == TGSI_FILE_TEMPORARY)
-      wpos_temp = ureg_dst(wpos_input);
-   else {
-      wpos_temp = ureg_DECL_temporary( ureg );
+   /* First, apply the coordinate shift: */
+   if (adjX || adjY[0] || adjY[1]) {
+      if (adjY[0] != adjY[1]) {
+         /* Adjust the y coordinate by adjY[1] or adjY[0] respectively
+          * depending on whether inversion is actually going to be applied
+          * or not, which is determined by testing against the inversion
+          * state variable used below, which will be either +1 or -1.
+          */
+         struct ureg_dst adj_temp = ureg_DECL_temporary(ureg);
+
+         ureg_CMP(ureg, adj_temp,
+                  ureg_scalar(wpostrans, invert ? 2 : 0),
+                  ureg_imm4f(ureg, adjX, adjY[0], 0.0f, 0.0f),
+                  ureg_imm4f(ureg, adjX, adjY[1], 0.0f, 0.0f));
+         ureg_ADD(ureg, wpos_temp, wpos_input, ureg_src(adj_temp));
+      } else {
+         ureg_ADD(ureg, wpos_temp, wpos_input,
+                  ureg_imm4f(ureg, adjX, adjY[0], 0.0f, 0.0f));
+      }
+      wpos_input = ureg_src(wpos_temp);
+   } else {
+      /* MOV wpos_temp, input[wpos]
+       */
       ureg_MOV( ureg, wpos_temp, wpos_input );
    }
 
-   /* SUB wpos_temp.y, winsize_const, wpos_input
+   /* Now the conditional y flip: STATE_FB_WPOS_Y_TRANSFORM.xy/zw will be
+    * inversion/identity, or the other way around if we're drawing to an FBO.
     */
-   ureg_SUB( ureg,
-             ureg_writemask(wpos_temp, TGSI_WRITEMASK_Y ),
-             winsize,
-             wpos_input);
+   if (invert) {
+      /* MAD wpos_temp.y, wpos_input, wpostrans.xxxx, wpostrans.yyyy
+       */
+      ureg_MAD( ureg,
+                ureg_writemask(wpos_temp, TGSI_WRITEMASK_Y ),
+                wpos_input,
+                ureg_scalar(wpostrans, 0),
+                ureg_scalar(wpostrans, 1));
+   } else {
+      /* MAD wpos_temp.y, wpos_input, wpostrans.zzzz, wpostrans.wwww
+       */
+      ureg_MAD( ureg,
+                ureg_writemask(wpos_temp, TGSI_WRITEMASK_Y ),
+                wpos_input,
+                ureg_scalar(wpostrans, 2),
+                ureg_scalar(wpostrans, 3));
+   }
 
    /* Use wpos_temp as position input from here on:
     */
@@ -819,12 +862,44 @@ emit_wpos(struct st_context *st,
    const struct gl_fragment_program *fp =
       (const struct gl_fragment_program *) program;
    struct pipe_screen *pscreen = st->pipe->screen;
+   GLfloat adjX = 0.0f;
+   GLfloat adjY[2] = { 0.0f, 0.0f };
    boolean invert = FALSE;
 
+   /* Query the pixel center conventions supported by the pipe driver and set
+    * adjX, adjY to help out if it cannot handle the requested one internally.
+    *
+    * The bias of the y-coordinate depends on whether y-inversion takes place
+    * (adjY[1]) or not (adjY[0]), which is in turn dependent on whether we are
+    * drawing to an FBO (causes additional inversion), and whether the the pipe
+    * driver origin and the requested origin differ (the latter condition is
+    * stored in the 'invert' variable).
+    *
+    * For height = 100 (i = integer, h = half-integer, l = lower, u = upper):
+    *
+    * center shift only:
+    * i -> h: +0.5
+    * h -> i: -0.5
+    *
+    * inversion only:
+    * l,i -> u,i: ( 0.0 + 1.0) * -1 + 100 = 99
+    * l,h -> u,h: ( 0.5 + 0.0) * -1 + 100 = 99.5
+    * u,i -> l,i: (99.0 + 1.0) * -1 + 100 = 0
+    * u,h -> l,h: (99.5 + 0.0) * -1 + 100 = 0.5
+    *
+    * inversion and center shift:
+    * l,i -> u,h: ( 0.0 + 0.5) * -1 + 100 = 99.5
+    * l,h -> u,i: ( 0.5 + 0.5) * -1 + 100 = 99
+    * u,i -> l,h: (99.0 + 0.5) * -1 + 100 = 0.5
+    * u,h -> l,i: (99.5 + 0.5) * -1 + 100 = 0
+    */
    if (fp->OriginUpperLeft) {
+      /* Fragment shader wants origin in upper-left */
       if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT)) {
+         /* the driver supports upper-left origin */
       }
       else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT)) {
+         /* the driver supports lower-left origin, need to invert Y */
          ureg_property_fs_coord_origin(ureg, TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
          invert = TRUE;
       }
@@ -832,28 +907,42 @@ emit_wpos(struct st_context *st,
          assert(0);
    }
    else {
+      /* Fragment shader wants origin in lower-left */
       if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT))
+         /* the driver supports lower-left origin */
          ureg_property_fs_coord_origin(ureg, TGSI_FS_COORD_ORIGIN_LOWER_LEFT);
       else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT))
+         /* the driver supports upper-left origin, need to invert Y */
          invert = TRUE;
       else
          assert(0);
    }
    
    if (fp->PixelCenterInteger) {
-      if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER))
+      /* Fragment shader wants pixel center integer */
+      if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER)) {
+         /* the driver supports pixel center integer */
+         adjY[1] = 1.0f;
          ureg_property_fs_coord_pixel_center(ureg, TGSI_FS_COORD_PIXEL_CENTER_INTEGER);
-      else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER))
-         emit_adjusted_wpos(t, program, invert ? 0.5f : -0.5f);
+      }
+      else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER)) {
+         /* the driver supports pixel center half integer, need to bias X,Y */
+         adjX = -0.5f;
+         adjY[0] = -0.5f;
+         adjY[1] = 0.5f;
+      }
       else
          assert(0);
    }
    else {
+      /* Fragment shader wants pixel center half integer */
       if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER)) {
+         /* the driver supports pixel center half integer */
       }
       else if (pscreen->get_param(pscreen, PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER)) {
+         /* the driver supports pixel center integer, need to bias X,Y */
+         adjX = adjY[0] = adjY[1] = 0.5f;
          ureg_property_fs_coord_pixel_center(ureg, TGSI_FS_COORD_PIXEL_CENTER_INTEGER);
-         emit_adjusted_wpos(t, program, invert ? -0.5f : 0.5f);
       }
       else
          assert(0);
@@ -861,8 +950,7 @@ emit_wpos(struct st_context *st,
 
    /* we invert after adjustment so that we avoid the MOV to temporary,
     * and reuse the adjustment ADD instead */
-   if (invert)
-      emit_inverted_wpos(t, program);
+   emit_wpos_adjustment(t, program, invert, adjX, adjY);
 }
 
 
@@ -924,7 +1012,7 @@ emit_edgeflags( struct st_translate *t,
  */
 enum pipe_error
 st_translate_mesa_program(
-   GLcontext *ctx,
+   struct gl_context *ctx,
    uint procType,
    struct ureg_program *ureg,
    const struct gl_program *program,
@@ -937,7 +1025,8 @@ st_translate_mesa_program(
    const GLuint outputMapping[],
    const ubyte outputSemanticName[],
    const ubyte outputSemanticIndex[],
-   boolean passthrough_edgeflags )
+   boolean passthrough_edgeflags,
+   boolean clamp_color)
 {
    struct st_translate translate, *t;
    unsigned i;
@@ -953,8 +1042,6 @@ st_translate_mesa_program(
    t->inputMapping = inputMapping;
    t->outputMapping = outputMapping;
    t->ureg = ureg;
-   t->pointSizeOutIndex = -1;
-   t->prevInstWrotePointSize = GL_FALSE;
 
    /*_mesa_print_program(program);*/
 
@@ -1002,6 +1089,13 @@ st_translate_mesa_program(
             t->outputs[i] = ureg_writemask( t->outputs[i],
                                             TGSI_WRITEMASK_Z );
             break;
+         case TGSI_SEMANTIC_STENCIL:
+            t->outputs[i] = ureg_DECL_output( ureg,
+                                              TGSI_SEMANTIC_STENCIL, /* Stencil */
+                                              outputSemanticIndex[i] );
+            t->outputs[i] = ureg_writemask( t->outputs[i],
+                                            TGSI_WRITEMASK_Y );
+            break;
          case TGSI_SEMANTIC_COLOR:
             t->outputs[i] = ureg_DECL_output( ureg,
                                               TGSI_SEMANTIC_COLOR,
@@ -1038,25 +1132,6 @@ st_translate_mesa_program(
          t->outputs[i] = ureg_DECL_output( ureg,
                                            outputSemanticName[i],
                                            outputSemanticIndex[i] );
-         if ((outputSemanticName[i] == TGSI_SEMANTIC_PSIZE) && program->Id) {
-            /* Writing to the point size result register requires special
-             * handling to implement clamping.
-             */
-            static const gl_state_index pointSizeClampState[STATE_LENGTH]
-               = { STATE_INTERNAL, STATE_POINT_SIZE_IMPL_CLAMP, 0, 0, 0 };
-               /* XXX: note we are modifying the incoming shader here!  Need to
-               * do this before emitting the constant decls below, or this
-               * will be missed:
-               */
-            unsigned pointSizeClampConst =
-               _mesa_add_state_reference(program->Parameters,
-                                         pointSizeClampState);
-            struct ureg_dst psizregtemp = ureg_DECL_temporary( ureg );
-            t->pointSizeConst = ureg_DECL_constant( ureg, pointSizeClampConst );
-            t->pointSizeResult = t->outputs[i];
-            t->pointSizeOutIndex = i;
-            t->outputs[i] = psizregtemp;
-         }
       }
       if (passthrough_edgeflags)
          emit_edgeflags( t, program );
@@ -1067,6 +1142,40 @@ st_translate_mesa_program(
    if (program->NumAddressRegs > 0) {
       debug_assert( program->NumAddressRegs == 1 );
       t->address[0] = ureg_DECL_address( ureg );
+   }
+
+   /* Declare misc input registers
+    */
+   {
+      GLbitfield sysInputs = program->SystemValuesRead;
+      unsigned numSys = 0;
+      for (i = 0; sysInputs; i++) {
+         if (sysInputs & (1 << i)) {
+            unsigned semName = mesa_sysval_to_semantic[i];
+            t->systemValues[i] = ureg_DECL_system_value(ureg, numSys, semName, 0);
+            if (semName == TGSI_SEMANTIC_INSTANCEID ||
+                semName == TGSI_SEMANTIC_VERTEXID) {
+               /* From Gallium perspective, these system values are always
+                * integer, and require native integer support.  However, if
+                * native integer is supported on the vertex stage but not the
+                * pixel stage (e.g, i915g + draw), Mesa will generate IR that
+                * assumes these system values are floats. To resolve the
+                * inconsistency, we insert a U2F.
+                */
+               struct st_context *st = st_context(ctx);
+               struct pipe_screen *pscreen = st->pipe->screen;
+               assert(procType == TGSI_PROCESSOR_VERTEX);
+               assert(pscreen->get_shader_param(pscreen, PIPE_SHADER_VERTEX, PIPE_SHADER_CAP_INTEGERS));
+               if (!ctx->Const.NativeIntegers) {
+                  struct ureg_dst temp = ureg_DECL_local_temporary(t->ureg);
+                  ureg_U2F( t->ureg, ureg_writemask(temp, TGSI_WRITEMASK_X), t->systemValues[i]);
+                  t->systemValues[i] = ureg_scalar(ureg_src(temp), 0);
+               }
+            }
+            numSys++;
+            sysInputs &= ~(1 << i);
+         }
+      }
    }
 
    if (program->IndirectRegisterFiles & (1 << PROGRAM_TEMPORARY)) {
@@ -1083,7 +1192,7 @@ st_translate_mesa_program(
     * for these, so we put all the translated regs in t->constants.
     */
    if (program->Parameters) {
-      t->constants = CALLOC( program->Parameters->NumParameters,
+      t->constants = calloc( program->Parameters->NumParameters,
                              sizeof t->constants[0] );
       if (t->constants == NULL) {
          ret = PIPE_ERROR_OUT_OF_MEMORY;
@@ -1112,7 +1221,7 @@ st_translate_mesa_program(
             else
                t->constants[i] = 
                   ureg_DECL_immediate( ureg,
-                                       program->Parameters->ParameterValues[i],
+                                       (const float*) program->Parameters->ParameterValues[i],
                                        4 );
             break;
          default:
@@ -1132,26 +1241,7 @@ st_translate_mesa_program(
     */
    for (i = 0; i < program->NumInstructions; i++) {
       set_insn_start( t, ureg_get_instruction_number( ureg ));
-      compile_instruction( t, &program->Instructions[i] );
-
-      if (t->prevInstWrotePointSize && program->Id) {
-         /* The previous instruction wrote to the (fake) vertex point size
-          * result register.  Now we need to clamp that value to the min/max
-          * point size range, putting the result into the real point size
-          * register.
-          * Note that we can't do this easily at the end of program due to
-          * possible early return.
-          */
-         set_insn_start( t, ureg_get_instruction_number( ureg ));
-         ureg_MAX( t->ureg,
-                   ureg_writemask(t->outputs[t->pointSizeOutIndex], WRITEMASK_X),
-                   ureg_src(t->outputs[t->pointSizeOutIndex]),
-                   ureg_swizzle(t->pointSizeConst, 1,1,1,1));
-         ureg_MIN( t->ureg, ureg_writemask(t->pointSizeResult, WRITEMASK_X),
-                   ureg_src(t->outputs[t->pointSizeOutIndex]),
-                   ureg_swizzle(t->pointSizeConst, 2,2,2,2));
-      }
-      t->prevInstWrotePointSize = GL_FALSE;
+      compile_instruction( t, &program->Instructions[i], clamp_color );
    }
 
    /* Fix up all emitted labels:
@@ -1182,5 +1272,5 @@ out:
 void
 st_free_tokens(const struct tgsi_token *tokens)
 {
-   FREE((void *)tokens);
+   ureg_free_tokens(tokens);
 }

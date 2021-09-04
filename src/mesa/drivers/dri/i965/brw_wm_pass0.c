@@ -202,16 +202,16 @@ static const struct brw_wm_ref *pass0_get_reg( struct brw_wm_compile *c,
 	 switch (plist->Parameters[idx].Type) {
 	 case PROGRAM_NAMED_PARAM:
 	 case PROGRAM_CONSTANT:
-	    /* These are invarient:
+	    /* These are invariant:
 	     */
-	    ref = get_const_ref(c, &plist->ParameterValues[idx][component]);
+	    ref = get_const_ref(c, &plist->ParameterValues[idx][component].f);
 	    break;
 
 	 case PROGRAM_STATE_VAR:
 	 case PROGRAM_UNIFORM:
 	    /* These may change from run to run:
 	     */
-	    ref = get_param_ref(c, &plist->ParameterValues[idx][component] );
+	    ref = get_param_ref(c, &plist->ParameterValues[idx][component].f );
 	    break;
 
 	 default:
@@ -379,7 +379,7 @@ static void pass0_init_payload( struct brw_wm_compile *c )
    GLuint i;
 
    for (i = 0; i < 4; i++) {
-      GLuint j = i >= (c->key.nr_payload_regs + 1) / 2 ? 0 : i;
+      GLuint j = i >= (c->nr_payload_regs + 1) / 2 ? 0 : i;
       pass0_set_fpreg_value( c, PROGRAM_PAYLOAD, PAYLOAD_DEPTH, i, 
 			     &c->payload.depth[j] );
    }
@@ -439,7 +439,7 @@ void brw_wm_pass0( struct brw_wm_compile *c )
       }
    }
  
-   if (INTEL_DEBUG & DEBUG_WM) {
+   if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
       brw_wm_print_program(c, "pass0");
    }
 }

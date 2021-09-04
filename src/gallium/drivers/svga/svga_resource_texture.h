@@ -85,6 +85,8 @@ struct svga_transfer
 {
    struct pipe_transfer base;
 
+   unsigned face;
+
    struct svga_winsys_buffer *hwbuf;
 
    /* Height of the hardware buffer in pixel blocks */
@@ -123,12 +125,6 @@ svga_texture_from_handle(struct pipe_screen * screen,
 			struct winsys_handle *whandle);
 
 
-
-enum SVGA3dSurfaceFormat
-svga_translate_format(enum pipe_format format);
-
-enum SVGA3dSurfaceFormat
-svga_translate_format_render(enum pipe_format format);
 
 
 #endif /* SVGA_TEXTURE_H */

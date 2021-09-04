@@ -22,11 +22,12 @@ DRIVER_DEFINES = \
 	-DGALLIUM_RBUG -DGALLIUM_TRACE -DGALLIUM_GALAHAD -DGALLIUM_SOFTPIPE
 
 ifeq ($(MESA_LLVM),1)
+PIPE_DRIVERS += $(TOP)/src/gallium/drivers/llvmpipe/libllvmpipe.a
 DRIVER_DEFINES += -DGALLIUM_LLVMPIPE
 endif
 
 include ../Makefile.dri
 
-DRI_LIB_DEPS += -ldrm_intel
+GALLIUM_DRI_LIB_DEPS += $(INTEL_LIBS)
 
 symlinks:

@@ -46,9 +46,26 @@
 #include "util/u_math.h"
 #include "util/u_debug.h"
 #include "util/u_format.h"
+#include "util/u_box.h"
+#include "util/u_surface.h"
 
-#define DEBUG_PRINT 0
 #define ROUND_UP_TEXTURES 1
+
+static INLINE void
+exa_debug_printf(const char *format, ...) _util_printf_format(1,2);
+
+static INLINE void
+exa_debug_printf(const char *format, ...)
+{
+#if 0
+   va_list ap;
+   va_start(ap, format);
+   _debug_vprintf(format, ap);
+   va_end(ap);
+#else
+   (void) format; /* silence warning */
+#endif
+}
 
 /*
  * Helper functions
@@ -179,7 +196,7 @@ ExaDownloadFromScreen(PixmapPtr pPix, int x,  int y, int w,  int h, char *dst,
 		      int dst_pitch)
 {
     ScreenPtr pScreen = pPix->drawable.pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_context *exa = ms->exa;
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pPix);
@@ -188,15 +205,13 @@ ExaDownloadFromScreen(PixmapPtr pPix, int x,  int y, int w,  int h, char *dst,
     if (!priv || !priv->tex)
 	return FALSE;
 
-    transfer = pipe_get_transfer(exa->pipe, priv->tex, 0, 0, 0,
-					   PIPE_TRANSFER_READ, x, y, w, h);
+    transfer = pipe_get_transfer(exa->pipe, priv->tex, 0, 0,
+                                 PIPE_TRANSFER_READ, x, y, w, h);
     if (!transfer)
 	return FALSE;
 
-#if DEBUG_PRINT
-    debug_printf("------ ExaDownloadFromScreen(%d, %d, %d, %d, %d)\n",
+    exa_debug_printf("------ ExaDownloadFromScreen(%d, %d, %d, %d, %d)\n",
                  x, y, w, h, dst_pitch);
-#endif
 
     util_copy_rect((unsigned char*)dst, priv->tex->format, dst_pitch, 0, 0,
 		   w, h, exa->pipe->transfer_map(exa->pipe, transfer),
@@ -213,7 +228,7 @@ ExaUploadToScreen(PixmapPtr pPix, int x, int y, int w, int h, char *src,
 		  int src_pitch)
 {
     ScreenPtr pScreen = pPix->drawable.pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_context *exa = ms->exa;
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pPix);
@@ -222,15 +237,13 @@ ExaUploadToScreen(PixmapPtr pPix, int x, int y, int w, int h, char *src,
     if (!priv || !priv->tex)
 	return FALSE;
 
-    transfer = pipe_get_transfer(exa->pipe, priv->tex, 0, 0, 0,
-					   PIPE_TRANSFER_WRITE, x, y, w, h);
+    transfer = pipe_get_transfer(exa->pipe, priv->tex, 0, 0,
+                                 PIPE_TRANSFER_WRITE, x, y, w, h);
     if (!transfer)
 	return FALSE;
 
-#if DEBUG_PRINT
-    debug_printf("++++++ ExaUploadToScreen(%d, %d, %d, %d, %d)\n",
+    exa_debug_printf("++++++ ExaUploadToScreen(%d, %d, %d, %d, %d)\n",
                  x, y, w, h, src_pitch);
-#endif
 
     util_copy_rect(exa->pipe->transfer_map(exa->pipe, transfer),
 		   priv->tex->format, transfer->stride, 0, 0, w, h,
@@ -246,7 +259,7 @@ static Bool
 ExaPrepareAccess(PixmapPtr pPix, int index)
 {
     ScreenPtr pScreen = pPix->drawable.pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_context *exa = ms->exa;
     struct exa_pixmap_priv *priv;
@@ -259,13 +272,15 @@ ExaPrepareAccess(PixmapPtr pPix, int index)
     if (!priv->tex)
 	return FALSE;
 
+    exa_debug_printf("ExaPrepareAccess %d\n", index);
+
     if (priv->map_count == 0)
     {
         assert(pPix->drawable.width <= priv->tex->width0);
         assert(pPix->drawable.height <= priv->tex->height0);
 
 	priv->map_transfer =
-	   pipe_get_transfer(exa->pipe, priv->tex, 0, 0, 0,
+	   pipe_get_transfer(exa->pipe, priv->tex, 0, 0,
 #ifdef EXA_MIXED_PIXMAPS
 					PIPE_TRANSFER_MAP_DIRECTLY |
 #endif
@@ -287,6 +302,8 @@ ExaPrepareAccess(PixmapPtr pPix, int index)
 
     priv->map_count++;
 
+    exa_debug_printf("ExaPrepareAccess %d prepared\n", index);
+
     return TRUE;
 }
 
@@ -294,7 +311,7 @@ static void
 ExaFinishAccess(PixmapPtr pPix, int index)
 {
     ScreenPtr pScreen = pPix->drawable.pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_context *exa = ms->exa;
     struct exa_pixmap_priv *priv;
@@ -306,6 +323,8 @@ ExaFinishAccess(PixmapPtr pPix, int index)
     if (!priv->map_transfer)
 	return;
 
+    exa_debug_printf("ExaFinishAccess %d\n", index);
+
     if (--priv->map_count == 0) {
 	assert(priv->map_transfer);
 	exa->pipe->transfer_unmap(exa->pipe, priv->map_transfer);
@@ -313,6 +332,8 @@ ExaFinishAccess(PixmapPtr pPix, int index)
 	priv->map_transfer = NULL;
 	pPix->devPrivate.ptr = NULL;
     }
+
+    exa_debug_printf("ExaFinishAccess %d finished\n", index);
 }
 
 /***********************************************************************
@@ -322,19 +343,18 @@ ExaFinishAccess(PixmapPtr pPix, int index)
 static Bool
 ExaPrepareSolid(PixmapPtr pPixmap, int alu, Pixel planeMask, Pixel fg)
 {
-    ScrnInfoPtr pScrn = xf86Screens[pPixmap->drawable.pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pPixmap->drawable.pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pPixmap);
     struct exa_context *exa = ms->exa;
 
-#if DEBUG_PRINT
-    debug_printf("ExaPrepareSolid(0x%x)\n", fg);
-#endif
+    exa_debug_printf("ExaPrepareSolid(0x%x)\n", fg);
+
     if (!exa->accel)
 	return FALSE;
 
     if (!exa->pipe)
-	XORG_FALLBACK("accle not enabled");
+	XORG_FALLBACK("accel not enabled");
 
     if (!priv || !priv->tex)
 	XORG_FALLBACK("%s", !priv ? "!priv" : "!priv->tex");
@@ -347,7 +367,7 @@ ExaPrepareSolid(PixmapPtr pPixmap, int alu, Pixel planeMask, Pixel fg)
 
     if (!exa->scrn->is_format_supported(exa->scrn, priv->tex->format,
                                         priv->tex->target, 0,
-                                        PIPE_BIND_RENDER_TARGET, 0)) {
+                                        PIPE_BIND_RENDER_TARGET)) {
 	XORG_FALLBACK("format %s", util_format_name(priv->tex->format));
     }
 
@@ -357,18 +377,21 @@ ExaPrepareSolid(PixmapPtr pPixmap, int alu, Pixel planeMask, Pixel fg)
 static void
 ExaSolid(PixmapPtr pPixmap, int x0, int y0, int x1, int y1)
 {
-    ScrnInfoPtr pScrn = xf86Screens[pPixmap->drawable.pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pPixmap->drawable.pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_context *exa = ms->exa;
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pPixmap);
 
-#if DEBUG_PRINT
-    debug_printf("\tExaSolid(%d, %d, %d, %d)\n", x0, y0, x1, y1);
-#endif
+    exa_debug_printf("\tExaSolid(%d, %d, %d, %d)\n", x0, y0, x1, y1);
 
     if (x0 == 0 && y0 == 0 &&
         x1 == pPixmap->drawable.width && y1 == pPixmap->drawable.height) {
-       exa->pipe->clear(exa->pipe, PIPE_CLEAR_COLOR, exa->solid_color, 0.0, 0);
+       union pipe_color_union solid_color;
+       solid_color.f[0] = exa->solid_color[0];
+       solid_color.f[1] = exa->solid_color[1];
+       solid_color.f[2] = exa->solid_color[2];
+       solid_color.f[3] = exa->solid_color[3];
+       exa->pipe->clear(exa->pipe, PIPE_CLEAR_COLOR, &solid_color, 0.0, 0);
        return;
     }
 
@@ -379,15 +402,17 @@ ExaSolid(PixmapPtr pPixmap, int x0, int y0, int x1, int y1)
 static void
 ExaDoneSolid(PixmapPtr pPixmap)
 {
-    ScrnInfoPtr pScrn = xf86Screens[pPixmap->drawable.pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pPixmap->drawable.pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pPixmap);
     struct exa_context *exa = ms->exa;
 
     if (!priv)
 	return;
-   
+
+    exa_debug_printf("ExaDoneSolid\n");
     xorg_composite_done(exa);
+    exa_debug_printf("ExaDoneSolid done\n");
 }
 
 /***********************************************************************
@@ -398,21 +423,19 @@ static Bool
 ExaPrepareCopy(PixmapPtr pSrcPixmap, PixmapPtr pDstPixmap, int xdir,
 	       int ydir, int alu, Pixel planeMask)
 {
-    ScrnInfoPtr pScrn = xf86Screens[pDstPixmap->drawable.pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pDstPixmap->drawable.pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_context *exa = ms->exa;
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pDstPixmap);
     struct exa_pixmap_priv *src_priv = exaGetPixmapDriverPrivate(pSrcPixmap);
 
-#if DEBUG_PRINT
-    debug_printf("ExaPrepareCopy\n");
-#endif
+    exa_debug_printf("ExaPrepareCopy\n");
 
     if (!exa->accel)
 	return FALSE;
 
     if (!exa->pipe)
-	XORG_FALLBACK("accle not enabled");
+	XORG_FALLBACK("accel not enabled");
 
     if (!priv || !priv->tex)
 	XORG_FALLBACK("pDst %s", !priv ? "!priv" : "!priv->tex");
@@ -428,48 +451,16 @@ ExaPrepareCopy(PixmapPtr pSrcPixmap, PixmapPtr pDstPixmap, int xdir,
 
     if (!exa->scrn->is_format_supported(exa->scrn, priv->tex->format,
                                         priv->tex->target, 0,
-                                        PIPE_BIND_RENDER_TARGET, 0))
+                                        PIPE_BIND_RENDER_TARGET))
 	XORG_FALLBACK("pDst format %s", util_format_name(priv->tex->format));
 
     if (!exa->scrn->is_format_supported(exa->scrn, src_priv->tex->format,
                                         src_priv->tex->target, 0,
-                                        PIPE_BIND_SAMPLER_VIEW, 0))
+                                        PIPE_BIND_SAMPLER_VIEW))
 	XORG_FALLBACK("pSrc format %s", util_format_name(src_priv->tex->format));
 
     exa->copy.src = src_priv;
     exa->copy.dst = priv;
-
-    /* XXX this used to use resource_copy_region for same-surface copies,
-     * but they were redefined to not allow overlaps (some of the util code
-     * always assumed this anyway).
-     * Drivers should implement accelerated resource_copy_region or it will
-     * be slow - disable for now.
-     */
-    if (0 && exa->copy.src != exa->copy.dst) {
-       exa->copy.use_surface_copy = TRUE;
-    }
-    else {
-       exa->copy.use_surface_copy = FALSE;
-
-       if (exa->copy.dst == exa->copy.src)
-          exa->copy.src_texture = renderer_clone_texture( exa->renderer,
-                                                          exa->copy.src->tex );
-       else
-          pipe_resource_reference(&exa->copy.src_texture,
-                                 exa->copy.src->tex);
-
-       exa->copy.dst_surface =
-          exa->scrn->get_tex_surface(exa->scrn,
-                                     exa->copy.dst->tex,
-                                     0, 0, 0,
-                                     PIPE_BIND_RENDER_TARGET);
-
-
-       renderer_copy_prepare(exa->renderer, 
-                             exa->copy.dst_surface,
-                             exa->copy.src_texture );
-    }
-
 
     return TRUE;
 }
@@ -478,48 +469,62 @@ static void
 ExaCopy(PixmapPtr pDstPixmap, int srcX, int srcY, int dstX, int dstY,
 	int width, int height)
 {
-   ScrnInfoPtr pScrn = xf86Screens[pDstPixmap->drawable.pScreen->myNum];
+   ScrnInfoPtr pScrn = xf86ScreenToScrn(pDstPixmap->drawable.pScreen);
    modesettingPtr ms = modesettingPTR(pScrn);
    struct exa_context *exa = ms->exa;
-   struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pDstPixmap);
+   struct pipe_box src_box;
 
-#if DEBUG_PRINT
-   debug_printf("\tExaCopy(srcx=%d, srcy=%d, dstX=%d, dstY=%d, w=%d, h=%d)\n",
+   exa_debug_printf("\tExaCopy(srcx=%d, srcy=%d, dstX=%d, dstY=%d, w=%d, h=%d)\n",
                 srcX, srcY, dstX, dstY, width, height);
-#endif
 
-   debug_assert(priv == exa->copy.dst);
-   (void) priv;
+   debug_assert(exaGetPixmapDriverPrivate(pDstPixmap) == exa->copy.dst);
 
-   if (exa->copy.use_surface_copy) {
-      struct pipe_subresource subdst, subsrc;
-      subdst.face = 0;
-      subdst.level = 0;
-      subsrc.face = 0;
-      subsrc.level = 0;
+   u_box_2d(srcX, srcY, width, height, &src_box);
+
+   /* If source and destination overlap, we have to copy to/from a scratch
+    * pixmap.
+    */
+   if (exa->copy.dst == exa->copy.src &&
+       !((dstX + width) < srcX || dstX > (srcX + width) ||
+	 (dstY + height) < srcY || dstY > (srcY + height))) {
+      struct exa_pixmap_priv *tmp_priv;
+
+      if (!exa->copy.tmp_pix) {
+         exa->copy.tmp_pix = pScrn->pScreen->CreatePixmap(pScrn->pScreen,
+                                                         pDstPixmap->drawable.width,
+                                                         pDstPixmap->drawable.height,
+                                                         pDstPixmap->drawable.depth,
+                                                         pDstPixmap->drawable.width);
+         exaMoveInPixmap(exa->copy.tmp_pix);
+      }
+
+      tmp_priv = exaGetPixmapDriverPrivate(exa->copy.tmp_pix);
+
+      exa->pipe->resource_copy_region( exa->pipe,
+                                       tmp_priv->tex,
+                                       0,
+                                       srcX, srcY, 0,
+                                       exa->copy.src->tex,
+                                       0, &src_box);
       exa->pipe->resource_copy_region( exa->pipe,
                                        exa->copy.dst->tex,
-                                       subdst,
+                                       0,
+                                       dstX, dstY, 0,
+                                       tmp_priv->tex,
+                                       0, &src_box);
+   } else
+      exa->pipe->resource_copy_region( exa->pipe,
+                                       exa->copy.dst->tex,
+                                       0,
                                        dstX, dstY, 0,
                                        exa->copy.src->tex,
-                                       subsrc,
-                                       srcX, srcY, 0,
-                                       width, height );
-   }
-   else {
-      renderer_copy_pixmap(exa->renderer, 
-                           dstX, dstY,
-                           srcX, srcY,
-                           width, height,
-                           exa->copy.src_texture->width0,
-                           exa->copy.src_texture->height0);
-   }
+                                       0, &src_box);
 }
 
 static void
 ExaDoneCopy(PixmapPtr pPixmap)
 {
-    ScrnInfoPtr pScrn = xf86Screens[pPixmap->drawable.pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pPixmap->drawable.pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pPixmap);
     struct exa_context *exa = ms->exa;
@@ -527,12 +532,16 @@ ExaDoneCopy(PixmapPtr pPixmap)
     if (!priv)
 	return;
 
-   renderer_draw_flush(exa->renderer);
+   exa_debug_printf("ExaDoneCopy\n");
 
+   if (exa->copy.tmp_pix) {
+      pScrn->pScreen->DestroyPixmap(exa->copy.tmp_pix);
+      exa->copy.tmp_pix = NULL;
+   }
    exa->copy.src = NULL;
    exa->copy.dst = NULL;
-   pipe_surface_reference(&exa->copy.dst_surface, NULL);
-   pipe_resource_reference(&exa->copy.src_texture, NULL);
+
+   exa_debug_printf("ExaDoneCopy done\n");
 }
 
 
@@ -581,22 +590,18 @@ ExaCheckComposite(int op,
 		  PicturePtr pSrcPicture, PicturePtr pMaskPicture,
 		  PicturePtr pDstPicture)
 {
-   ScrnInfoPtr pScrn = xf86Screens[pDstPicture->pDrawable->pScreen->myNum];
+   ScrnInfoPtr pScrn = xf86ScreenToScrn(pDstPicture->pDrawable->pScreen);
    modesettingPtr ms = modesettingPTR(pScrn);
    struct exa_context *exa = ms->exa;
-
-#if DEBUG_PRINT
-   debug_printf("ExaCheckComposite(%d, %p, %p, %p) = %d\n",
-                op, pSrcPicture, pMaskPicture, pDstPicture, accelerated);
-#endif
-
-   if (!exa->accel)
-       return FALSE;
-
-   return xorg_composite_accelerated(op,
+   Bool accelerated = exa->accel && xorg_composite_accelerated(op,
 				     pSrcPicture,
 				     pMaskPicture,
 				     pDstPicture);
+
+   exa_debug_printf("ExaCheckComposite(%d, %p, %p, %p) = %d\n",
+                op, pSrcPicture, pMaskPicture, pDstPicture, accelerated);
+
+   return accelerated;
 }
 
 
@@ -605,7 +610,7 @@ ExaPrepareComposite(int op, PicturePtr pSrcPicture,
 		    PicturePtr pMaskPicture, PicturePtr pDstPicture,
 		    PixmapPtr pSrc, PixmapPtr pMask, PixmapPtr pDst)
 {
-   ScrnInfoPtr pScrn = xf86Screens[pDst->drawable.pScreen->myNum];
+   ScrnInfoPtr pScrn = xf86ScreenToScrn(pDst->drawable.pScreen);
    modesettingPtr ms = modesettingPTR(pScrn);
    struct exa_context *exa = ms->exa;
    struct exa_pixmap_priv *priv;
@@ -613,16 +618,15 @@ ExaPrepareComposite(int op, PicturePtr pSrcPicture,
    if (!exa->accel)
        return FALSE;
 
-#if DEBUG_PRINT
-   debug_printf("ExaPrepareComposite(%d, src=0x%p, mask=0x%p, dst=0x%p)\n",
+   exa_debug_printf("ExaPrepareComposite(%d, src=0x%p, mask=0x%p, dst=0x%p)\n",
                 op, pSrcPicture, pMaskPicture, pDstPicture);
-   debug_printf("\tFormats: src(%s), mask(%s), dst(%s)\n",
+   exa_debug_printf("\tFormats: src(%s), mask(%s), dst(%s)\n",
                 pSrcPicture ? render_format_name(pSrcPicture->format) : "none",
                 pMaskPicture ? render_format_name(pMaskPicture->format) : "none",
                 pDstPicture ? render_format_name(pDstPicture->format) : "none");
-#endif
+
    if (!exa->pipe)
-      XORG_FALLBACK("accle not enabled");
+      XORG_FALLBACK("accel not enabled");
 
    priv = exaGetPixmapDriverPrivate(pDst);
    if (!priv || !priv->tex)
@@ -630,7 +634,7 @@ ExaPrepareComposite(int op, PicturePtr pSrcPicture,
 
    if (!exa->scrn->is_format_supported(exa->scrn, priv->tex->format,
                                        priv->tex->target, 0,
-                                       PIPE_BIND_RENDER_TARGET, 0))
+                                       PIPE_BIND_RENDER_TARGET))
       XORG_FALLBACK("pDst format: %s", util_format_name(priv->tex->format));
 
    if (priv->picture_format != pDstPicture->format)
@@ -645,7 +649,7 @@ ExaPrepareComposite(int op, PicturePtr pSrcPicture,
 
       if (!exa->scrn->is_format_supported(exa->scrn, priv->tex->format,
                                           priv->tex->target, 0,
-                                          PIPE_BIND_SAMPLER_VIEW, 0))
+                                          PIPE_BIND_SAMPLER_VIEW))
          XORG_FALLBACK("pSrc format: %s", util_format_name(priv->tex->format));
 
       if (!picture_check_formats(priv, pSrcPicture))
@@ -662,7 +666,7 @@ ExaPrepareComposite(int op, PicturePtr pSrcPicture,
 
       if (!exa->scrn->is_format_supported(exa->scrn, priv->tex->format,
                                           priv->tex->target, 0,
-                                          PIPE_BIND_SAMPLER_VIEW, 0))
+                                          PIPE_BIND_SAMPLER_VIEW))
          XORG_FALLBACK("pMask format: %s", util_format_name(priv->tex->format));
 
       if (!picture_check_formats(priv, pMaskPicture))
@@ -682,17 +686,15 @@ static void
 ExaComposite(PixmapPtr pDst, int srcX, int srcY, int maskX, int maskY,
 	     int dstX, int dstY, int width, int height)
 {
-   ScrnInfoPtr pScrn = xf86Screens[pDst->drawable.pScreen->myNum];
+   ScrnInfoPtr pScrn = xf86ScreenToScrn(pDst->drawable.pScreen);
    modesettingPtr ms = modesettingPTR(pScrn);
    struct exa_context *exa = ms->exa;
    struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pDst);
 
-#if DEBUG_PRINT
-   debug_printf("\tExaComposite(src[%d,%d], mask=[%d, %d], dst=[%d, %d], dim=[%d, %d])\n",
+   exa_debug_printf("\tExaComposite(src[%d,%d], mask=[%d, %d], dst=[%d, %d], dim=[%d, %d])\n",
                 srcX, srcY, maskX, maskY, dstX, dstY, width, height);
-   debug_printf("\t   Num bound samplers = %d\n",
+   exa_debug_printf("\t   Num bound samplers = %d\n",
                 exa->num_bound_samplers);
-#endif
 
    xorg_composite(exa, priv, srcX, srcY, maskX, maskY,
                   dstX, dstY, width, height);
@@ -703,7 +705,7 @@ ExaComposite(PixmapPtr pDst, int srcX, int srcY, int maskX, int maskY,
 static void
 ExaDoneComposite(PixmapPtr pPixmap)
 {
-   ScrnInfoPtr pScrn = xf86Screens[pPixmap->drawable.pScreen->myNum];
+   ScrnInfoPtr pScrn = xf86ScreenToScrn(pPixmap->drawable.pScreen);
    modesettingPtr ms = modesettingPTR(pScrn);
    struct exa_context *exa = ms->exa;
 
@@ -720,7 +722,7 @@ ExaCreatePixmap(ScreenPtr pScreen, int size, int align)
 {
     struct exa_pixmap_priv *priv;
 
-    priv = xcalloc(1, sizeof(struct exa_pixmap_priv));
+    priv = calloc(1, sizeof(struct exa_pixmap_priv));
     if (!priv)
 	return NULL;
 
@@ -737,7 +739,7 @@ ExaDestroyPixmap(ScreenPtr pScreen, void *dPriv)
 
     pipe_resource_reference(&priv->tex, NULL);
 
-    xfree(priv);
+    free(priv);
 }
 
 static Bool
@@ -812,7 +814,7 @@ ExaModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
 		      pointer pPixData)
 {
     ScreenPtr pScreen = pPixmap->drawable.pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     struct exa_pixmap_priv *priv = exaGetPixmapDriverPrivate(pPixmap);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_context *exa = ms->exa;
@@ -874,24 +876,21 @@ ExaModifyPixmapHeader(PixmapPtr pPixmap, int width, int height,
         }
 
 	template.depth0 = 1;
+	template.array_size = 1;
 	template.last_level = 0;
 	template.bind = PIPE_BIND_RENDER_TARGET | priv->flags;
 	priv->tex_flags = priv->flags;
 	texture = exa->scrn->resource_create(exa->scrn, &template);
 
 	if (priv->tex) {
-	    struct pipe_subresource subdst, subsrc;
-
-	    subdst.face = 0;
-	    subdst.level = 0;
-	    subsrc.face = 0;
-	    subsrc.level = 0;
+            struct pipe_box src_box;
+            u_box_origin_2d(min(width, texture->width0),
+                            min(height, texture->height0),
+                            &src_box);
             exa->pipe->resource_copy_region(exa->pipe, texture,
-                                            subdst, 0, 0, 0,
+                                            0, 0, 0, 0,
                                             priv->tex,
-                                            subsrc, 0, 0, 0,
-                                            min(width, texture->width0),
-                                            min(height, texture->height0));
+                                            0, &src_box);
 	}
 
 	pipe_resource_reference(&priv->tex, texture);
@@ -947,6 +946,7 @@ xorg_exa_create_root_texture(ScrnInfoPtr pScrn,
     template.width0 = width;
     template.height0 = height;
     template.depth0 = 1;
+    template.array_size = 1;
     template.last_level = 0;
     template.bind |= PIPE_BIND_RENDER_TARGET;
     template.bind |= PIPE_BIND_SCANOUT;
@@ -975,7 +975,7 @@ xorg_exa_close(ScrnInfoPtr pScrn)
    ms->ctx = NULL;
 
    exaDriverFini(pScrn->pScreen);
-   xfree(exa);
+   free(exa);
    ms->exa = NULL;
 }
 
@@ -987,16 +987,19 @@ xorg_exa_init(ScrnInfoPtr pScrn, Bool accel)
    ExaDriverPtr pExa;
    CustomizerPtr cust = ms->cust;
 
-   exa = xcalloc(1, sizeof(struct exa_context));
+   exa = calloc(1, sizeof(struct exa_context));
    if (!exa)
       return NULL;
+
+   exa->scrn = ms->screen;
+   exa->pipe = exa->scrn->context_create(exa->scrn, NULL);
+   if (exa->pipe == NULL)
+      goto out_err;
 
    pExa = exaDriverAlloc();
    if (!pExa) {
       goto out_err;
    }
-
-   memset(pExa, 0, sizeof(*pExa));
 
    pExa->exa_major         = 2;
    pExa->exa_minor         = 2;
@@ -1012,8 +1015,9 @@ xorg_exa_init(ScrnInfoPtr pScrn, Bool accel)
 #ifdef EXA_MIXED_PIXMAPS
    pExa->flags            |= EXA_MIXED_PIXMAPS;
 #endif
-   pExa->maxX              = 8191; /* FIXME */
-   pExa->maxY              = 8191; /* FIXME */
+
+   pExa->maxX = pExa->maxY =
+   1 << (exa->scrn->get_param(exa->scrn, PIPE_CAP_MAX_TEXTURE_2D_LEVELS) - 1);
 
    pExa->WaitMarker         = ExaWaitMarker;
    pExa->MarkSync           = ExaMarkSync;
@@ -1040,11 +1044,6 @@ xorg_exa_init(ScrnInfoPtr pScrn, Bool accel)
       goto out_err;
    }
 
-   exa->scrn = ms->screen;
-   exa->pipe = exa->scrn->context_create(exa->scrn, NULL);
-   if (exa->pipe == NULL)
-      goto out_err;
-
    /* Share context with DRI */
    ms->ctx = exa->pipe;
    if (cust && cust->winsys_context_throttle)
@@ -1057,31 +1056,37 @@ xorg_exa_init(ScrnInfoPtr pScrn, Bool accel)
 
 out_err:
    xorg_exa_close(pScrn);
+   free(exa);
 
    return NULL;
 }
 
 struct pipe_surface *
-xorg_gpu_surface(struct pipe_screen *scrn, struct exa_pixmap_priv *priv)
+xorg_gpu_surface(struct pipe_context *pipe, struct exa_pixmap_priv *priv)
 {
-   return scrn->get_tex_surface(scrn, priv->tex, 0, 0, 0,
-                                PIPE_BIND_RENDER_TARGET);
+   struct pipe_surface surf_tmpl;
+   memset(&surf_tmpl, 0, sizeof(surf_tmpl));
+   u_surface_default_template(&surf_tmpl, priv->tex,
+                              PIPE_BIND_RENDER_TARGET);
+
+   return pipe->create_surface(pipe, priv->tex, &surf_tmpl);
 
 }
 
-void xorg_exa_flush(struct exa_context *exa, uint pipeFlushFlags,
+void xorg_exa_flush(struct exa_context *exa,
                     struct pipe_fence_handle **fence)
 {
-   exa->pipe->flush(exa->pipe, pipeFlushFlags, fence);
+   exa->pipe->flush(exa->pipe, fence);
 }
 
 void xorg_exa_finish(struct exa_context *exa)
 {
    struct pipe_fence_handle *fence = NULL;
 
-   xorg_exa_flush(exa, PIPE_FLUSH_RENDER_CACHE, &fence);
+   xorg_exa_flush(exa, &fence);
 
-   exa->pipe->screen->fence_finish(exa->pipe->screen, fence, 0);
+   exa->pipe->screen->fence_finish(exa->pipe->screen, fence,
+                                   PIPE_TIMEOUT_INFINITE);
    exa->pipe->screen->fence_reference(exa->pipe->screen, &fence, NULL);
 }
 

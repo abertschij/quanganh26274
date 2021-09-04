@@ -104,7 +104,8 @@ rbug_shader_create_locked(struct pipe_context *pipe,
                           struct tgsi_token *tokens)
 {
    void *state = NULL;
-   struct pipe_shader_state pss = { 0 };
+   struct pipe_shader_state pss;
+   memset(&pss, 0, sizeof(pss));
    pss.tokens = tokens;
 
    switch(rb_shader->type) {
@@ -266,9 +267,9 @@ rbug_texture_read(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_
 
    tex = tr_tex->resource;
    t = pipe_get_transfer(context, tex,
-				 gptr->face, gptr->level, gptr->zslice,
-				 PIPE_TRANSFER_READ,
-				 gptr->x, gptr->y, gptr->w, gptr->h);
+                         gptr->level, gptr->face + gptr->zslice,
+                         PIPE_TRANSFER_READ,
+                         gptr->x, gptr->y, gptr->w, gptr->h);
 
    map = context->transfer_map(context, t);
 
@@ -279,7 +280,7 @@ rbug_texture_read(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_
                                 util_format_get_blocksize(t->resource->format),
                                 (uint8_t*)map,
                                 t->stride * util_format_get_nblocksy(t->resource->format,
-								     t->box.height),
+                                                                     t->box.height),
                                 t->stride,
                                 NULL);
 
@@ -340,12 +341,13 @@ rbug_context_info(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_
    for (i = 0; i < rb_context->curr.nr_cbufs; i++)
       cbufs[i] = VOID2U64(rb_context->curr.cbufs[i]);
 
-   for (i = 0; i < rb_context->curr.num_fs_views; i++)
-      texs[i] = VOID2U64(rb_context->curr.fs_texs[i]);
+   /* XXX what about vertex/geometry shader texture views? */
+   for (i = 0; i < rb_context->curr.num_views[PIPE_SHADER_FRAGMENT]; i++)
+      texs[i] = VOID2U64(rb_context->curr.texs[PIPE_SHADER_FRAGMENT][i]);
 
    rbug_send_context_info_reply(tr_rbug->con, serial,
-                                VOID2U64(rb_context->curr.vs), VOID2U64(rb_context->curr.fs),
-                                texs, rb_context->curr.num_fs_views,
+                                VOID2U64(rb_context->curr.shader[PIPE_SHADER_VERTEX]), VOID2U64(rb_context->curr.shader[PIPE_SHADER_FRAGMENT]),
+                                texs, rb_context->curr.num_views[PIPE_SHADER_FRAGMENT],
                                 cbufs, rb_context->curr.nr_cbufs,
                                 VOID2U64(rb_context->curr.zsbuf),
                                 rb_context->draw_blocker, rb_context->draw_blocked, NULL);
@@ -464,8 +466,8 @@ rbug_context_draw_rule(struct rbug_rbug *tr_rbug, struct rbug_header *header, ui
    }
 
    pipe_mutex_lock(rb_context->draw_mutex);
-   rb_context->draw_rule.vs = U642VOID(rule->vertex);
-   rb_context->draw_rule.fs = U642VOID(rule->fragment);
+   rb_context->draw_rule.shader[PIPE_SHADER_VERTEX] = U642VOID(rule->vertex);
+   rb_context->draw_rule.shader[PIPE_SHADER_FRAGMENT] = U642VOID(rule->fragment);
    rb_context->draw_rule.texture = U642VOID(rule->texture);
    rb_context->draw_rule.surf = U642VOID(rule->surface);
    rb_context->draw_rule.blocker = rule->block;
@@ -498,7 +500,7 @@ rbug_context_flush(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32
    /* protect the pipe context */
    pipe_mutex_lock(rb_context->call_mutex);
 
-   rb_context->pipe->flush(rb_context->pipe, flush->flags, NULL);
+   rb_context->pipe->flush(rb_context->pipe, NULL);
 
    pipe_mutex_unlock(rb_context->call_mutex);
    pipe_mutex_unlock(rb_screen->list_mutex);
@@ -664,7 +666,7 @@ rbug_shader_replace(struct rbug_rbug *tr_rbug, struct rbug_header *header)
    /* remove old replaced shader */
    if (tr_shdr->replaced_shader) {
       /* if this shader is bound rebind the original shader */
-      if (rb_context->curr.fs == tr_shdr || rb_context->curr.vs == tr_shdr)
+      if (rb_context->curr.shader[PIPE_SHADER_FRAGMENT] == tr_shdr || rb_context->curr.shader[PIPE_SHADER_VERTEX] == tr_shdr)
          rbug_shader_bind_locked(pipe, tr_shdr, tr_shdr->shader);
 
       FREE(tr_shdr->replaced_tokens);
@@ -686,7 +688,7 @@ rbug_shader_replace(struct rbug_rbug *tr_rbug, struct rbug_header *header)
       goto err;
 
    /* bind new shader if the shader is currently a bound */
-   if (rb_context->curr.fs == tr_shdr || rb_context->curr.vs == tr_shdr)
+   if (rb_context->curr.shader[PIPE_SHADER_FRAGMENT] == tr_shdr || rb_context->curr.shader[PIPE_SHADER_VERTEX] == tr_shdr)
       rbug_shader_bind_locked(pipe, tr_shdr, state);
 
    /* save state */

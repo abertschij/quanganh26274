@@ -26,23 +26,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-/* The #include of inttypes.h causes problems on Windows */
-#ifndef _MSC_VER
 #include <inttypes.h>
-#endif
-/* Windows headers do not define PRIiMAX */
-#ifdef _MSC_VER
-#define PRIiMAX "I64i"
-#endif
 
 #include "glcpp.h"
 #include "main/core.h" /* for struct gl_extensions */
 #include "main/mtypes.h" /* for gl_api enum */
-#include "safe_strcmp.h"
-
-#define glcpp_print(stream, str) stream = talloc_strdup_append(stream, str)
-#define glcpp_printf(stream, fmt, args, ...) \
-	stream = talloc_asprintf_append(stream, fmt, args)
 
 static void
 yyerror (YYLTYPE *locp, glcpp_parser_t *parser, const char *error);
@@ -87,7 +75,7 @@ _argument_list_length (argument_list_t *list);
 static token_list_t *
 _argument_list_member_at (argument_list_t *list, int index);
 
-/* Note: This function talloc_steal()s the str pointer. */
+/* Note: This function ralloc_steal()s the str pointer. */
 static token_t *
 _token_create_str (void *ctx, int type, char *str);
 
@@ -97,10 +85,6 @@ _token_create_ival (void *ctx, int type, int ival);
 static token_list_t *
 _token_list_create (void *ctx);
 
-/* Note: This function adds a talloc_reference() to token.
- *
- * You may want to talloc_unlink any current reference if you no
- * longer need it. */
 static void
 _token_list_append (token_list_t *list, token_t *token);
 
@@ -110,20 +94,26 @@ _token_list_append_list (token_list_t *list, token_list_t *tail);
 static int
 _token_list_equal_ignoring_space (token_list_t *a, token_list_t *b);
 
-static active_list_t *
-_active_list_push (active_list_t *list,
-		   const char *identifier,
-		   token_node_t *marker);
-
-static active_list_t *
-_active_list_pop (active_list_t *list);
-
-int
-_active_list_contains (active_list_t *list, const char *identifier);
+static void
+_parser_active_list_push (glcpp_parser_t *parser,
+			  const char *identifier,
+			  token_node_t *marker);
 
 static void
-_glcpp_parser_expand_if (glcpp_parser_t *parser, int type, token_list_t *list);
+_parser_active_list_pop (glcpp_parser_t *parser);
 
+static int
+_parser_active_list_contains (glcpp_parser_t *parser, const char *identifier);
+
+/* Expand list, and begin lexing from the result (after first
+ * prefixing a token of type 'head_token_type').
+ */
+static void
+_glcpp_parser_expand_and_lex_from (glcpp_parser_t *parser,
+				   int head_token_type,
+				   token_list_t *list);
+
+/* Perform macro expansion in-place on the given list. */
 static void
 _glcpp_parser_expand_token_list (glcpp_parser_t *parser,
 				 token_list_t *list);
@@ -142,8 +132,6 @@ _glcpp_parser_skip_stack_change_if (glcpp_parser_t *parser, YYLTYPE *loc,
 
 static void
 _glcpp_parser_skip_stack_pop (glcpp_parser_t *parser, YYLTYPE *loc);
-
-#define yylex glcpp_parser_lex
 
 static int
 glcpp_parser_lex (YYSTYPE *yylval, YYLTYPE *yylloc, glcpp_parser_t *parser);
@@ -172,10 +160,10 @@ add_builtin_define(glcpp_parser_t *parser, const char *name, int value);
 %lex-param {glcpp_parser_t *parser}
 
 %expect 0
-%token COMMA_FINAL DEFINED ELIF_EXPANDED HASH HASH_DEFINE_FUNC HASH_DEFINE_OBJ HASH_ELIF HASH_ELSE HASH_ENDIF HASH_IF HASH_IFDEF HASH_IFNDEF HASH_UNDEF HASH_VERSION IDENTIFIER IF_EXPANDED INTEGER INTEGER_STRING NEWLINE OTHER PLACEHOLDER SPACE
+%token COMMA_FINAL DEFINED ELIF_EXPANDED HASH HASH_DEFINE FUNC_IDENTIFIER OBJ_IDENTIFIER HASH_ELIF HASH_ELSE HASH_ENDIF HASH_IF HASH_IFDEF HASH_IFNDEF HASH_LINE HASH_UNDEF HASH_VERSION IDENTIFIER IF_EXPANDED INTEGER INTEGER_STRING LINE_EXPANDED NEWLINE OTHER PLACEHOLDER SPACE
 %token PASTE
 %type <ival> expression INTEGER operator SPACE integer_constant
-%type <str> IDENTIFIER INTEGER_STRING OTHER
+%type <str> IDENTIFIER FUNC_IDENTIFIER OBJ_IDENTIFIER INTEGER_STRING OTHER
 %type <string_list> identifier_list
 %type <token> preprocessing_token conditional_token
 %type <token_list> pp_tokens replacement_list text_line conditional_tokens
@@ -200,12 +188,12 @@ input:
 
 line:
 	control_line {
-		glcpp_print(parser->output, "\n");
+		ralloc_asprintf_rewrite_tail (&parser->output, &parser->output_length, "\n");
 	}
 |	text_line {
 		_glcpp_parser_print_expanded_token_list (parser, $1);
-		glcpp_print(parser->output, "\n");
-		talloc_free ($1);
+		ralloc_asprintf_rewrite_tail (&parser->output, &parser->output_length, "\n");
+		ralloc_free ($1);
 	}
 |	expanded_line
 |	HASH non_directive
@@ -218,25 +206,51 @@ expanded_line:
 |	ELIF_EXPANDED expression NEWLINE {
 		_glcpp_parser_skip_stack_change_if (parser, & @1, "elif", $2);
 	}
+|	LINE_EXPANDED integer_constant NEWLINE {
+		parser->has_new_line_number = 1;
+		parser->new_line_number = $2;
+		ralloc_asprintf_rewrite_tail (&parser->output,
+					      &parser->output_length,
+					      "#line %" PRIiMAX "\n",
+					      $2);
+	}
+|	LINE_EXPANDED integer_constant integer_constant NEWLINE {
+		parser->has_new_line_number = 1;
+		parser->new_line_number = $2;
+		parser->has_new_source_number = 1;
+		parser->new_source_number = $3;
+		ralloc_asprintf_rewrite_tail (&parser->output,
+					      &parser->output_length,
+					      "#line %" PRIiMAX " %" PRIiMAX "\n",
+					      $2, $3);
+	}
 ;
 
 control_line:
-	HASH_DEFINE_OBJ	IDENTIFIER replacement_list NEWLINE {
+	HASH_DEFINE OBJ_IDENTIFIER replacement_list NEWLINE {
 		_define_object_macro (parser, & @2, $2, $3);
 	}
-|	HASH_DEFINE_FUNC IDENTIFIER '(' ')' replacement_list NEWLINE {
+|	HASH_DEFINE FUNC_IDENTIFIER '(' ')' replacement_list NEWLINE {
 		_define_function_macro (parser, & @2, $2, NULL, $5);
 	}
-|	HASH_DEFINE_FUNC IDENTIFIER '(' identifier_list ')' replacement_list NEWLINE {
+|	HASH_DEFINE FUNC_IDENTIFIER '(' identifier_list ')' replacement_list NEWLINE {
 		_define_function_macro (parser, & @2, $2, $4, $6);
 	}
 |	HASH_UNDEF IDENTIFIER NEWLINE {
 		macro_t *macro = hash_table_find (parser->defines, $2);
 		if (macro) {
 			hash_table_remove (parser->defines, $2);
-			talloc_free (macro);
+			ralloc_free (macro);
 		}
-		talloc_free ($2);
+		ralloc_free ($2);
+	}
+|	HASH_LINE pp_tokens NEWLINE {
+		if (parser->skip_stack == NULL ||
+		    parser->skip_stack->type == SKIP_NO_SKIP)
+		{
+			_glcpp_parser_expand_and_lex_from (parser,
+							   LINE_EXPANDED, $2);
+		}
 	}
 |	HASH_IF conditional_tokens NEWLINE {
 		/* Be careful to only evaluate the 'if' expression if
@@ -249,7 +263,8 @@ control_line:
 		if (parser->skip_stack == NULL ||
 		    parser->skip_stack->type == SKIP_NO_SKIP)
 		{
-			_glcpp_parser_expand_if (parser, IF_EXPANDED, $2);
+			_glcpp_parser_expand_and_lex_from (parser,
+							   IF_EXPANDED, $2);
 		}	
 		else
 		{
@@ -269,12 +284,12 @@ control_line:
 	}
 |	HASH_IFDEF IDENTIFIER junk NEWLINE {
 		macro_t *macro = hash_table_find (parser->defines, $2);
-		talloc_free ($2);
+		ralloc_free ($2);
 		_glcpp_parser_skip_stack_push_if (parser, & @1, macro != NULL);
 	}
 |	HASH_IFNDEF IDENTIFIER junk NEWLINE {
 		macro_t *macro = hash_table_find (parser->defines, $2);
-		talloc_free ($2);
+		ralloc_free ($2);
 		_glcpp_parser_skip_stack_push_if (parser, & @1, macro == NULL);
 	}
 |	HASH_ELIF conditional_tokens NEWLINE {
@@ -288,7 +303,8 @@ control_line:
 		if (parser->skip_stack &&
 		    parser->skip_stack->type == SKIP_TO_ELSE)
 		{
-			_glcpp_parser_expand_if (parser, ELIF_EXPANDED, $2);
+			_glcpp_parser_expand_and_lex_from (parser,
+							   ELIF_EXPANDED, $2);
 		}
 		else
 		{
@@ -311,24 +327,32 @@ control_line:
 			glcpp_warning(& @1, parser, "ignoring illegal #elif without expression");
 		}
 	}
-|	HASH_ELSE NEWLINE {
+|	HASH_ELSE {
 		_glcpp_parser_skip_stack_change_if (parser, & @1, "else", 1);
-	}
-|	HASH_ENDIF NEWLINE {
+	} NEWLINE
+|	HASH_ENDIF {
 		_glcpp_parser_skip_stack_pop (parser, & @1);
-	}
+	} NEWLINE
 |	HASH_VERSION integer_constant NEWLINE {
 		macro_t *macro = hash_table_find (parser->defines, "__VERSION__");
 		if (macro) {
 			hash_table_remove (parser->defines, "__VERSION__");
-			talloc_free (macro);
+			ralloc_free (macro);
 		}
 		add_builtin_define (parser, "__VERSION__", $2);
 
 		if ($2 == 100)
 			add_builtin_define (parser, "GL_ES", 1);
 
-		glcpp_printf(parser->output, "#version %" PRIiMAX, $2);
+		/* Currently, all ES2 implementations support highp in the
+		 * fragment shader, so we always define this macro in ES2.
+		 * If we ever get a driver that doesn't support highp, we'll
+		 * need to add a flag to the gl_context and check that here.
+		 */
+		if ($2 >= 130 || $2 == 100)
+			add_builtin_define (parser, "GL_FRAGMENT_PRECISION_HIGH", 1);
+
+		ralloc_asprintf_rewrite_tail (&parser->output, &parser->output_length, "#version %" PRIiMAX, $2);
 	}
 |	HASH NEWLINE
 ;
@@ -349,6 +373,9 @@ integer_constant:
 
 expression:
 	integer_constant
+|	IDENTIFIER {
+		$$ = 0;
+	}
 |	expression OR expression {
 		$$ = $1 || $3;
 	}
@@ -395,10 +422,20 @@ expression:
 		$$ = $1 + $3;
 	}
 |	expression '%' expression {
-		$$ = $1 % $3;
+		if ($3 == 0) {
+			yyerror (& @1, parser,
+				 "zero modulus in preprocessor directive");
+		} else {
+			$$ = $1 % $3;
+		}
 	}
 |	expression '/' expression {
-		$$ = $1 / $3;
+		if ($3 == 0) {
+			yyerror (& @1, parser,
+				 "division by 0 in preprocessor directive");
+		} else {
+			$$ = $1 / $3;
+		}
 	}
 |	expression '*' expression {
 		$$ = $1 * $3;
@@ -424,12 +461,12 @@ identifier_list:
 	IDENTIFIER {
 		$$ = _string_list_create (parser);
 		_string_list_append_item ($$, $1);
-		talloc_steal ($$, $1);
+		ralloc_steal ($$, $1);
 	}
 |	identifier_list ',' IDENTIFIER {
 		$$ = $1;	
 		_string_list_append_item ($$, $3);
-		talloc_steal ($$, $3);
+		ralloc_steal ($$, $3);
 	}
 ;
 
@@ -472,15 +509,12 @@ conditional_token:
 conditional_tokens:
 	/* Exactly the same as pp_tokens, but using conditional_token */
 	conditional_token {
-		parser->space_tokens = 1;
 		$$ = _token_list_create (parser);
 		_token_list_append ($$, $1);
-		talloc_unlink (parser, $1);
 	}
 |	conditional_tokens conditional_token {
 		$$ = $1;
 		_token_list_append ($$, $2);
-		talloc_unlink (parser, $2);
 	}
 ;
 
@@ -489,12 +523,10 @@ pp_tokens:
 		parser->space_tokens = 1;
 		$$ = _token_list_create (parser);
 		_token_list_append ($$, $1);
-		talloc_unlink (parser, $1);
 	}
 |	pp_tokens preprocessing_token {
 		$$ = $1;
 		_token_list_append ($$, $2);
-		talloc_unlink (parser, $2);
 	}
 ;
 
@@ -562,7 +594,7 @@ _string_list_create (void *ctx)
 {
 	string_list_t *list;
 
-	list = talloc (ctx, string_list_t);
+	list = ralloc (ctx, string_list_t);
 	list->head = NULL;
 	list->tail = NULL;
 
@@ -574,8 +606,8 @@ _string_list_append_item (string_list_t *list, const char *str)
 {
 	string_node_t *node;
 
-	node = talloc (list, string_node_t);
-	node->str = talloc_strdup (node, str);
+	node = ralloc (list, string_node_t);
+	node->str = ralloc_strdup (node, str);
 
 	node->next = NULL;
 
@@ -598,7 +630,7 @@ _string_list_contains (string_list_t *list, const char *member, int *index)
 		return 0;
 
 	for (i = 0, node = list->head; node; i++, node = node->next) {
-		if (safe_strcmp (node->str, member) == 0) {
+		if (strcmp (node->str, member) == 0) {
 			if (index)
 				*index = i;
 			return 1;
@@ -638,7 +670,7 @@ _string_list_equal (string_list_t *a, string_list_t *b)
 	     node_a && node_b;
 	     node_a = node_a->next, node_b = node_b->next)
 	{
-		if (safe_strcmp (node_a->str, node_b->str))
+		if (strcmp (node_a->str, node_b->str))
 			return 0;
 	}
 
@@ -653,7 +685,7 @@ _argument_list_create (void *ctx)
 {
 	argument_list_t *list;
 
-	list = talloc (ctx, argument_list_t);
+	list = ralloc (ctx, argument_list_t);
 	list->head = NULL;
 	list->tail = NULL;
 
@@ -665,7 +697,7 @@ _argument_list_append (argument_list_t *list, token_list_t *argument)
 {
 	argument_node_t *node;
 
-	node = talloc (list, argument_node_t);
+	node = ralloc (list, argument_node_t);
 	node->argument = argument;
 
 	node->next = NULL;
@@ -716,15 +748,17 @@ _argument_list_member_at (argument_list_t *list, int index)
 	return NULL;
 }
 
-/* Note: This function talloc_steal()s the str pointer. */
+/* Note: This function ralloc_steal()s the str pointer. */
 token_t *
 _token_create_str (void *ctx, int type, char *str)
 {
 	token_t *token;
 
-	token = talloc (ctx, token_t);
+	token = ralloc (ctx, token_t);
 	token->type = type;
-	token->value.str = talloc_steal (token, str);
+	token->value.str = str;
+
+	ralloc_steal (token, str);
 
 	return token;
 }
@@ -734,7 +768,7 @@ _token_create_ival (void *ctx, int type, int ival)
 {
 	token_t *token;
 
-	token = talloc (ctx, token_t);
+	token = ralloc (ctx, token_t);
 	token->type = type;
 	token->value.ival = ival;
 
@@ -746,7 +780,7 @@ _token_list_create (void *ctx)
 {
 	token_list_t *list;
 
-	list = talloc (ctx, token_list_t);
+	list = ralloc (ctx, token_list_t);
 	list->head = NULL;
 	list->tail = NULL;
 	list->non_space_tail = NULL;
@@ -759,9 +793,8 @@ _token_list_append (token_list_t *list, token_t *token)
 {
 	token_node_t *node;
 
-	node = talloc (list, token_node_t);
-	node->token = talloc_reference (list, token);
-
+	node = ralloc (list, token_node_t);
+	node->token = token;
 	node->next = NULL;
 
 	if (list->head == NULL) {
@@ -801,8 +834,11 @@ _token_list_copy (void *ctx, token_list_t *other)
 		return NULL;
 
 	copy = _token_list_create (ctx);
-	for (node = other->head; node; node = node->next)
-		_token_list_append (copy, node->token);
+	for (node = other->head; node; node = node->next) {
+		token_t *new_token = ralloc (copy, token_t);
+		*new_token = *node->token;
+		_token_list_append (copy, new_token);
+	}
 
 	return copy;
 }
@@ -819,16 +855,37 @@ _token_list_trim_trailing_space (token_list_t *list)
 
 		while (tail) {
 			next = tail->next;
-			talloc_free (tail);
+			ralloc_free (tail);
 			tail = next;
 		}
 	}
+}
+
+static int
+_token_list_is_empty_ignoring_space (token_list_t *l)
+{
+	token_node_t *n;
+
+	if (l == NULL)
+		return 1;
+
+	n = l->head;
+	while (n != NULL && n->token->type == SPACE)
+		n = n->next;
+
+	return n == NULL;
 }
 
 int
 _token_list_equal_ignoring_space (token_list_t *a, token_list_t *b)
 {
 	token_node_t *node_a, *node_b;
+
+	if (a == NULL || b == NULL) {
+		int a_empty = _token_list_is_empty_ignoring_space(a);
+		int b_empty = _token_list_is_empty_ignoring_space(b);
+		return a_empty == b_empty;
+	}
 
 	node_a = a->head;
 	node_b = b->head;
@@ -865,8 +922,8 @@ _token_list_equal_ignoring_space (token_list_t *a, token_list_t *b)
 		case IDENTIFIER:
 		case INTEGER_STRING:
 		case OTHER:
-			if (safe_strcmp (node_a->token->value.str,
-					 node_b->token->value.str))
+			if (strcmp (node_a->token->value.str,
+				    node_b->token->value.str))
 			{
 				return 0;
 			}
@@ -881,54 +938,54 @@ _token_list_equal_ignoring_space (token_list_t *a, token_list_t *b)
 }
 
 static void
-_token_print (char **out, token_t *token)
+_token_print (char **out, size_t *len, token_t *token)
 {
 	if (token->type < 256) {
-		glcpp_printf (*out, "%c", token->type);
+		ralloc_asprintf_rewrite_tail (out, len, "%c", token->type);
 		return;
 	}
 
 	switch (token->type) {
 	case INTEGER:
-		glcpp_printf (*out, "%" PRIiMAX, token->value.ival);
+		ralloc_asprintf_rewrite_tail (out, len, "%" PRIiMAX, token->value.ival);
 		break;
 	case IDENTIFIER:
 	case INTEGER_STRING:
 	case OTHER:
-		glcpp_print (*out, token->value.str);
+		ralloc_asprintf_rewrite_tail (out, len, "%s", token->value.str);
 		break;
 	case SPACE:
-		glcpp_print (*out, " ");
+		ralloc_asprintf_rewrite_tail (out, len, " ");
 		break;
 	case LEFT_SHIFT:
-		glcpp_print (*out, "<<");
+		ralloc_asprintf_rewrite_tail (out, len, "<<");
 		break;
 	case RIGHT_SHIFT:
-		glcpp_print (*out, ">>");
+		ralloc_asprintf_rewrite_tail (out, len, ">>");
 		break;
 	case LESS_OR_EQUAL:
-		glcpp_print (*out, "<=");
+		ralloc_asprintf_rewrite_tail (out, len, "<=");
 		break;
 	case GREATER_OR_EQUAL:
-		glcpp_print (*out, ">=");
+		ralloc_asprintf_rewrite_tail (out, len, ">=");
 		break;
 	case EQUAL:
-		glcpp_print (*out, "==");
+		ralloc_asprintf_rewrite_tail (out, len, "==");
 		break;
 	case NOT_EQUAL:
-		glcpp_print (*out, "!=");
+		ralloc_asprintf_rewrite_tail (out, len, "!=");
 		break;
 	case AND:
-		glcpp_print (*out, "&&");
+		ralloc_asprintf_rewrite_tail (out, len, "&&");
 		break;
 	case OR:
-		glcpp_print (*out, "||");
+		ralloc_asprintf_rewrite_tail (out, len, "||");
 		break;
 	case PASTE:
-		glcpp_print (*out, "##");
+		ralloc_asprintf_rewrite_tail (out, len, "##");
 		break;
 	case COMMA_FINAL:
-		glcpp_print (*out, ",");
+		ralloc_asprintf_rewrite_tail (out, len, ",");
 		break;
 	case PLACEHOLDER:
 		/* Nothing to print. */
@@ -939,7 +996,7 @@ _token_print (char **out, token_t *token)
 	}
 }
 
-/* Return a new token (talloc()ed off of 'token') formed by pasting
+/* Return a new token (ralloc()ed off of 'token') formed by pasting
  * 'token' and 'other'. Note that this function may return 'token' or
  * 'other' directly rather than allocating anything new.
  *
@@ -1010,7 +1067,7 @@ _token_paste (glcpp_parser_t *parser, token_t *token, token_t *other)
 	{
 		char *str;
 
-		str = talloc_asprintf (token, "%s%s", token->value.str,
+		str = ralloc_asprintf (token, "%s%s", token->value.str,
 				       other->value.str);
 		combined = _token_create_str (token, token->type, str);
 		combined->location = token->location;
@@ -1018,11 +1075,11 @@ _token_paste (glcpp_parser_t *parser, token_t *token, token_t *other)
 	}
 
 	glcpp_error (&token->location, parser, "");
-	glcpp_print (parser->info_log, "Pasting \"");
-	_token_print (&parser->info_log, token);
-	glcpp_print (parser->info_log, "\" and \"");
-	_token_print (&parser->info_log, other);
-	glcpp_print (parser->info_log, "\" does not give a valid preprocessing token.\n");
+	ralloc_asprintf_rewrite_tail (&parser->info_log, &parser->info_log_length, "Pasting \"");
+	_token_print (&parser->info_log, &parser->info_log_length, token);
+	ralloc_asprintf_rewrite_tail (&parser->info_log, &parser->info_log_length, "\" and \"");
+	_token_print (&parser->info_log, &parser->info_log_length, other);
+	ralloc_asprintf_rewrite_tail (&parser->info_log, &parser->info_log_length, "\" does not give a valid preprocessing token.\n");
 
 	return token;
 }
@@ -1036,7 +1093,7 @@ _token_list_print (glcpp_parser_t *parser, token_list_t *list)
 		return;
 
 	for (node = list->head; node; node = node->next)
-		_token_print (&parser->output, node->token);
+		_token_print (&parser->output, &parser->output_length, node->token);
 }
 
 void
@@ -1056,8 +1113,6 @@ static void add_builtin_define(glcpp_parser_t *parser,
    list = _token_list_create(parser);
    _token_list_append(list, tok);
    _define_object_macro(parser, NULL, name, list);
-
-   talloc_unlink(parser, tok);
 }
 
 glcpp_parser_t *
@@ -1066,7 +1121,7 @@ glcpp_parser_create (const struct gl_extensions *extensions, int api)
 	glcpp_parser_t *parser;
 	int language_version;
 
-	parser = talloc (NULL, glcpp_parser_t);
+	parser = ralloc (NULL, glcpp_parser_t);
 
 	glcpp_lex_init_extra (parser, &parser->scanner);
 	parser->defines = hash_table_ctor (32, hash_table_string_hash,
@@ -1083,9 +1138,16 @@ glcpp_parser_create (const struct gl_extensions *extensions, int api)
 	parser->lex_from_list = NULL;
 	parser->lex_from_node = NULL;
 
-	parser->output = talloc_strdup(parser, "");
-	parser->info_log = talloc_strdup(parser, "");
+	parser->output = ralloc_strdup(parser, "");
+	parser->output_length = 0;
+	parser->info_log = ralloc_strdup(parser, "");
+	parser->info_log_length = 0;
 	parser->error = 0;
+
+	parser->has_new_line_number = 0;
+	parser->new_line_number = 1;
+	parser->has_new_source_number = 0;
+	parser->new_source_number = 0;
 
 	/* Add pre-defined macros. */
 	add_builtin_define(parser, "GL_ARB_draw_buffers", 1);
@@ -1102,6 +1164,29 @@ glcpp_parser_create (const struct gl_extensions *extensions, int api)
 	   if (extensions->ARB_fragment_coord_conventions)
 	      add_builtin_define(parser, "GL_ARB_fragment_coord_conventions",
 				 1);
+
+	   if (extensions->ARB_explicit_attrib_location)
+	      add_builtin_define(parser, "GL_ARB_explicit_attrib_location", 1);
+
+	   if (extensions->ARB_shader_texture_lod)
+	      add_builtin_define(parser, "GL_ARB_shader_texture_lod", 1);
+
+	   if (extensions->ARB_draw_instanced)
+	      add_builtin_define(parser, "GL_ARB_draw_instanced", 1);
+
+	   if (extensions->ARB_conservative_depth) {
+	      add_builtin_define(parser, "GL_AMD_conservative_depth", 1);
+	      add_builtin_define(parser, "GL_ARB_conservative_depth", 1);
+	   }
+
+	   if (extensions->OES_EGL_image_external)
+	      add_builtin_define(parser, "GL_OES_EGL_image_external", 1);
+
+	   if (extensions->ARB_shader_bit_encoding)
+	      add_builtin_define(parser, "GL_ARB_shader_bit_encoding", 1);
+
+	   if (extensions->ARB_uniform_buffer_object)
+	      add_builtin_define(parser, "GL_ARB_uniform_buffer_object", 1);
 	}
 
 	language_version = 110;
@@ -1110,18 +1195,12 @@ glcpp_parser_create (const struct gl_extensions *extensions, int api)
 	return parser;
 }
 
-int
-glcpp_parser_parse (glcpp_parser_t *parser)
-{
-	return yyparse (parser);
-}
-
 void
 glcpp_parser_destroy (glcpp_parser_t *parser)
 {
 	glcpp_lex_destroy (parser->scanner);
 	hash_table_dtor (parser->defines);
-	talloc_free (parser);
+	ralloc_free (parser);
 }
 
 typedef enum function_status
@@ -1227,18 +1306,67 @@ _token_list_create_with_one_space (void *ctx)
 	return list;
 }
 
+/* Perform macro expansion on 'list', placing the resulting tokens
+ * into a new list which is initialized with a first token of type
+ * 'head_token_type'. Then begin lexing from the resulting list,
+ * (return to the current lexing source when this list is exhausted).
+ */
 static void
-_glcpp_parser_expand_if (glcpp_parser_t *parser, int type, token_list_t *list)
+_glcpp_parser_expand_and_lex_from (glcpp_parser_t *parser,
+				   int head_token_type,
+				   token_list_t *list)
 {
 	token_list_t *expanded;
 	token_t *token;
 
 	expanded = _token_list_create (parser);
-	token = _token_create_ival (parser, type, type);
+	token = _token_create_ival (parser, head_token_type, head_token_type);
 	_token_list_append (expanded, token);
 	_glcpp_parser_expand_token_list (parser, list);
 	_token_list_append_list (expanded, list);
 	glcpp_parser_lex_from (parser, expanded);
+}
+
+static void
+_glcpp_parser_apply_pastes (glcpp_parser_t *parser, token_list_t *list)
+{
+	token_node_t *node;
+
+	node = list->head;
+	while (node)
+	{
+		token_node_t *next_non_space;
+
+		/* Look ahead for a PASTE token, skipping space. */
+		next_non_space = node->next;
+		while (next_non_space && next_non_space->token->type == SPACE)
+			next_non_space = next_non_space->next;
+
+		if (next_non_space == NULL)
+			break;
+
+		if (next_non_space->token->type != PASTE) {
+			node = next_non_space;
+			continue;
+		}
+
+		/* Now find the next non-space token after the PASTE. */
+		next_non_space = next_non_space->next;
+		while (next_non_space && next_non_space->token->type == SPACE)
+			next_non_space = next_non_space->next;
+
+		if (next_non_space == NULL) {
+			yyerror (&node->token->location, parser, "'##' cannot appear at either end of a macro expansion\n");
+			return;
+		}
+
+		node->token = _token_paste (parser, node->token, next_non_space->token);
+		node->next = next_non_space->next;
+		if (next_non_space == list->tail)
+			list->tail = node;
+	}
+
+	list->non_space_tail = list->tail;
 }
 
 /* This is a helper function that's essentially part of the
@@ -1292,7 +1420,7 @@ _glcpp_parser_expand_function (glcpp_parser_t *parser,
 
 	/* Replace a macro defined as empty with a SPACE token. */
 	if (macro->replacements == NULL) {
-		talloc_free (arguments);
+		ralloc_free (arguments);
 		return _token_list_create_with_one_space (parser);
 	}
 
@@ -1352,43 +1480,7 @@ _glcpp_parser_expand_function (glcpp_parser_t *parser,
 
 	_token_list_trim_trailing_space (substituted);
 
-	node = substituted->head;
-	while (node)
-	{
-		token_node_t *next_non_space;
-
-		/* Look ahead for a PASTE token, skipping space. */
-		next_non_space = node->next;
-		while (next_non_space && next_non_space->token->type == SPACE)
-			next_non_space = next_non_space->next;
-
-		if (next_non_space == NULL)
-			break;
-
-		if (next_non_space->token->type != PASTE) {
-			node = next_non_space;
-			continue;
-		}
-
-		/* Now find the next non-space token after the PASTE. */
-		next_non_space = next_non_space->next;
-		while (next_non_space && next_non_space->token->type == SPACE)
-			next_non_space = next_non_space->next;
-
-		if (next_non_space == NULL) {
-			yyerror (&node->token->location, parser, "'##' cannot appear at either end of a macro expansion\n");
-			return NULL;
-		}
-
-		node->token = _token_paste (parser, node->token, next_non_space->token);
-		node->next = next_non_space->next;
-		if (next_non_space == substituted->tail)
-			substituted->tail = node;
-
-		node = node->next;
-	}
-
-	substituted->non_space_tail = substituted->tail;
+	_glcpp_parser_apply_pastes (parser, substituted);
 
 	return substituted;
 }
@@ -1440,7 +1532,7 @@ _glcpp_parser_expand_node (glcpp_parser_t *parser,
 
 	/* Finally, don't expand this macro if we're already actively
 	 * expanding it, (to avoid infinite recursion). */
-	if (_active_list_contains (parser->active, identifier)) {
+	if (_parser_active_list_contains (parser, identifier)) {
 		/* We change the token type here from IDENTIFIER to
 		 * OTHER to prevent any future expansion of this
 		 * unexpanded token. */
@@ -1448,7 +1540,7 @@ _glcpp_parser_expand_node (glcpp_parser_t *parser,
 		token_list_t *expansion;
 		token_t *final;
 
-		str = talloc_strdup (parser, token->value.str);
+		str = ralloc_strdup (parser, token->value.str);
 		final = _token_create_str (parser, OTHER, str);
 		expansion = _token_list_create (parser);
 		_token_list_append (expansion, final);
@@ -1458,64 +1550,69 @@ _glcpp_parser_expand_node (glcpp_parser_t *parser,
 
 	if (! macro->is_function)
 	{
+		token_list_t *replacement;
 		*last = node;
 
 		/* Replace a macro defined as empty with a SPACE token. */
 		if (macro->replacements == NULL)
 			return _token_list_create_with_one_space (parser);
 
-		return _token_list_copy (parser, macro->replacements);
+		replacement = _token_list_copy (parser, macro->replacements);
+		_glcpp_parser_apply_pastes (parser, replacement);
+		return replacement;
 	}
 
 	return _glcpp_parser_expand_function (parser, node, last);
 }
 
-/* Push a new identifier onto the active list, returning the new list.
+/* Push a new identifier onto the parser's active list.
  *
  * Here, 'marker' is the token node that appears in the list after the
  * expansion of 'identifier'. That is, when the list iterator begins
- * examinging 'marker', then it is time to pop this node from the
+ * examining 'marker', then it is time to pop this node from the
  * active stack.
  */
-active_list_t *
-_active_list_push (active_list_t *list,
-		   const char *identifier,
-		   token_node_t *marker)
+static void
+_parser_active_list_push (glcpp_parser_t *parser,
+			  const char *identifier,
+			  token_node_t *marker)
 {
 	active_list_t *node;
 
-	node = talloc (list, active_list_t);
-	node->identifier = talloc_strdup (node, identifier);
+	node = ralloc (parser->active, active_list_t);
+	node->identifier = ralloc_strdup (node, identifier);
 	node->marker = marker;
-	node->next = list;
+	node->next = parser->active;
 
-	return node;
+	parser->active = node;
 }
 
-active_list_t *
-_active_list_pop (active_list_t *list)
+static void
+_parser_active_list_pop (glcpp_parser_t *parser)
 {
-	active_list_t *node = list;
+	active_list_t *node = parser->active;
 
-	if (node == NULL)
-		return NULL;
+	if (node == NULL) {
+		parser->active = NULL;
+		return;
+	}
 
-	node = list->next;
-	talloc_free (list);
+	node = parser->active->next;
+	ralloc_free (parser->active);
 
-	return node;
+	parser->active = node;
 }
 
-int
-_active_list_contains (active_list_t *list, const char *identifier)
+static int
+_parser_active_list_contains (glcpp_parser_t *parser, const char *identifier)
 {
 	active_list_t *node;
 
-	if (list == NULL)
+	if (parser->active == NULL)
 		return 0;
 
-	for (node = list; node; node = node->next)
-		if (safe_strcmp (node->identifier, identifier) == 0)
+	for (node = parser->active; node; node = node->next)
+		if (strcmp (node->identifier, identifier) == 0)
 			return 1;
 
 	return 0;
@@ -1533,6 +1630,7 @@ _glcpp_parser_expand_token_list (glcpp_parser_t *parser,
 	token_node_t *node_prev;
 	token_node_t *node, *last = NULL;
 	token_list_t *expansion;
+	active_list_t *active_initial = parser->active;
 
 	if (list == NULL)
 		return;
@@ -1545,10 +1643,8 @@ _glcpp_parser_expand_token_list (glcpp_parser_t *parser,
 	while (node) {
 
 		while (parser->active && parser->active->marker == node)
-			parser->active = _active_list_pop (parser->active);
+			_parser_active_list_pop (parser);
 
-		/* Find the expansion for node, which will replace all
-		 * nodes from node to last, inclusive. */
 		expansion = _glcpp_parser_expand_node (parser, node, &last);
 		if (expansion) {
 			token_node_t *n;
@@ -1557,12 +1653,12 @@ _glcpp_parser_expand_token_list (glcpp_parser_t *parser,
 				while (parser->active &&
 				       parser->active->marker == n)
 				{
-					parser->active = _active_list_pop (parser->active);
+					_parser_active_list_pop (parser);
 				}
 
-			parser->active = _active_list_push (parser->active,
-							    node->token->value.str,
-							    last->next);
+			_parser_active_list_push (parser,
+						  node->token->value.str,
+						  last->next);
 			
 			/* Splice expansion into list, supporting a
 			 * simple deletion if the expansion is
@@ -1589,8 +1685,11 @@ _glcpp_parser_expand_token_list (glcpp_parser_t *parser,
 		node = node_prev ? node_prev->next : list->head;
 	}
 
-	while (parser->active)
-		parser->active = _active_list_pop (parser->active);
+	/* Remove any lingering effects of this invocation on the
+	 * active list. That is, pop until the list looks like it did
+	 * at the beginning of this function. */
+	while (parser->active && parser->active != active_initial)
+		_parser_active_list_pop (parser);
 
 	list->non_space_tail = list->tail;
 }
@@ -1616,8 +1715,8 @@ _check_for_reserved_macro_name (glcpp_parser_t *parser, YYLTYPE *loc,
 	/* According to the GLSL specification, macro names starting with "__"
 	 * or "GL_" are reserved for future use.  So, don't allow them.
 	 */
-	if (strncmp(identifier, "__", 2) == 0) {
-		glcpp_error (loc, parser, "Macro names starting with \"__\" are reserved.\n");
+	if (strstr(identifier, "__")) {
+		glcpp_error (loc, parser, "Macro names containing \"__\" are reserved.\n");
 	}
 	if (strncmp(identifier, "GL_", 3) == 0) {
 		glcpp_error (loc, parser, "Macro names starting with \"GL_\" are reserved.\n");
@@ -1650,17 +1749,18 @@ _define_object_macro (glcpp_parser_t *parser,
 	if (loc != NULL)
 		_check_for_reserved_macro_name(parser, loc, identifier);
 
-	macro = talloc (parser, macro_t);
+	macro = ralloc (parser, macro_t);
 
 	macro->is_function = 0;
 	macro->parameters = NULL;
-	macro->identifier = talloc_strdup (macro, identifier);
-	macro->replacements = talloc_steal (macro, replacements);
+	macro->identifier = ralloc_strdup (macro, identifier);
+	macro->replacements = replacements;
+	ralloc_steal (macro, replacements);
 
 	previous = hash_table_find (parser->defines, identifier);
 	if (previous) {
 		if (_macro_equal (macro, previous)) {
-			talloc_free (macro);
+			ralloc_free (macro);
 			return;
 		}
 		glcpp_error (loc, parser, "Redefinition of macro %s\n",
@@ -1681,17 +1781,18 @@ _define_function_macro (glcpp_parser_t *parser,
 
 	_check_for_reserved_macro_name(parser, loc, identifier);
 
-	macro = talloc (parser, macro_t);
+	macro = ralloc (parser, macro_t);
+	ralloc_steal (macro, parameters);
+	ralloc_steal (macro, replacements);
 
 	macro->is_function = 1;
-	macro->parameters = talloc_steal (macro, parameters);
-	macro->identifier = talloc_strdup (macro, identifier);
-	macro->replacements = talloc_steal (macro, replacements);
-
+	macro->parameters = parameters;
+	macro->identifier = ralloc_strdup (macro, identifier);
+	macro->replacements = replacements;
 	previous = hash_table_find (parser->defines, identifier);
 	if (previous) {
 		if (_macro_equal (macro, previous)) {
-			talloc_free (macro);
+			ralloc_free (macro);
 			return;
 		}
 		glcpp_error (loc, parser, "Redefinition of macro %s\n",
@@ -1742,7 +1843,7 @@ glcpp_parser_lex (YYSTYPE *yylval, YYLTYPE *yylloc, glcpp_parser_t *parser)
 			if (ret == NEWLINE)
 				parser->in_control_line = 0;
 		}
-		else if (ret == HASH_DEFINE_OBJ || ret == HASH_DEFINE_FUNC ||
+		else if (ret == HASH_DEFINE ||
 			   ret == HASH_UNDEF || ret == HASH_IF ||
 			   ret == HASH_IFDEF || ret == HASH_IFNDEF ||
 			   ret == HASH_ELIF || ret == HASH_ELSE ||
@@ -1767,7 +1868,7 @@ glcpp_parser_lex (YYSTYPE *yylval, YYLTYPE *yylloc, glcpp_parser_t *parser)
 	node = parser->lex_from_node;
 
 	if (node == NULL) {
-		talloc_free (parser->lex_from_list);
+		ralloc_free (parser->lex_from_list);
 		parser->lex_from_list = NULL;
 		return NEWLINE;
 	}
@@ -1796,13 +1897,13 @@ glcpp_parser_lex_from (glcpp_parser_t *parser, token_list_t *list)
 		_token_list_append (parser->lex_from_list, node->token);
 	}
 
-	talloc_free (list);
+	ralloc_free (list);
 
 	parser->lex_from_node = parser->lex_from_list->head;
 
 	/* It's possible the list consisted of nothing but whitespace. */
 	if (parser->lex_from_node == NULL) {
-		talloc_free (parser->lex_from_list);
+		ralloc_free (parser->lex_from_list);
 		parser->lex_from_list = NULL;
 	}
 }
@@ -1817,7 +1918,7 @@ _glcpp_parser_skip_stack_push_if (glcpp_parser_t *parser, YYLTYPE *loc,
 	if (parser->skip_stack)
 		current = parser->skip_stack->type;
 
-	node = talloc (parser, skip_node_t);
+	node = ralloc (parser, skip_node_t);
 	node->loc = *loc;
 
 	if (current == SKIP_NO_SKIP) {
@@ -1862,5 +1963,5 @@ _glcpp_parser_skip_stack_pop (glcpp_parser_t *parser, YYLTYPE *loc)
 
 	node = parser->skip_stack;
 	parser->skip_stack = node->next;
-	talloc_free (node);
+	ralloc_free (node);
 }

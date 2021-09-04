@@ -138,7 +138,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 		print '#  define GL_PREFIX(n) GLNAME(CONCAT(gl,n))'
 		print '# endif'
 		print ''
-		print '#if defined(PTHREADS) || defined(WIN32_THREADS) || defined(BEOS_THREADS)'
+		print '#if defined(HAVE_PTHREAD) || defined(WIN32)'
 		print '#  define THREADS'
 		print '#endif'
 		print ''
@@ -158,7 +158,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 		print '\tret'
 		print '\t.size\t_x86_64_get_dispatch, .-_x86_64_get_dispatch'
 		print ''
-		print '#elif defined(PTHREADS)'
+		print '#elif defined(HAVE_PTHREAD)'
 		print ''
 		print '\t.extern\t_glapi_Dispatch'
 		print '\t.extern\t_gl_DispatchTSD'
@@ -166,7 +166,8 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 		print ''
 		print '\t.p2align\t4,,15'
 		print '_x86_64_get_dispatch:'
-		print '\tmovq\t_gl_DispatchTSD(%rip), %rdi'
+		print '\tmovq\t_gl_DispatchTSD@GOTPCREL(%rip), %rax'
+		print '\tmovl\t(%rax), %edi'
 		print '\tjmp\tpthread_getspecific@PLT'
 		print ''
 		print '#elif defined(THREADS)'
@@ -250,7 +251,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 		print '\tcall\t_x86_64_get_dispatch@PLT'
 		print '\tmovq\t%u(%%rax), %%r11' % (f.offset * 8)
 		print '\tjmp\t*%r11'
-		print '#elif defined(PTHREADS)'
+		print '#elif defined(HAVE_PTHREAD)'
 		
 		save_all_regs(registers)
 		print '\tcall\t_x86_64_get_dispatch@PLT'

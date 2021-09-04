@@ -77,9 +77,6 @@ warn_GLX_1_3(Display * dpy, const char *function_name)
  * \note
  * This function dynamically determines whether to use the SGIX_pbuffer
  * version of the protocol or the GLX 1.3 version of the protocol.
- *
- * \todo
- * This function needs to be modified to work with direct-rendering drivers.
  */
 static void
 ChangeDrawableAttribute(Display * dpy, GLXDrawable drawable,
@@ -106,7 +103,7 @@ ChangeDrawableAttribute(Display * dpy, GLXDrawable drawable,
    if ((priv->majorVersion > 1) || (priv->minorVersion >= 3)) {
       xGLXChangeDrawableAttributesReq *req;
 
-      GetReqExtra(GLXChangeDrawableAttributes, 8 + (8 * num_attribs), req);
+      GetReqExtra(GLXChangeDrawableAttributes, 8 * num_attribs, req);
       output = (CARD32 *) (req + 1);
 
       req->reqType = opcode;
@@ -117,7 +114,7 @@ ChangeDrawableAttribute(Display * dpy, GLXDrawable drawable,
    else {
       xGLXVendorPrivateWithReplyReq *vpreq;
 
-      GetReqExtra(GLXVendorPrivateWithReply, 4 + (8 * num_attribs), vpreq);
+      GetReqExtra(GLXVendorPrivateWithReply, 8 + (8 * num_attribs), vpreq);
       output = (CARD32 *) (vpreq + 1);
 
       vpreq->reqType = opcode;
@@ -125,7 +122,8 @@ ChangeDrawableAttribute(Display * dpy, GLXDrawable drawable,
       vpreq->vendorCode = X_GLXvop_ChangeDrawableAttributesSGIX;
 
       output[0] = (CARD32) drawable;
-      output++;
+      output[1] = num_attribs;
+      output += 2;
    }
 
    (void) memcpy(output, attribs, sizeof(CARD32) * 2 * num_attribs);
@@ -135,6 +133,9 @@ ChangeDrawableAttribute(Display * dpy, GLXDrawable drawable,
 
 #ifdef GLX_DIRECT_RENDERING
    pdraw = GetGLXDRIDrawable(dpy, drawable);
+
+   if (!pdraw)
+      return;
 
    for (i = 0; i < num_attribs; i++) {
       switch(attribs[i * 2]) {
@@ -186,7 +187,7 @@ determineTextureFormat(const int *attribs, int numAttribs)
    return 0;
 }
 
-static void
+static GLboolean
 CreateDRIDrawable(Display *dpy, struct glx_config *config,
 		  XID drawable, XID glxdrawable,
 		  const int *attrib_list, size_t num_attribs)
@@ -197,22 +198,24 @@ CreateDRIDrawable(Display *dpy, struct glx_config *config,
 
    psc = priv->screens[config->screen];
    if (psc->driScreen == NULL)
-      return;
+      return GL_TRUE;
 
    pdraw = psc->driScreen->createDrawable(psc, drawable,
 					  glxdrawable, config);
    if (pdraw == NULL) {
       fprintf(stderr, "failed to create drawable\n");
-      return;
+      return GL_FALSE;
    }
 
    if (__glxHashInsert(priv->drawHash, glxdrawable, pdraw)) {
       (*pdraw->destroyDrawable) (pdraw);
-      return; /* FIXME: Check what we're supposed to do here... */
+      return GL_FALSE;
    }
 
    pdraw->textureTarget = determineTextureTarget(attrib_list, num_attribs);
    pdraw->textureFormat = determineTextureFormat(attrib_list, num_attribs);
+
+   return GL_TRUE;
 }
 
 static void
@@ -233,11 +236,12 @@ DestroyDRIDrawable(Display *dpy, GLXDrawable drawable, int destroy_xdrawable)
 
 #else
 
-static void
+static GLboolean
 CreateDRIDrawable(Display *dpy, const struct glx_config * fbconfig,
 		  XID drawable, XID glxdrawable,
 		  const int *attrib_list, size_t num_attribs)
 {
+    return GL_FALSE;
 }
 
 static void
@@ -261,9 +265,6 @@ DestroyDRIDrawable(Display *dpy, GLXDrawable drawable, int destroy_xdrawable)
  * The number of attributes returned is likely to be small, probably less than
  * 10.  Given that, this routine should try to use an array on the stack to
  * capture the reply rather than always calling Xmalloc.
- *
- * \todo
- * This function needs to be modified to work with direct-rendering drivers.
  */
 static int
 GetDrawableAttribute(Display * dpy, GLXDrawable drawable,
@@ -297,7 +298,7 @@ GetDrawableAttribute(Display * dpy, GLXDrawable drawable,
    if (use_glx_1_3) {
       xGLXGetDrawableAttributesReq *req;
 
-      GetReqExtra(GLXGetDrawableAttributes, 4, req);
+      GetReq(GLXGetDrawableAttributes, req);
       req->reqType = opcode;
       req->glxCode = X_GLXGetDrawableAttributes;
       req->drawable = drawable;
@@ -366,20 +367,40 @@ GetDrawableAttribute(Display * dpy, GLXDrawable drawable,
    return 0;
 }
 
+static void
+protocolDestroyDrawable(Display *dpy, GLXDrawable drawable, CARD32 glxCode)
+{
+   xGLXDestroyPbufferReq *req;
+   CARD8 opcode;
+
+   opcode = __glXSetupForCommand(dpy);
+   if (!opcode)
+      return;
+
+   LockDisplay(dpy);
+
+   GetReq(GLXDestroyPbuffer, req);
+   req->reqType = opcode;
+   req->glxCode = glxCode;
+   req->pbuffer = (GLXPbuffer) drawable;
+
+   UnlockDisplay(dpy);
+   SyncHandle();
+}
+
 /**
  * Create a non-pbuffer GLX drawable.
- *
- * \todo
- * This function needs to be modified to work with direct-rendering drivers.
  */
 static GLXDrawable
 CreateDrawable(Display *dpy, struct glx_config *config,
                Drawable drawable, const int *attrib_list, CARD8 glxCode)
 {
    xGLXCreateWindowReq *req;
+   struct glx_drawable *glxDraw;
    CARD32 *data;
    unsigned int i;
    CARD8 opcode;
+   GLXDrawable xid;
 
    i = 0;
    if (attrib_list) {
@@ -391,6 +412,10 @@ CreateDrawable(Display *dpy, struct glx_config *config,
    if (!opcode)
       return None;
 
+   glxDraw = Xmalloc(sizeof(*glxDraw));
+   if (!glxDraw)
+      return None;
+
    LockDisplay(dpy);
    GetReqExtra(GLXCreateWindow, 8 * i, req);
    data = (CARD32 *) (req + 1);
@@ -400,7 +425,7 @@ CreateDrawable(Display *dpy, struct glx_config *config,
    req->screen = config->screen;
    req->fbconfig = config->fbconfigID;
    req->window = drawable;
-   req->glxwindow = XAllocID(dpy);
+   req->glxwindow = xid = XAllocID(dpy);
    req->numAttribs = i;
 
    if (attrib_list)
@@ -409,9 +434,21 @@ CreateDrawable(Display *dpy, struct glx_config *config,
    UnlockDisplay(dpy);
    SyncHandle();
 
-   CreateDRIDrawable(dpy, config, drawable, req->glxwindow, attrib_list, i);
+   if (InitGLXDrawable(dpy, glxDraw, drawable, xid)) {
+      free(glxDraw);
+      return None;
+   }
 
-   return req->glxwindow;
+   if (!CreateDRIDrawable(dpy, config, drawable, xid, attrib_list, i)) {
+      if (glxCode == X_GLXCreatePixmap)
+         glxCode = X_GLXDestroyPixmap;
+      else
+         glxCode = X_GLXDestroyWindow;
+      protocolDestroyDrawable(dpy, xid, glxCode);
+      xid = None;
+   }
+
+   return xid;
 }
 
 
@@ -421,28 +458,13 @@ CreateDrawable(Display *dpy, struct glx_config *config,
 static void
 DestroyDrawable(Display * dpy, GLXDrawable drawable, CARD32 glxCode)
 {
-   xGLXDestroyPbufferReq *req;
-   CARD8 opcode;
-
    if ((dpy == NULL) || (drawable == 0)) {
       return;
    }
 
+   protocolDestroyDrawable(dpy, drawable, glxCode);
 
-   opcode = __glXSetupForCommand(dpy);
-   if (!opcode)
-      return;
-
-   LockDisplay(dpy);
-
-   GetReqExtra(GLXDestroyPbuffer, 4, req);
-   req->reqType = opcode;
-   req->glxCode = glxCode;
-   req->pbuffer = (GLXPbuffer) drawable;
-
-   UnlockDisplay(dpy);
-   SyncHandle();
-
+   DestroyGLXDrawable(dpy, drawable);
    DestroyDRIDrawable(dpy, drawable, GL_FALSE);
 
    return;
@@ -458,9 +480,6 @@ DestroyDrawable(Display * dpy, GLXDrawable drawable, CARD32 glxCode)
  * \note
  * This function dynamically determines whether to use the SGIX_pbuffer
  * version of the protocol or the GLX 1.3 version of the protocol.
- *
- * \todo
- * This function needs to be modified to work with direct-rendering drivers.
  */
 static GLXDrawable
 CreatePbuffer(Display * dpy, struct glx_config *config,
@@ -473,6 +492,7 @@ CreatePbuffer(Display * dpy, struct glx_config *config,
    CARD8 opcode;
    unsigned int i;
    Pixmap pixmap;
+   GLboolean glx_1_3 = GL_FALSE;
 
    i = 0;
    if (attrib_list) {
@@ -490,6 +510,8 @@ CreatePbuffer(Display * dpy, struct glx_config *config,
    if ((priv->majorVersion > 1) || (priv->minorVersion >= 3)) {
       xGLXCreatePbufferReq *req;
       unsigned int extra = (size_in_attribs) ? 0 : 2;
+
+      glx_1_3 = GL_TRUE;
 
       GetReqExtra(GLXCreatePbuffer, (8 * (i + extra)), req);
       data = (CARD32 *) (req + 1);
@@ -535,7 +557,12 @@ CreatePbuffer(Display * dpy, struct glx_config *config,
    pixmap = XCreatePixmap(dpy, RootWindow(dpy, config->screen),
 			  width, height, config->rgbBits);
 
-   CreateDRIDrawable(dpy, config, pixmap, id, attrib_list, i);
+   if (!CreateDRIDrawable(dpy, config, pixmap, id, attrib_list, i)) {
+      CARD32 o = glx_1_3 ? X_GLXDestroyPbuffer : X_GLXvop_DestroyGLXPbufferSGIX;
+      XFreePixmap(dpy, pixmap);
+      protocolDestroyDrawable(dpy, id, o);
+      id = None;
+   }
 
    return id;
 }
@@ -842,7 +869,7 @@ glXCreatePixmap(Display * dpy, GLXFBConfig config, Pixmap pixmap,
    WARN_ONCE_GLX_1_3(dpy, __func__);
 
 #ifdef GLX_USE_APPLEGL
-   const struct glx_config *modes = (const __GLcontextModes *) config;
+   const struct glx_config *modes = (const struct glx_config *) config;
 
    if (apple_glx_pixmap_create(dpy, modes->screen, pixmap, modes))
       return None;

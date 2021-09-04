@@ -1,4 +1,4 @@
-# progs/gallium/simple/Makefile
+# src/gallium/tests/trivial/Makefile
 
 TOP = ../../../..
 include $(TOP)/configs/current
@@ -11,34 +11,39 @@ INCLUDES = \
 	-I$(TOP)/src/gallium/winsys \
 	$(PROG_INCLUDES)
 
-LINKS = \
-	$(TOP)/src/gallium/drivers/rbug/librbug.a \
-	$(TOP)/src/gallium/drivers/trace/libtrace.a \
-	$(TOP)/src/gallium/drivers/galahad/libgalahad.a \
-	$(TOP)/src/gallium/winsys/sw/null/libws_null.a \
-	$(TOP)/src/gallium/drivers/softpipe/libsoftpipe.a \
+LINKS += \
+	$(GALLIUM_PIPE_LOADER_LIBS) \
 	$(GALLIUM_AUXILIARIES) \
-	$(PROG_LINKS)
+	$(PROG_LINKS) $(LIBUDEV_LIBS)
 
 SOURCES = \
 	tri.c \
-	quad-tex.c
+	quad-tex.c \
+	compute.c
 
 OBJECTS = $(SOURCES:.c=.o)
 
 PROGS = $(OBJECTS:.o=)
 
-PROG_DEFINES = \
-	-DGALLIUM_SOFTPIPE -DGALLIUM_RBUG -DGALLIUM_TRACE -DGALLIUM_GALAHAD
+PROG_DEFINES = -DPIPE_SEARCH_DIR=\"$(PIPE_SRC_DIR)\" \
+               $(GALLIUM_PIPE_LOADER_DEFINES)
+
+PIPE_SRC_DIR = $(TOP)/src/gallium/targets/pipe-loader
 
 ##### TARGETS #####
 
-default: $(PROGS)
+default: $(PROGS) pipes
+
+install:
 
 clean:
 	-rm -f $(PROGS)
 	-rm -f *.o
 	-rm -f result.bmp
+	@$(MAKE) -C $(PIPE_SRC_DIR) clean
+
+pipes:
+	@$(MAKE) -C $(PIPE_SRC_DIR)
 
 ##### RULES #####
 
@@ -46,4 +51,4 @@ $(OBJECTS): %.o: %.c
 	$(CC) -c $(INCLUDES) $(CFLAGS) $(DEFINES) $(PROG_DEFINES) $< -o $@
 
 $(PROGS): %: %.o $(LINKS)
-	$(CC) $(LDFLAGS) $< $(LINKS) -lm -lpthread -ldl -o $@
+	$(CXX) $(LDFLAGS) $< $(LINKS) $(LLVM_LIBS) -lm -lpthread -ldl -o $@

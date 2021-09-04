@@ -92,14 +92,6 @@ typedef struct radeon_screen {
    unsigned int gart_texture_offset;	/* offset in card memory space */
    unsigned int gart_base;
 
-   GLboolean drmSupportsCubeMapsR200;   /* need radeon kernel module >= 1.7 */
-   GLboolean drmSupportsBlendColor;     /* need radeon kernel module >= 1.11 */
-   GLboolean drmSupportsTriPerf;        /* need radeon kernel module >= 1.16 */
-   GLboolean drmSupportsFragShader;     /* need radeon kernel module >= 1.18 */
-   GLboolean drmSupportsPointSprites;   /* need radeon kernel module >= 1.13 */
-   GLboolean drmSupportsCubeMapsR100;   /* need radeon kernel module >= 1.15 */
-   GLboolean drmSupportsVertexProgram;  /* need radeon kernel module >= 1.25 */
-   GLboolean drmSupportsOcclusionQueries; /* need radeon kernel module >= 1.30 */
    GLboolean depthHasSurface;
 
    /* Configuration cache with default values for all contexts */
@@ -109,26 +101,22 @@ typedef struct radeon_screen {
 
    int num_gb_pipes;
    int num_z_pipes;
-   int kernel_mm;
    drm_radeon_sarea_t *sarea;	/* Private SAREA data */
    struct radeon_bo_manager *bom;
 
-   /* r6xx+ tiling */
-   GLuint tile_config;
-   GLint group_bytes;
-   GLint num_channels;
-   GLint num_banks;
-   GLint r7xx_bank_op;
 } radeonScreenRec, *radeonScreenPtr;
 
-#define IS_R100_CLASS(screen) \
-	((screen->chip_flags & RADEON_CLASS_MASK) == RADEON_CLASS_R100)
-#define IS_R200_CLASS(screen) \
-	((screen->chip_flags & RADEON_CLASS_MASK) == RADEON_CLASS_R200)
-#define IS_R300_CLASS(screen) \
-	((screen->chip_flags & RADEON_CLASS_MASK) == RADEON_CLASS_R300)
-#define IS_R600_CLASS(screen) \
-	((screen->chip_flags & RADEON_CLASS_MASK) == RADEON_CLASS_R600)
+struct __DRIimageRec {
+   struct radeon_bo *bo;
+   GLenum internal_format;
+   uint32_t dri_format;
+   GLuint format;
+   GLenum data_type;
+   int width, height;  /* in pixels */
+   int pitch;          /* in pixels */
+   int cpp;
+   void *data;
+};
 
 extern void radeonDestroyBuffer(__DRIdrawable *driDrawPriv);
 #endif /* __RADEON_SCREEN_H__ */
