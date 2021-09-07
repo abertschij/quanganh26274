@@ -29,6 +29,7 @@
 #define TGSI_DUMP_H
 
 #include "pipe/p_compiler.h"
+#include "pipe/p_defines.h"
 #include "pipe/p_shader_tokens.h"
 
 #if defined __cplusplus

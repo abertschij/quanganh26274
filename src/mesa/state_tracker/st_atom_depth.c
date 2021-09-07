@@ -49,14 +49,14 @@ GLuint
 st_compare_func_to_pipe(GLenum func)
 {
    /* Same values, just biased */
-   assert(PIPE_FUNC_NEVER == GL_NEVER - GL_NEVER);
-   assert(PIPE_FUNC_LESS == GL_LESS - GL_NEVER);
-   assert(PIPE_FUNC_EQUAL == GL_EQUAL - GL_NEVER);
-   assert(PIPE_FUNC_LEQUAL == GL_LEQUAL - GL_NEVER);
-   assert(PIPE_FUNC_GREATER == GL_GREATER - GL_NEVER);
-   assert(PIPE_FUNC_NOTEQUAL == GL_NOTEQUAL - GL_NEVER);
-   assert(PIPE_FUNC_GEQUAL == GL_GEQUAL - GL_NEVER);
-   assert(PIPE_FUNC_ALWAYS == GL_ALWAYS - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_NEVER == GL_NEVER - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_LESS == GL_LESS - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_EQUAL == GL_EQUAL - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_LEQUAL == GL_LEQUAL - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_GREATER == GL_GREATER - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_NOTEQUAL == GL_NOTEQUAL - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_GEQUAL == GL_GEQUAL - GL_NEVER);
+   STATIC_ASSERT(PIPE_FUNC_ALWAYS == GL_ALWAYS - GL_NEVER);
    assert(func >= GL_NEVER);
    assert(func <= GL_ALWAYS);
    return func - GL_NEVER;
@@ -97,7 +97,7 @@ update_depth_stencil_alpha(struct st_context *st)
 {
    struct pipe_depth_stencil_alpha_state *dsa = &st->state.depth_stencil;
    struct pipe_stencil_ref sr;
-   GLcontext *ctx = st->ctx;
+   struct gl_context *ctx = st->ctx;
 
    memset(dsa, 0, sizeof(*dsa));
    memset(&sr, 0, sizeof(sr));
@@ -142,7 +142,7 @@ update_depth_stencil_alpha(struct st_context *st)
    if (ctx->Color.AlphaEnabled) {
       dsa->alpha.enabled = 1;
       dsa->alpha.func = st_compare_func_to_pipe(ctx->Color.AlphaFunc);
-      dsa->alpha.ref_value = ctx->Color.AlphaRef;
+      dsa->alpha.ref_value = ctx->Color.AlphaRefUnclamped;
    }
 
    cso_set_depth_stencil_alpha(st->cso_context, dsa);

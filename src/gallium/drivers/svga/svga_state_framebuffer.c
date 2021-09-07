@@ -38,12 +38,13 @@
  */
 
 
-static int emit_framebuffer( struct svga_context *svga,
-                             unsigned dirty )
+static enum pipe_error
+emit_framebuffer( struct svga_context *svga,
+                  unsigned dirty )
 {
    const struct pipe_framebuffer_state *curr = &svga->curr.framebuffer;
    struct pipe_framebuffer_state *hw = &svga->state.hw_clear.framebuffer;
-   boolean reemit = !!(dirty & SVGA_NEW_COMMAND_BUFFER);
+   boolean reemit = svga->rebind.rendertargets;
    unsigned i;
    enum pipe_error ret;
 
@@ -74,7 +75,7 @@ static int emit_framebuffer( struct svga_context *svga,
          return ret;
 
       if (curr->zsbuf &&
-          curr->zsbuf->format == PIPE_FORMAT_S8_USCALED_Z24_UNORM) {
+          curr->zsbuf->format == PIPE_FORMAT_S8_UINT_Z24_UNORM) {
          ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_STENCIL, curr->zsbuf);
          if (ret != PIPE_OK)
             return ret;
@@ -88,16 +89,69 @@ static int emit_framebuffer( struct svga_context *svga,
       pipe_surface_reference(&hw->zsbuf, curr->zsbuf);
    }
 
+   svga->rebind.rendertargets = FALSE;
 
-   return 0;
+   return PIPE_OK;
+}
+
+
+/*
+ * Rebind rendertargets.
+ *
+ * Similar to emit_framebuffer, but without any state checking/update.
+ *
+ * Called at the beginning of every new command buffer to ensure that
+ * non-dirty rendertargets are properly paged-in.
+ */
+enum pipe_error
+svga_reemit_framebuffer_bindings(struct svga_context *svga)
+{
+   struct pipe_framebuffer_state *hw = &svga->state.hw_clear.framebuffer;
+   unsigned i;
+   enum pipe_error ret;
+
+   assert(svga->rebind.rendertargets);
+
+   for (i = 0; i < MIN2(PIPE_MAX_COLOR_BUFS, 8); ++i) {
+      if (hw->cbufs[i]) {
+         ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_COLOR0 + i, hw->cbufs[i]);
+         if (ret != PIPE_OK) {
+            return ret;
+         }
+      }
+   }
+
+   if (hw->zsbuf) {
+      ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_DEPTH, hw->zsbuf);
+      if (ret != PIPE_OK) {
+         return ret;
+      }
+
+      if (hw->zsbuf &&
+          hw->zsbuf->format == PIPE_FORMAT_S8_UINT_Z24_UNORM) {
+         ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_STENCIL, hw->zsbuf);
+         if (ret != PIPE_OK) {
+            return ret;
+         }
+      }
+      else {
+         ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_STENCIL, NULL);
+         if (ret != PIPE_OK) {
+            return ret;
+         }
+      }
+   }
+
+   svga->rebind.rendertargets = FALSE;
+
+   return PIPE_OK;
 }
 
 
 struct svga_tracked_state svga_hw_framebuffer = 
 {
    "hw framebuffer state",
-   SVGA_NEW_FRAME_BUFFER |
-   SVGA_NEW_COMMAND_BUFFER,
+   SVGA_NEW_FRAME_BUFFER,
    emit_framebuffer
 };
 
@@ -107,8 +161,9 @@ struct svga_tracked_state svga_hw_framebuffer =
 /*********************************************************************** 
  */
 
-static int emit_viewport( struct svga_context *svga,
-                          unsigned dirty )
+static enum pipe_error
+emit_viewport( struct svga_context *svga,
+               unsigned dirty )
 {
    const struct pipe_viewport_state *viewport = &svga->curr.viewport;
    struct svga_prescale prescale;
@@ -120,6 +175,7 @@ static int emit_viewport( struct svga_context *svga,
    float range_max = 1.0;
    float flip = -1.0;
    boolean degenerate = FALSE;
+   boolean invertY = FALSE;
    enum pipe_error ret;
 
    float fb_width = svga->curr.framebuffer.width;
@@ -163,11 +219,12 @@ static int emit_viewport( struct svga_context *svga,
       fx =        viewport->scale[0] * 1.0 + viewport->translate[0];
    }
 
-   if (fh < 0) {
-      prescale.scale[1] *= -1.0;
-      prescale.translate[1] += -fh;
+   if (fh < 0.0) {
+      prescale.translate[1] = fh - 1 + fy * 2;
       fh = -fh;
-      fy = flip * viewport->scale[1] * 1.0 + viewport->translate[1];
+      fy -= fh;
+      prescale.scale[1] = -1.0;
+      invertY = TRUE;
    }
 
    if (fx < 0) {
@@ -178,7 +235,12 @@ static int emit_viewport( struct svga_context *svga,
    }
 
    if (fy < 0) {
-      prescale.translate[1] += fy;
+      if (invertY) {
+         prescale.translate[1] -= fy;
+      }
+      else {
+         prescale.translate[1] += fy;
+      }
       prescale.scale[1] *= fh / (fh + fy); 
       fh += fy;
       fy = 0;
@@ -194,8 +256,15 @@ static int emit_viewport( struct svga_context *svga,
 
    if (fy + fh > fb_height) {
       prescale.scale[1] *= fh / (fb_height - fy);
-      prescale.translate[1] -= fy * (fh / (fb_height - fy));
-      prescale.translate[1] += fy;
+      if (invertY) {
+         float in = fb_height - fy;       /* number of vp pixels inside view */
+         float out = fy + fh - fb_height; /* number of vp pixels out of view */
+         prescale.translate[1] += fy * out / in;
+      }
+      else {
+         prescale.translate[1] -= fy * (fh / (fb_height - fy));
+         prescale.translate[1] += fy;
+      }
       fh = fb_height - fy;
    }
 
@@ -247,10 +316,13 @@ static int emit_viewport( struct svga_context *svga,
          break;
       case PIPE_PRIM_POINTS:
       case PIPE_PRIM_TRIANGLES:
-         adjust_x = -0.375;
+         adjust_x = -0.5;
          adjust_y = -0.5;
          break;
       }
+
+      if (invertY)
+         adjust_y = -adjust_y;
 
       prescale.translate[0] += adjust_x;
       prescale.translate[1] += adjust_y;
@@ -367,7 +439,7 @@ out:
       svga->state.hw_clear.prescale = prescale;
    }
 
-   return 0;
+   return PIPE_OK;
 }
 
 
@@ -385,8 +457,9 @@ struct svga_tracked_state svga_hw_viewport =
 /***********************************************************************
  * Scissor state
  */
-static int emit_scissor_rect( struct svga_context *svga,
-                              unsigned dirty )
+static enum pipe_error
+emit_scissor_rect( struct svga_context *svga,
+                   unsigned dirty )
 {
    const struct pipe_scissor_state *scissor = &svga->curr.scissor;
    SVGA3dRect rect;
@@ -412,23 +485,41 @@ struct svga_tracked_state svga_hw_scissor =
  * Userclip state
  */
 
-static int emit_clip_planes( struct svga_context *svga,
-                             unsigned dirty )
+static enum pipe_error
+emit_clip_planes( struct svga_context *svga,
+                  unsigned dirty )
 {
    unsigned i;
    enum pipe_error ret;
 
    /* TODO: just emit directly from svga_set_clip_state()?
     */
-   for (i = 0; i < svga->curr.clip.nr; i++) {
-      ret = SVGA3D_SetClipPlane( svga->swc,
-                                 i,
-                                 svga->curr.clip.ucp[i] );
+   for (i = 0; i < SVGA3D_MAX_CLIP_PLANES; i++) {
+      /* need to express the plane in D3D-style coordinate space.
+       * GL coords get converted to D3D coords with the matrix:
+       * [ 1  0  0  0 ]
+       * [ 0 -1  0  0 ]
+       * [ 0  0  2  0 ]
+       * [ 0  0 -1  1 ]
+       * Apply that matrix to our plane equation, and invert Y.
+       */
+      float a = svga->curr.clip.ucp[i][0];
+      float b = svga->curr.clip.ucp[i][1];
+      float c = svga->curr.clip.ucp[i][2];
+      float d = svga->curr.clip.ucp[i][3];
+      float plane[4];
+
+      plane[0] = a;
+      plane[1] = b;
+      plane[2] = 2.0f * c;
+      plane[3] = d - c;
+
+      ret = SVGA3D_SetClipPlane(svga->swc, i, plane);
       if(ret != PIPE_OK)
          return ret;
    }
 
-   return 0;
+   return PIPE_OK;
 }
 
 

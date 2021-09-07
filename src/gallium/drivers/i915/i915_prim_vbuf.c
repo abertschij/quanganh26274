@@ -172,6 +172,7 @@ i915_vbuf_render_reserve(struct i915_vbuf_render *i915_render, size_t size)
  *
  * Side effects:
  *    Updates hw_offset, sw_offset, index and allocates a new buffer.
+ *    Will set i915->vbo to null on buffer allocation.
  */
 static void
 i915_vbuf_render_new_buf(struct i915_vbuf_render *i915_render, size_t size)
@@ -179,8 +180,17 @@ i915_vbuf_render_new_buf(struct i915_vbuf_render *i915_render, size_t size)
    struct i915_context *i915 = i915_render->i915;
    struct i915_winsys *iws = i915->iws;
 
-   if (i915_render->vbo)
+   if (i915_render->vbo) {
+      iws->buffer_unmap(iws, i915_render->vbo);
       iws->buffer_destroy(iws, i915_render->vbo);
+      /*
+       * XXX If buffers where referenced then this should be done in
+       * update_vbo_state but since they arn't and malloc likes to reuse
+       * memory we need to set it to null
+       */
+      i915->vbo = NULL;
+      i915_render->vbo = NULL;
+   }
 
    i915->vbo_flushed = 0;
 
@@ -198,7 +208,8 @@ i915_vbuf_render_new_buf(struct i915_vbuf_render *i915_render, size_t size)
 #endif
 
    i915_render->vbo = iws->buffer_create(iws, i915_render->vbo_size,
-                                         64, I915_NEW_VERTEX);
+                                         I915_NEW_VERTEX);
+   i915_render->vbo_ptr = iws->buffer_map(iws, i915_render->vbo, TRUE);
 }
 
 /**
@@ -253,16 +264,13 @@ i915_vbuf_render_map_vertices(struct vbuf_render *render)
 {
    struct i915_vbuf_render *i915_render = i915_vbuf_render(render);
    struct i915_context *i915 = i915_render->i915;
-   struct i915_winsys *iws = i915->iws;
 
    if (i915->vbo_flushed)
       debug_printf("%s bad vbo flush occured stalling on hw\n", __FUNCTION__);
 
 #ifdef VBUF_MAP_BUFFER
-   i915_render->vbo_ptr = iws->buffer_map(iws, i915_render->vbo, TRUE);
    return (unsigned char *)i915_render->vbo_ptr + i915_render->vbo_sw_offset;
 #else
-   (void)iws;
    return (unsigned char *)i915_render->vbo_ptr;
 #endif
 }
@@ -279,7 +287,7 @@ i915_vbuf_render_unmap_vertices(struct vbuf_render *render,
    i915_render->vbo_max_index = max_index;
    i915_render->vbo_max_used = MAX2(i915_render->vbo_max_used, i915_render->vertex_size * (max_index + 1));
 #ifdef VBUF_MAP_BUFFER
-   iws->buffer_unmap(iws, i915_render->vbo);
+   (void)iws;
 #else
    i915_render->map_used_start = i915_render->vertex_size * min_index;
    i915_render->map_used_end = i915_render->vertex_size * (max_index + 1);
@@ -314,7 +322,7 @@ i915_vbuf_ensure_index_bounds(struct vbuf_render *render,
    i915_vbuf_update_vbo_state(render);
 }
 
-static boolean
+static void
 i915_vbuf_render_set_primitive(struct vbuf_render *render, 
                                unsigned prim)
 {
@@ -325,46 +333,46 @@ i915_vbuf_render_set_primitive(struct vbuf_render *render,
    case PIPE_PRIM_POINTS:
       i915_render->hwprim = PRIM3D_POINTLIST;
       i915_render->fallback = 0;
-      return TRUE;
+      break;
    case PIPE_PRIM_LINES:
       i915_render->hwprim = PRIM3D_LINELIST;
       i915_render->fallback = 0;
-      return TRUE;
+      break;
    case PIPE_PRIM_LINE_LOOP:
       i915_render->hwprim = PRIM3D_LINELIST;
       i915_render->fallback = PIPE_PRIM_LINE_LOOP;
-      return TRUE;
+      break;
    case PIPE_PRIM_LINE_STRIP:
       i915_render->hwprim = PRIM3D_LINESTRIP;
       i915_render->fallback = 0;
-      return TRUE;
+      break;
    case PIPE_PRIM_TRIANGLES:
       i915_render->hwprim = PRIM3D_TRILIST;
       i915_render->fallback = 0;
-      return TRUE;
+      break;
    case PIPE_PRIM_TRIANGLE_STRIP:
       i915_render->hwprim = PRIM3D_TRISTRIP;
       i915_render->fallback = 0;
-      return TRUE;
+      break;
    case PIPE_PRIM_TRIANGLE_FAN:
       i915_render->hwprim = PRIM3D_TRIFAN;
       i915_render->fallback = 0;
-      return TRUE;
+      break;
    case PIPE_PRIM_QUADS:
       i915_render->hwprim = PRIM3D_TRILIST;
       i915_render->fallback = PIPE_PRIM_QUADS;
-      return TRUE;
+      break;
    case PIPE_PRIM_QUAD_STRIP:
       i915_render->hwprim = PRIM3D_TRILIST;
       i915_render->fallback = PIPE_PRIM_QUAD_STRIP;
-      return TRUE;
+      break;
    case PIPE_PRIM_POLYGON:
       i915_render->hwprim = PRIM3D_POLY;
       i915_render->fallback = 0;
-      return TRUE;
+      break;
    default:
       /* FIXME: Actually, can handle a lot more just fine... */
-      return FALSE;
+      assert(0 && "unexpected prim in i915_vbuf_render_set_primitive()");
    }
 }
 
@@ -392,8 +400,8 @@ draw_arrays_generate_indices(struct vbuf_render *render,
    case PIPE_PRIM_LINE_LOOP:
       if (nr >= 2) {
          for (i = start + 1; i < end; i++)
-            OUT_BATCH((i-0) | (i+0) << 16);
-         OUT_BATCH((i-0) | ( start) << 16);
+            OUT_BATCH((i-1) | (i+0) << 16);
+         OUT_BATCH((i-1) | ( start) << 16);
       }
       break;
    case PIPE_PRIM_QUADS:
@@ -457,16 +465,15 @@ draw_arrays_fallback(struct vbuf_render *render,
    if (i915->hardware_dirty)
       i915_emit_hardware_state(i915);
 
-   if (!BEGIN_BATCH(1 + (nr_indices + 1)/2, 1)) {
+   if (!BEGIN_BATCH(1 + (nr_indices + 1)/2)) {
       FLUSH_BATCH(NULL);
 
       /* Make sure state is re-emitted after a flush:
        */
-      i915_update_derived(i915);
       i915_emit_hardware_state(i915);
       i915->vbo_flushed = 1;
 
-      if (!BEGIN_BATCH(1 + (nr_indices + 1)/2, 1)) {
+      if (!BEGIN_BATCH(1 + (nr_indices + 1)/2)) {
          assert(0);
          goto out;
       }
@@ -506,16 +513,15 @@ i915_vbuf_render_draw_arrays(struct vbuf_render *render,
    if (i915->hardware_dirty)
       i915_emit_hardware_state(i915);
 
-   if (!BEGIN_BATCH(2, 0)) {
+   if (!BEGIN_BATCH(2)) {
       FLUSH_BATCH(NULL);
 
       /* Make sure state is re-emitted after a flush:
        */
-      i915_update_derived(i915);
       i915_emit_hardware_state(i915);
       i915->vbo_flushed = 1;
 
-      if (!BEGIN_BATCH(2, 0)) {
+      if (!BEGIN_BATCH(2)) {
          assert(0);
          goto out;
       }
@@ -627,16 +633,15 @@ i915_vbuf_render_draw_elements(struct vbuf_render *render,
    if (i915->hardware_dirty)
       i915_emit_hardware_state(i915);
 
-   if (!BEGIN_BATCH(1 + (nr_indices + 1)/2, 1)) {
+   if (!BEGIN_BATCH(1 + (nr_indices + 1)/2)) {
       FLUSH_BATCH(NULL);
 
       /* Make sure state is re-emitted after a flush: 
        */
-      i915_update_derived(i915);
       i915_emit_hardware_state(i915);
       i915->vbo_flushed = 1;
 
-      if (!BEGIN_BATCH(1 + (nr_indices + 1)/2, 1)) {
+      if (!BEGIN_BATCH(1 + (nr_indices + 1)/2)) {
          assert(0);
          goto out;
       }
@@ -675,6 +680,15 @@ static void
 i915_vbuf_render_destroy(struct vbuf_render *render)
 {
    struct i915_vbuf_render *i915_render = i915_vbuf_render(render);
+   struct i915_context *i915 = i915_render->i915;
+   struct i915_winsys *iws = i915->iws;
+
+   if (i915_render->vbo) {
+      i915->vbo = NULL;
+      iws->buffer_unmap(iws, i915_render->vbo);
+      iws->buffer_destroy(iws, i915_render->vbo);
+   }
+
    FREE(i915_render);
 }
 
@@ -726,7 +740,7 @@ i915_vbuf_render_create(struct i915_context *i915)
    i915_render->pool_fifo = u_fifo_create(6);
    for (i = 0; i < 6; i++)
       u_fifo_add(i915_render->pool_fifo,
-                 iws->buffer_create(iws, i915_render->pool_buffer_size, 64,
+                 iws->buffer_create(iws, i915_render->pool_buffer_size,
                                     I915_NEW_VERTEX));
 #else
    (void)i;

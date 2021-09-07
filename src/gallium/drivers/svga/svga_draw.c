@@ -28,6 +28,7 @@
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
+#include "util/u_upload_mgr.h"
 
 #include "svga_context.h"
 #include "svga_draw.h"
@@ -127,6 +128,39 @@ void svga_hwtnl_vdecl( struct svga_hwtnl *hwtnl,
 }
 
 
+/**
+ * Determine whether the specified buffer is referred in the primitive queue,
+ * for which no commands have been written yet.
+ */
+boolean
+svga_hwtnl_is_buffer_referred( struct svga_hwtnl *hwtnl,
+                               struct pipe_resource *buffer)
+{
+   unsigned i;
+
+   if (svga_buffer_is_user_buffer(buffer)) {
+      return FALSE;
+   }
+
+   if (!hwtnl->cmd.prim_count) {
+      return FALSE;
+   }
+
+   for (i = 0; i < hwtnl->cmd.vdecl_count; ++i) {
+      if (hwtnl->cmd.vdecl_vb[i] == buffer) {
+         return TRUE;
+      }
+   }
+
+   for (i = 0; i < hwtnl->cmd.prim_count; ++i) {
+      if (hwtnl->cmd.prim_ib[i] == buffer) {
+         return TRUE;
+      }
+   }
+
+   return FALSE;
+}
+
 
 enum pipe_error
 svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
@@ -143,6 +177,9 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
       SVGA3dPrimitiveRange *prim;
       unsigned i;
 
+      /* Unmap upload manager vertex buffers */
+      u_upload_unmap(svga->upload_vb);
+
       for (i = 0; i < hwtnl->cmd.vdecl_count; i++) {
          handle = svga_buffer_handle(svga, hwtnl->cmd.vdecl_vb[i]);
          if (handle == NULL)
@@ -150,6 +187,9 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
 
          vb_handle[i] = handle;
       }
+
+      /* Unmap upload manager index buffers */
+      u_upload_unmap(svga->upload_ib);
 
       for (i = 0; i < hwtnl->cmd.prim_count; i++) {
          if (hwtnl->cmd.prim_ib[i]) {
@@ -161,6 +201,20 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
             handle = NULL;
 
          ib_handle[i] = handle;
+      }
+
+      if (svga->rebind.rendertargets) {
+         ret = svga_reemit_framebuffer_bindings(svga);
+         if (ret != PIPE_OK) {
+            return ret;
+         }
+      }
+
+      if (svga->rebind.texture_samplers) {
+         ret = svga_reemit_tss_bindings(svga);
+         if (ret != PIPE_OK) {
+            return ret;
+         }
       }
 
       SVGA_DBG(DEBUG_DMA, "draw to sid %p, %d prims\n",
@@ -221,6 +275,11 @@ svga_hwtnl_flush( struct svga_hwtnl *hwtnl )
 }
 
 
+void svga_hwtnl_set_index_bias( struct svga_hwtnl *hwtnl,
+				int index_bias)
+{
+   hwtnl->index_bias = index_bias;
+}
 
 
 
@@ -234,7 +293,7 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
                                  unsigned max_index,
                                  struct pipe_resource *ib )
 {
-   int ret = PIPE_OK;
+   enum pipe_error ret = PIPE_OK;
 
 #ifdef DEBUG
    {
@@ -244,18 +303,13 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
          unsigned size = vb ? vb->width0 : 0;
          unsigned offset = hwtnl->cmd.vdecl[i].array.offset;
          unsigned stride = hwtnl->cmd.vdecl[i].array.stride;
-         unsigned index_bias = range->indexBias;
+         int index_bias = (int) range->indexBias + hwtnl->index_bias;
          unsigned width;
 
          assert(vb);
          assert(size);
          assert(offset < size);
-         assert(index_bias >= 0);
          assert(min_index <= max_index);
-         assert(offset + index_bias*stride < size);
-         if (min_index != ~0) {
-            assert(offset + (index_bias + min_index) * stride < size);
-         }
 
          switch (hwtnl->cmd.vdecl[i].identity.type) {
          case SVGA3D_DECLTYPE_FLOAT1:
@@ -315,10 +369,14 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
             break;
          }
 
-         assert(!stride || width <= stride);
-         if (max_index != ~0) {
-            assert(offset + (index_bias + max_index) * stride + width <= size);
+         if (index_bias >= 0) {
+            assert(offset + index_bias*stride + width <= size);
          }
+
+         /*
+          * min_index/max_index are merely conservative guesses, so we can't
+          * make buffer overflow detection based on their values.
+          */
       }
 
       assert(range->indexWidth == range->indexArray.stride);
@@ -374,6 +432,7 @@ enum pipe_error svga_hwtnl_prim( struct svga_hwtnl *hwtnl,
    hwtnl->cmd.max_index[hwtnl->cmd.prim_count] = max_index;
 
    hwtnl->cmd.prim[hwtnl->cmd.prim_count] = *range;
+   hwtnl->cmd.prim[hwtnl->cmd.prim_count].indexBias += hwtnl->index_bias;
 
    pipe_resource_reference(&hwtnl->cmd.prim_ib[hwtnl->cmd.prim_count], ib);
    hwtnl->cmd.prim_count++;

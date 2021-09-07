@@ -11,9 +11,9 @@
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
 
-#include "util/u_debug.h"       /* debug_dump_surface_bmp() */
 #include "util/u_memory.h"      /* Offset() */
 #include "util/u_draw_quad.h"
+#include "util/u_inlines.h"
 
 
 enum pipe_format formats[] = {
@@ -28,6 +28,7 @@ static const int HEIGHT = 300;
 static struct pipe_screen *screen = NULL;
 static struct pipe_context *ctx = NULL;
 static struct pipe_surface *surf = NULL;
+static struct pipe_resource *tex = NULL;
 static void *window = NULL;
 
 struct vertex {
@@ -132,30 +133,30 @@ static void set_vertices( void )
 
    /* vertex data */
    vbuf[0].stride = sizeof( struct vertex );
-   vbuf[0].max_index = sizeof(vertices) / vbuf[0].stride;
    vbuf[0].buffer_offset = 0;
-   vbuf[0].buffer = screen->user_buffer_create(screen,
-                                               vertices,
-                                               sizeof(vertices),
-                                               PIPE_BIND_VERTEX_BUFFER);
+   vbuf[0].buffer = pipe_buffer_create_with_data(ctx,
+                                                 PIPE_BIND_VERTEX_BUFFER,
+                                                 PIPE_USAGE_STATIC,
+                                                 sizeof(vertices),
+                                                 vertices);
 
    /* instance data */
    vbuf[1].stride = sizeof( inst_data[0] );
-   vbuf[1].max_index = sizeof(inst_data) / vbuf[1].stride;
    vbuf[1].buffer_offset = 0;
-   vbuf[1].buffer = screen->user_buffer_create(screen,
-                                               inst_data,
-                                               sizeof(inst_data),
-                                               PIPE_BIND_VERTEX_BUFFER);
-
+   vbuf[1].buffer = pipe_buffer_create_with_data(ctx,
+                                                 PIPE_BIND_VERTEX_BUFFER,
+                                                 PIPE_USAGE_STATIC,
+                                                 sizeof(inst_data),
+                                                 inst_data);
 
    ctx->set_vertex_buffers(ctx, 2, vbuf);
 
    /* index data */
-   ibuf.buffer = screen->user_buffer_create(screen,
-                                            indices,
-                                            sizeof(indices),
-                                            PIPE_BIND_VERTEX_BUFFER);
+   ibuf.buffer = pipe_buffer_create_with_data(ctx,
+                                              PIPE_BIND_INDEX_BUFFER,
+                                              PIPE_USAGE_STATIC,
+                                              sizeof(indices),
+                                              indices);
    ibuf.offset = 0;
    ibuf.index_size = 2;
 
@@ -198,10 +199,10 @@ static void set_fragment_shader( void )
 
 static void draw( void )
 {
-   float clear_color[4] = {1,0,1,1};
+   union pipe_color_union clear_color = { {1,0,1,1} };
    struct pipe_draw_info info;
 
-   ctx->clear(ctx, PIPE_CLEAR_COLOR, clear_color, 0, 0);
+   ctx->clear(ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
 
    util_draw_init_info(&info);
    info.indexed = (draw_elements != 0);
@@ -213,28 +214,19 @@ static void draw( void )
 
    ctx->draw_vbo(ctx, &info);
 
-   ctx->flush(ctx, PIPE_FLUSH_RENDER_CACHE, NULL);
+   ctx->flush(ctx, NULL);
 
-#if 0
-   /* At the moment, libgraw leaks out/makes available some of the
-    * symbols from gallium/auxiliary, including these debug helpers.
-    * Will eventually want to bless some of these paths, and lock the
-    * others down so they aren't accessible from test programs.
-    *
-    * This currently just happens to work on debug builds - a release
-    * build will probably fail to link here:
-    */
-   debug_dump_surface_bmp(ctx, "result.bmp", surf);
-#endif
+   graw_save_surface_to_file(ctx, surf, NULL);
 
-   screen->flush_frontbuffer(screen, surf, window);
+   screen->flush_frontbuffer(screen, tex, 0, 0, window);
 }
 
 
 static void init( void )
 {
    struct pipe_framebuffer_state fb;
-   struct pipe_resource *tex, templat;
+   struct pipe_resource templat;
+   struct pipe_surface surf_tmpl;
    int i;
 
    /* It's hard to say whether window or screen should be created
@@ -243,13 +235,16 @@ static void init( void )
     * Also, no easy way of querying supported formats if the screen
     * cannot be created first.
     */
-   for (i = 0; 
-        window == NULL && formats[i] != PIPE_FORMAT_NONE;
-        i++) {
-      
-      screen = graw_create_window_and_screen(0,0,300,300,
+   for (i = 0; formats[i] != PIPE_FORMAT_NONE; i++) {
+      screen = graw_create_window_and_screen(0, 0, 300, 300,
                                              formats[i],
                                              &window);
+      if (window && screen)
+         break;
+   }
+   if (!screen || !window) {
+      fprintf(stderr, "Unable to create window\n");
+      exit(1);
    }
    
    ctx = screen->context_create(screen, NULL);
@@ -261,6 +256,7 @@ static void init( void )
    templat.width0 = WIDTH;
    templat.height0 = HEIGHT;
    templat.depth0 = 1;
+   templat.array_size = 1;
    templat.last_level = 0;
    templat.nr_samples = 1;
    templat.bind = (PIPE_BIND_RENDER_TARGET |
@@ -271,9 +267,12 @@ static void init( void )
    if (tex == NULL)
       exit(4);
 
-   surf = screen->get_tex_surface(screen, tex, 0, 0, 0,
-                                  PIPE_BIND_RENDER_TARGET |
-                                  PIPE_BIND_DISPLAY_TARGET);
+   surf_tmpl.format = templat.format;
+   surf_tmpl.usage = PIPE_BIND_RENDER_TARGET;
+   surf_tmpl.u.tex.level = 0;
+   surf_tmpl.u.tex.first_layer = 0;
+   surf_tmpl.u.tex.last_layer = 0;
+   surf = ctx->create_surface(ctx, tex, &surf_tmpl);
    if (surf == NULL)
       exit(5);
 
@@ -308,6 +307,7 @@ static void init( void )
       memset(&rasterizer, 0, sizeof rasterizer);
       rasterizer.cull_face = PIPE_FACE_NONE;
       rasterizer.gl_rasterization_rules = 1;
+      rasterizer.depth_clip = 1;
       handle = ctx->create_rasterizer_state(ctx, &rasterizer);
       ctx->bind_rasterizer_state(ctx, handle);
    }
@@ -322,9 +322,18 @@ static void init( void )
 static void options(int argc, char *argv[])
 {
    int i;
-   for (i = 1; i < argc; i++) {
-      if (strcmp(argv[i], "-e") == 0)
+
+   for (i = 1; i < argc;) {
+      if (graw_parse_args(&i, argc, argv)) {
+         continue;
+      }
+      if (strcmp(argv[i], "-e") == 0) {
          draw_elements = 1;
+         i++;
+      }
+      else {
+         i++;
+      }
    }
    if (draw_elements)
       printf("Using pipe_context::draw_elements_instanced()\n");

@@ -265,7 +265,15 @@ x11_screen_enable_dri2(struct x11_screen *xscr,
       if (!x11_screen_probe_dri2(xscr, NULL, NULL))
          return -1;
 
-      fd = open(xscr->dri_device, O_RDWR);
+#ifdef O_CLOEXEC
+      fd = open(xscr->dri_device, O_RDWR | O_CLOEXEC);
+      if (fd == -1 && errno == EINVAL)
+#endif
+      {
+         fd = open(xscr->dri_device, O_RDWR);
+         if (fd != -1)
+            fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+      }
       if (fd < 0) {
          _eglLog(_EGL_WARNING, "failed to open %s", xscr->dri_device);
          return -1;
@@ -307,6 +315,23 @@ x11_screen_enable_dri2(struct x11_screen *xscr,
    return xscr->dri_fd;
 }
 
+char *
+x11_screen_get_device_name(struct x11_screen *xscr)
+{
+   return xscr->dri_device;
+}
+
+int
+x11_screen_authenticate(struct x11_screen *xscr, uint32_t id)
+{
+   boolean authenticated;
+
+   authenticated = DRI2Authenticate(xscr->dpy,
+         RootWindow(xscr->dpy, xscr->number), id);
+   
+   return authenticated ? 0 : -1;
+}
+
 /**
  * Create/Destroy the DRI drawable.
  */
@@ -324,21 +349,24 @@ x11_drawable_enable_dri2(struct x11_screen *xscr,
  * Copy between buffers of the DRI2 drawable.
  */
 void
-x11_drawable_copy_buffers(struct x11_screen *xscr, Drawable drawable,
-                          int x, int y, int width, int height,
-                          int src_buf, int dst_buf)
+x11_drawable_copy_buffers_region(struct x11_screen *xscr, Drawable drawable,
+                                 int num_rects, const int *rects,
+                                 int src_buf, int dst_buf)
 {
-   XRectangle rect;
    XserverRegion region;
+   XRectangle *rectangles = CALLOC(num_rects, sizeof(XRectangle));
 
-   rect.x = x;
-   rect.y = y;
-   rect.width = width;
-   rect.height = height;
+   for (int i = 0; i < num_rects; i++) {
+      rectangles[i].x = rects[i * 4 + 0];
+      rectangles[i].y = rects[i * 4 + 1];
+      rectangles[i].width = rects[i * 4 + 2];
+      rectangles[i].height = rects[i * 4 + 3];
+   }
 
-   region = XFixesCreateRegion(xscr->dpy, &rect, 1);
+   region = XFixesCreateRegion(xscr->dpy, rectangles, num_rects);
    DRI2CopyRegion(xscr->dpy, drawable, region, dst_buf, src_buf);
    XFixesDestroyRegion(xscr->dpy, region);
+   FREE(rectangles);
 }
 
 /**
@@ -430,6 +458,35 @@ dri2InvalidateBuffers(Display *dpy, XID drawable)
       return;
 
    xscr->dri_invalidate_buffers(xscr, drawable, xscr->dri_user_data);
+}
+
+extern unsigned
+dri2GetSwapEventType(Display *dpy, XID drawable);
+
+extern void *
+dri2GetGlxDrawableFromXDrawableId(Display *dpy, XID id);
+
+extern void *
+GetGLXDrawable(Display *dpy, XID drawable);
+
+/**
+ * This is also called from src/glx/dri2.c.
+ */
+unsigned dri2GetSwapEventType(Display *dpy, XID drawable)
+{
+   return 0;
+}
+
+void *
+dri2GetGlxDrawableFromXDrawableId(Display *dpy, XID id)
+{
+   return NULL;
+}
+
+void *
+GetGLXDrawable(Display *dpy, XID drawable)
+{
+   return NULL;
 }
 
 #endif /* GLX_DIRECT_RENDERING */

@@ -31,9 +31,17 @@
 
 #include "pipe/p_compiler.h"
 #include "lp_bld.h"
+#include "lp_bld_init.h"
 
-LLVMValueRef lp_build_const_string_variable(LLVMModuleRef module, const char *str, int len);
-LLVMValueRef lp_build_printf(LLVMBuilderRef builder, const char *fmt, ...);
+
+LLVMValueRef
+lp_build_printf(struct gallivm_state *gallivm,
+                const char *fmt, ...);
+
+LLVMValueRef
+lp_build_print_value(struct gallivm_state *gallivm,
+                     const char *msg,
+                     LLVMValueRef value);
 
 #endif
 

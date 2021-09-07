@@ -28,7 +28,7 @@
 
 /* TODO:
  *
- * xshm / texture_from_pixmap / EGLImage:
+ * xshm / EGLImage:
  *
  * Allow the loaders to use the XSHM extension. It probably requires callbacks
  * for createImage/destroyImage similar to DRI2 getBuffers.
@@ -39,6 +39,7 @@
 #include "util/u_inlines.h"
 #include "pipe/p_context.h"
 #include "state_tracker/drisw_api.h"
+#include "state_tracker/st_context.h"
 
 #include "dri_screen.h"
 #include "dri_context.h"
@@ -48,14 +49,13 @@ DEBUG_GET_ONCE_BOOL_OPTION(swrast_no_present, "SWRAST_NO_PRESENT", FALSE);
 static boolean swrast_no_present = FALSE;
 
 static INLINE void
-get_drawable_info(__DRIdrawable *dPriv, int *w, int *h)
+get_drawable_info(__DRIdrawable *dPriv, int *x, int *y, int *w, int *h)
 {
    __DRIscreen *sPriv = dPriv->driScreenPriv;
    const __DRIswrastLoaderExtension *loader = sPriv->swrast_loader;
-   int x, y;
 
    loader->getDrawableInfo(dPriv,
-                           &x, &y, w, h,
+                           x, y, w, h,
                            dPriv->loaderPrivate);
 }
 
@@ -70,12 +70,24 @@ put_image(__DRIdrawable *dPriv, void *data, unsigned width, unsigned height)
                     data, dPriv->loaderPrivate);
 }
 
+static INLINE void
+get_image(__DRIdrawable *dPriv, int x, int y, int width, int height, void *data)
+{
+   __DRIscreen *sPriv = dPriv->driScreenPriv;
+   const __DRIswrastLoaderExtension *loader = sPriv->swrast_loader;
+
+   loader->getImage(dPriv,
+                    x, y, width, height,
+                    data, dPriv->loaderPrivate);
+}
+
 static void
 drisw_update_drawable_info(struct dri_drawable *drawable)
 {
    __DRIdrawable *dPriv = drawable->dPriv;
+   int x, y;
 
-   get_drawable_info(dPriv, &dPriv->w, &dPriv->h);
+   get_drawable_info(dPriv, &x, &y, &dPriv->w, &dPriv->h);
 }
 
 static void
@@ -87,53 +99,27 @@ drisw_put_image(struct dri_drawable *drawable,
    put_image(dPriv, data, width, height);
 }
 
-static struct pipe_surface *
-drisw_get_pipe_surface(struct dri_drawable *drawable, struct pipe_resource *ptex)
-{
-   struct pipe_screen *pipe_screen = dri_screen(drawable->sPriv)->base.screen;
-   struct pipe_surface *psurf = drawable->drisw_surface;
-
-   if (!psurf || psurf->texture != ptex) {
-      pipe_surface_reference(&drawable->drisw_surface, NULL);
-
-      drawable->drisw_surface = pipe_screen->get_tex_surface(pipe_screen,
-            ptex, 0, 0, 0, 0/* no bind flag???*/);
-
-      psurf = drawable->drisw_surface;
-   }
-
-   return psurf;
-}
-
 static INLINE void
 drisw_present_texture(__DRIdrawable *dPriv,
                       struct pipe_resource *ptex)
 {
    struct dri_drawable *drawable = dri_drawable(dPriv);
    struct dri_screen *screen = dri_screen(drawable->sPriv);
-   struct pipe_surface *psurf;
 
    if (swrast_no_present)
       return;
 
-   psurf = drisw_get_pipe_surface(drawable, ptex);
-   if (!psurf)
-      return;
-
-   screen->base.screen->flush_frontbuffer(screen->base.screen, psurf, drawable);
+   screen->base.screen->flush_frontbuffer(screen->base.screen, ptex, 0, 0, drawable);
 }
 
 static INLINE void
 drisw_invalidate_drawable(__DRIdrawable *dPriv)
 {
-   struct dri_context *ctx = dri_get_current(dPriv->driScreenPriv);
    struct dri_drawable *drawable = dri_drawable(dPriv);
 
    drawable->texture_stamp = dPriv->lastStamp - 1;
 
-   /* check if swapping currently bound buffer */
-   if (ctx && ctx->dPriv == dPriv)
-      ctx->st->notify_invalid_framebuffer(ctx->st, &drawable->base);
+   p_atomic_inc(&drawable->base.stamp);
 }
 
 static INLINE void
@@ -162,7 +148,10 @@ drisw_swap_buffers(__DRIdrawable *dPriv)
    ptex = drawable->textures[ST_ATTACHMENT_BACK_LEFT];
 
    if (ptex) {
-      ctx->st->flush(ctx->st, PIPE_FLUSH_RENDER_CACHE, NULL);
+      if (ctx->pp && drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL])
+         pp_run(ctx->pp, ptex, ptex, drawable->textures[ST_ATTACHMENT_DEPTH_STENCIL]);
+
+      ctx->st->flush(ctx->st, ST_FLUSH_FRONT, NULL);
 
       drisw_copy_to_front(dPriv, ptex);
    }
@@ -220,6 +209,7 @@ drisw_allocate_textures(struct dri_drawable *drawable,
    templ.width0 = width;
    templ.height0 = height;
    templ.depth0 = 1;
+   templ.array_size = 1;
    templ.last_level = 0;
 
    for (i = 0; i < count; i++) {
@@ -250,11 +240,50 @@ drisw_allocate_textures(struct dri_drawable *drawable,
    drawable->old_h = height;
 }
 
+static void
+drisw_update_tex_buffer(struct dri_drawable *drawable,
+                        struct dri_context *ctx,
+                        struct pipe_resource *res)
+{
+   __DRIdrawable *dPriv = drawable->dPriv;
+
+   struct st_context *st_ctx = (struct st_context *)ctx->st;
+   struct pipe_context *pipe = st_ctx->pipe;
+   struct pipe_transfer *transfer;
+   char *map;
+   int x, y, w, h;
+   int ximage_stride, line;
+   int cpp = util_format_get_blocksize(res->format);
+
+   get_drawable_info(dPriv, &x, &y, &w, &h);
+
+   transfer = pipe_get_transfer(pipe, res,
+                                0, 0, // level, layer,
+                                PIPE_TRANSFER_WRITE,
+                                x, y, w, h);
+   map = pipe_transfer_map(pipe, transfer);
+
+   /* Copy the Drawable content to the mapped texture buffer */
+   get_image(dPriv, x, y, w, h, map);
+
+   /* The pipe transfer has a pitch rounded up to the nearest 64 pixels. */
+   ximage_stride = w * cpp;
+   for (line = h-1; line; --line) {
+      memmove(&map[line * transfer->stride],
+              &map[line * ximage_stride],
+              ximage_stride);
+   }
+
+   pipe_transfer_unmap(pipe, transfer);
+   pipe_transfer_destroy(pipe, transfer);
+}
+
 /*
  * Backend function for init_screen.
  */
 
 static const __DRIextension *drisw_screen_extensions[] = {
+   &driTexBufferExtension.base,
    NULL
 };
 
@@ -278,7 +307,7 @@ drisw_init_screen(__DRIscreen * sPriv)
 
    swrast_no_present = debug_get_option_swrast_no_present();
 
-   sPriv->private = (void *)screen;
+   sPriv->driverPrivate = (void *)screen;
    sPriv->extensions = drisw_screen_extensions;
 
    pscreen = drisw_create_screen(&drisw_lf);
@@ -298,7 +327,7 @@ fail:
 static boolean
 drisw_create_buffer(__DRIscreen * sPriv,
                     __DRIdrawable * dPriv,
-                    const __GLcontextModes * visual, boolean isPixmap)
+                    const struct gl_config * visual, boolean isPixmap)
 {
    struct dri_drawable *drawable = NULL;
 
@@ -310,6 +339,7 @@ drisw_create_buffer(__DRIscreen * sPriv,
    drawable->allocate_textures = drisw_allocate_textures;
    drawable->update_drawable_info = drisw_update_drawable_info;
    drawable->flush_frontbuffer = drisw_flush_frontbuffer;
+   drawable->update_tex_buffer = drisw_update_tex_buffer;
 
    return TRUE;
 }
@@ -326,10 +356,9 @@ const struct __DriverAPIRec driDriverAPI = {
    .DestroyContext = dri_destroy_context,
    .CreateBuffer = drisw_create_buffer,
    .DestroyBuffer = dri_destroy_buffer,
+   .SwapBuffers = drisw_swap_buffers,
    .MakeCurrent = dri_make_current,
    .UnbindContext = dri_unbind_context,
-
-   .SwapBuffers = drisw_swap_buffers,
 };
 
 /* This is the table of extensions that the loader will dlsym() for. */

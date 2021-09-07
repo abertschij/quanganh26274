@@ -41,10 +41,6 @@
 #include "stw_framebuffer.h"
 #include "stw_st.h"
 
-#ifdef WIN32_THREADS
-extern _glthread_Mutex OneTimeLock;
-#endif
-
 
 struct stw_device *stw_dev = NULL;
 
@@ -52,7 +48,19 @@ static int
 stw_get_param(struct st_manager *smapi,
               enum st_manager_param param)
 {
-   return 0;
+   switch (param) {
+   case ST_MANAGER_BROKEN_INVALIDATE:
+      /*
+       * Force framebuffer validation on glViewport.
+       *
+       * Certain applications, like Rhinoceros 4, uses glReadPixels
+       * exclusively (never uses SwapBuffers), so framebuffers never get
+       * resized unless we check on glViewport.
+       */
+      return 1;
+   default:
+      return 0;
+   }
 }
 
 boolean
@@ -76,10 +84,6 @@ stw_init(const struct stw_winsys *stw_winsys)
    
    stw_dev->stw_winsys = stw_winsys;
 
-#ifdef WIN32_THREADS
-   _glthread_INIT_MUTEX(OneTimeLock);
-#endif
-
    stw_dev->stapi = stw_st_create_api();
    stw_dev->smapi = CALLOC_STRUCT(st_manager);
    if (!stw_dev->stapi || !stw_dev->smapi)
@@ -95,6 +99,10 @@ stw_init(const struct stw_winsys *stw_winsys)
    stw_dev->smapi->screen = screen;
    stw_dev->smapi->get_param = stw_get_param;
    stw_dev->screen = screen;
+
+   stw_dev->max_2d_levels =
+         screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_LEVELS);
+   stw_dev->max_2d_length = 1 << (stw_dev->max_2d_levels - 1);
 
    pipe_mutex_init( stw_dev->ctx_mutex );
    pipe_mutex_init( stw_dev->fb_mutex );
@@ -168,9 +176,8 @@ stw_cleanup(void)
 
    stw_dev->screen->destroy(stw_dev->screen);
 
-#ifdef WIN32_THREADS
-   _glthread_DESTROY_MUTEX(OneTimeLock);
-
+   /* glapi is statically linked: we can call the local destroy function. */
+#ifdef _GLAPI_NO_EXPORTS
    _glapi_destroy_multithread();
 #endif
 

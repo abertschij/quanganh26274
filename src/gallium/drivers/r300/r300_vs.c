@@ -32,10 +32,11 @@
 #include "tgsi/tgsi_parse.h"
 #include "tgsi/tgsi_ureg.h"
 
-#include "radeon_compiler.h"
+#include "compiler/radeon_compiler.h"
 
 /* Convert info about VS output semantics into r300_shader_semantics. */
 static void r300_shader_read_vs_outputs(
+    struct r300_context *r300,
     struct tgsi_shader_info* info,
     struct r300_shader_semantics* vs_outputs)
 {
@@ -81,6 +82,14 @@ static void r300_shader_read_vs_outputs(
             case TGSI_SEMANTIC_EDGEFLAG:
                 assert(index == 0);
                 fprintf(stderr, "r300 VP: cannot handle edgeflag output.\n");
+                break;
+
+            case TGSI_SEMANTIC_CLIPVERTEX:
+                assert(index == 0);
+                /* Draw does clip vertex for us. */
+                if (r300->screen->caps.has_tcl) {
+                    fprintf(stderr, "r300 VP: cannot handle clip vertex output.\n");
+                }
                 break;
 
             default:
@@ -160,10 +169,11 @@ static void set_vertex_inputs_outputs(struct r300_vertex_program_compiler * c)
     c->code->outputs[outputs->wpos] = reg++;
 }
 
-void r300_init_vs_outputs(struct r300_vertex_shader *vs)
+void r300_init_vs_outputs(struct r300_context *r300,
+                          struct r300_vertex_shader *vs)
 {
     tgsi_scan_shader(vs->state.tokens, &vs->info);
-    r300_shader_read_vs_outputs(&vs->info, &vs->outputs);
+    r300_shader_read_vs_outputs(r300, &vs->info, &vs->outputs);
 }
 
 static void r300_dummy_vertex_shader(
@@ -187,7 +197,7 @@ static void r300_dummy_vertex_shader(
     ureg_destroy(ureg);
 
     shader->dummy = TRUE;
-    r300_init_vs_outputs(shader);
+    r300_init_vs_outputs(r300, shader);
     r300_translate_vertex_shader(r300, shader);
 }
 
@@ -202,19 +212,20 @@ void r300_translate_vertex_shader(struct r300_context *r300,
     memset(&compiler, 0, sizeof(compiler));
     rc_init(&compiler.Base);
 
-    compiler.Base.Debug = DBG_ON(r300, DBG_VP);
+    DBG_ON(r300, DBG_VP) ? compiler.Base.Debug |= RC_DBG_LOG : 0;
+    DBG_ON(r300, DBG_P_STAT) ? compiler.Base.Debug |= RC_DBG_STATS : 0;
     compiler.code = &vs->code;
     compiler.UserData = vs;
     compiler.Base.is_r500 = r300->screen->caps.is_r500;
     compiler.Base.disable_optimizations = DBG_ON(r300, DBG_NO_OPT);
     compiler.Base.has_half_swizzles = FALSE;
     compiler.Base.has_presub = FALSE;
+    compiler.Base.has_omod = FALSE;
     compiler.Base.max_temp_regs = 32;
     compiler.Base.max_constants = 256;
     compiler.Base.max_alu_insts = r300->screen->caps.is_r500 ? 1024 : 256;
-    compiler.Base.remove_unused_constants = TRUE;
 
-    if (compiler.Base.Debug) {
+    if (compiler.Base.Debug & RC_DBG_LOG) {
         DBG(r300, DBG_VP, "r300: Initial vertex program\n");
         tgsi_dump(vs->state.tokens, 0);
     }
@@ -225,6 +236,17 @@ void r300_translate_vertex_shader(struct r300_context *r300,
     ttr.use_half_swizzles = FALSE;
 
     r300_tgsi_to_rc(&ttr, vs->state.tokens);
+
+    if (ttr.error) {
+        fprintf(stderr, "r300 VP: Cannot translate a shader. "
+                "Using a dummy shader instead.\n");
+        r300_dummy_vertex_shader(r300, vs);
+        return;
+    }
+
+    if (compiler.Base.Program.Constants.Count > 200) {
+        compiler.Base.remove_unused_constants = TRUE;
+    }
 
     compiler.RequiredOutputs = ~(~0 << (vs->info.num_outputs + 1));
     compiler.SetHwInputOutput = &set_vertex_inputs_outputs;

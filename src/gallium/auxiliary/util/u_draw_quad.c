@@ -31,6 +31,7 @@
 #include "util/u_inlines.h"
 #include "util/u_draw_quad.h"
 #include "util/u_memory.h"
+#include "cso_cache/cso_context.h"
 
 
 /**
@@ -39,6 +40,7 @@
  */
 void 
 util_draw_vertex_buffer(struct pipe_context *pipe,
+                        struct cso_context *cso,
                         struct pipe_resource *vbuf,
                         uint offset,
                         uint prim_type,
@@ -54,15 +56,39 @@ util_draw_vertex_buffer(struct pipe_context *pipe,
    vbuffer.buffer = vbuf;
    vbuffer.stride = num_attribs * 4 * sizeof(float);  /* vertex size */
    vbuffer.buffer_offset = offset;
-   vbuffer.max_index = num_verts - 1;
-   pipe->set_vertex_buffers(pipe, 1, &vbuffer);
 
    /* note: vertex elements already set by caller */
 
-   /* draw */
-   util_draw_arrays(pipe, prim_type, 0, num_verts);
+   if (cso) {
+      cso_set_vertex_buffers(cso, 1, &vbuffer);
+      cso_draw_arrays(cso, prim_type, 0, num_verts);
+   } else {
+      pipe->set_vertex_buffers(pipe, 1, &vbuffer);
+      util_draw_arrays(pipe, prim_type, 0, num_verts);
+   }
 }
 
+
+/**
+ * Draw a simple vertex buffer / primitive.
+ * Limited to float[4] vertex attribs, tightly packed.
+ */
+void
+util_draw_user_vertex_buffer(struct cso_context *cso, void *buffer,
+                             uint prim_type, uint num_verts, uint num_attribs)
+{
+   struct pipe_vertex_buffer vbuffer = {0};
+
+   assert(num_attribs <= PIPE_MAX_ATTRIBS);
+
+   vbuffer.user_buffer = buffer;
+   vbuffer.stride = num_attribs * 4 * sizeof(float);  /* vertex size */
+
+   /* note: vertex elements already set by caller */
+
+   cso_set_vertex_buffers(cso, 1, &vbuffer);
+   cso_draw_arrays(cso, prim_type, 0, num_verts);
+}
 
 
 /**
@@ -70,13 +96,13 @@ util_draw_vertex_buffer(struct pipe_context *pipe,
  * Note: this isn't especially efficient.
  */
 void 
-util_draw_texquad(struct pipe_context *pipe,
+util_draw_texquad(struct pipe_context *pipe, struct cso_context *cso,
                   float x0, float y0, float x1, float y1, float z)
 {
    uint numAttribs = 2, i, j;
    uint vertexBytes = 4 * (4 * numAttribs * sizeof(float));
    struct pipe_resource *vbuf = NULL;  
-   uint *v = NULL;
+   float *v = NULL;
 
    v = MALLOC(vertexBytes);
    if (v == NULL)
@@ -113,12 +139,13 @@ util_draw_texquad(struct pipe_context *pipe,
    v[28] = 0.0;
    v[29] = 1.0;
 	 
-   vbuf = pipe_user_buffer_create(pipe->screen, v, vertexBytes,
-				  PIPE_BIND_VERTEX_BUFFER);
-   if (!vbuf) 
+   vbuf = pipe_buffer_create(pipe->screen, PIPE_BIND_VERTEX_BUFFER,
+                             PIPE_USAGE_STAGING, vertexBytes);
+   if (!vbuf)
       goto out;
+   pipe_buffer_write(pipe, vbuf, 0, vertexBytes, v);
 
-   util_draw_vertex_buffer(pipe, vbuf, 0, PIPE_PRIM_TRIANGLE_FAN, 4, 2);
+   util_draw_vertex_buffer(pipe, cso, vbuf, 0, PIPE_PRIM_TRIANGLE_FAN, 4, 2);
 
 out:
    if (vbuf)

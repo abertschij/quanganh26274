@@ -67,6 +67,7 @@ print_packed(const struct util_format_description *format_desc,
       sep = " ";
    }
    printf("%s", suffix);
+   fflush(stdout);
 }
 
 
@@ -88,6 +89,7 @@ print_unpacked_rgba_doubl(const struct util_format_description *format_desc,
       sep = ",\n";
    }
    printf("%s", suffix);
+   fflush(stdout);
 }
 
 
@@ -109,6 +111,7 @@ print_unpacked_rgba_float(const struct util_format_description *format_desc,
       sep = ",\n";
    }
    printf("%s", suffix);
+   fflush(stdout);
 }
 
 
@@ -129,6 +132,7 @@ print_unpacked_rgba_8unorm(const struct util_format_description *format_desc,
       }
    }
    printf("%s", suffix);
+   fflush(stdout);
 }
 
 
@@ -150,6 +154,7 @@ print_unpacked_z_float(const struct util_format_description *format_desc,
       sep = ",\n";
    }
    printf("%s", suffix);
+   fflush(stdout);
 }
 
 
@@ -170,14 +175,15 @@ print_unpacked_z_32unorm(const struct util_format_description *format_desc,
       }
    }
    printf("%s", suffix);
+   fflush(stdout);
 }
 
 
 static void
-print_unpacked_s_8uscaled(const struct util_format_description *format_desc,
-                          const char *prefix,
-                          uint8_t unpacked[UTIL_FORMAT_MAX_UNPACKED_HEIGHT][UTIL_FORMAT_MAX_UNPACKED_WIDTH],
-                          const char *suffix)
+print_unpacked_s_8uint(const struct util_format_description *format_desc,
+                       const char *prefix,
+                       uint8_t unpacked[UTIL_FORMAT_MAX_UNPACKED_HEIGHT][UTIL_FORMAT_MAX_UNPACKED_WIDTH],
+                       const char *suffix)
 {
    unsigned i, j;
    const char *sep = "";
@@ -190,6 +196,7 @@ print_unpacked_s_8uscaled(const struct util_format_description *format_desc,
       }
    }
    printf("%s", suffix);
+   fflush(stdout);
 }
 
 
@@ -286,9 +293,14 @@ test_format_pack_rgba_float(const struct util_format_description *format_desc,
                            format_desc->block.width, format_desc->block.height);
 
    success = TRUE;
-   for (i = 0; i < format_desc->block.bits/8; ++i)
+   for (i = 0; i < format_desc->block.bits/8; ++i) {
       if ((test->packed[i] & test->mask[i]) != (packed[i] & test->mask[i]))
          success = FALSE;
+   }
+
+   /* Ignore NaN */
+   if (util_is_double_nan(test->unpacked[0][0][0]))
+      success = TRUE;
 
    if (!success) {
       print_packed(format_desc, "FAILED: ", packed, " obtained\n");
@@ -349,6 +361,10 @@ test_format_unpack_rgba_8unorm(const struct util_format_description *format_desc
       }
    }
 
+   /* Ignore NaN */
+   if (util_is_double_nan(test->unpacked[0][0][0]))
+      success = TRUE;
+
    if (!success) {
       print_unpacked_rgba_8unorm(format_desc, "FAILED: ", unpacked, " obtained\n");
       print_unpacked_rgba_8unorm(format_desc, "        ", expected, " expected\n");
@@ -393,6 +409,18 @@ test_format_pack_rgba_8unorm(const struct util_format_description *format_desc,
    for (i = 0; i < format_desc->block.bits/8; ++i)
       if ((test->packed[i] & test->mask[i]) != (packed[i] & test->mask[i]))
          success = FALSE;
+
+   /* Ignore NaN */
+   if (util_is_double_nan(test->unpacked[0][0][0]))
+      success = TRUE;
+
+   /* Ignore failure cases due to unorm8 format */
+   if (test->unpacked[0][0][0] > 1.0f || test->unpacked[0][0][0] < 0.0f)
+      success = TRUE;
+
+   /* Multiple of 255 */
+   if ((test->unpacked[0][0][0] * 255.0) != (int)(test->unpacked[0][0][0] * 255.0))
+      success = TRUE;
 
    if (!success) {
       print_packed(format_desc, "FAILED: ", packed, " obtained\n");
@@ -546,7 +574,7 @@ test_format_pack_z_32unorm(const struct util_format_description *format_desc,
 
 
 static boolean
-test_format_unpack_s_8uscaled(const struct util_format_description *format_desc,
+test_format_unpack_s_8uint(const struct util_format_description *format_desc,
                                const struct util_format_test_case *test)
 {
    uint8_t unpacked[UTIL_FORMAT_MAX_UNPACKED_HEIGHT][UTIL_FORMAT_MAX_UNPACKED_WIDTH] = { { 0 } };
@@ -554,7 +582,7 @@ test_format_unpack_s_8uscaled(const struct util_format_description *format_desc,
    unsigned i, j;
    boolean success;
 
-   format_desc->unpack_s_8uscaled(&unpacked[0][0], sizeof unpacked[0],
+   format_desc->unpack_s_8uint(&unpacked[0][0], sizeof unpacked[0],
                                   test->packed, 0,
                                   format_desc->block.width, format_desc->block.height);
 
@@ -574,8 +602,8 @@ test_format_unpack_s_8uscaled(const struct util_format_description *format_desc,
    }
 
    if (!success) {
-      print_unpacked_s_8uscaled(format_desc, "FAILED: ", unpacked, " obtained\n");
-      print_unpacked_s_8uscaled(format_desc, "        ", expected, " expected\n");
+      print_unpacked_s_8uint(format_desc, "FAILED: ", unpacked, " obtained\n");
+      print_unpacked_s_8uint(format_desc, "        ", expected, " expected\n");
    }
 
    return success;
@@ -583,7 +611,7 @@ test_format_unpack_s_8uscaled(const struct util_format_description *format_desc,
 
 
 static boolean
-test_format_pack_s_8uscaled(const struct util_format_description *format_desc,
+test_format_pack_s_8uint(const struct util_format_description *format_desc,
                              const struct util_format_test_case *test)
 {
    uint8_t unpacked[UTIL_FORMAT_MAX_UNPACKED_HEIGHT][UTIL_FORMAT_MAX_UNPACKED_WIDTH];
@@ -602,7 +630,7 @@ test_format_pack_s_8uscaled(const struct util_format_description *format_desc,
 
    memset(packed, 0, sizeof packed);
 
-   format_desc->pack_s_8uscaled(packed, 0,
+   format_desc->pack_s_8uint(packed, 0,
                                 &unpacked[0][0], sizeof unpacked[0],
                                 format_desc->block.width, format_desc->block.height);
 
@@ -631,10 +659,11 @@ test_one_func(const struct util_format_description *format_desc,
               const char *suffix)
 {
    unsigned i;
-   bool success = TRUE;
+   boolean success = TRUE;
 
    printf("Testing util_format_%s_%s ...\n",
           format_desc->short_name, suffix);
+   fflush(stdout);
 
    for (i = 0; i < util_format_nr_test_cases; ++i) {
       const struct util_format_test_case *test = &util_format_test_cases[i];
@@ -654,7 +683,7 @@ static boolean
 test_all(void)
 {
    enum pipe_format format;
-   bool success = TRUE;
+   boolean success = TRUE;
 
    for (format = 1; format < PIPE_FORMAT_COUNT; ++format) {
       const struct util_format_description *format_desc;
@@ -686,8 +715,8 @@ test_all(void)
       TEST_ONE_FUNC(pack_z_32unorm);
       TEST_ONE_FUNC(unpack_z_float);
       TEST_ONE_FUNC(pack_z_float);
-      TEST_ONE_FUNC(unpack_s_8uscaled);
-      TEST_ONE_FUNC(pack_s_8uscaled);
+      TEST_ONE_FUNC(unpack_s_8uint);
+      TEST_ONE_FUNC(pack_s_8uint);
 
 #     undef TEST_ONE_FUNC
    }

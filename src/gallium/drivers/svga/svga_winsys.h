@@ -61,13 +61,11 @@ struct winsys_handle;
 #define SVGA_RELOC_WRITE 0x1
 #define SVGA_RELOC_READ  0x2
 
-
+#define SVGA_FENCE_FLAG_EXEC      (1 << 0)
+#define SVGA_FENCE_FLAG_QUERY     (1 << 1)
 
 /** Opaque surface handle */
 struct svga_winsys_surface;
-
-/** Opaque buffer handle */
-struct svga_winsys_handle;
 
 
 /**
@@ -136,6 +134,9 @@ struct svga_winsys_screen
    void
    (*destroy)(struct svga_winsys_screen *sws);
    
+   SVGA3dHardwareVersion
+   (*get_hw_version)(struct svga_winsys_screen *sws);
+
    boolean
    (*get_cap)(struct svga_winsys_screen *sws,
               SVGA3dDevCapIndex index,
@@ -243,12 +244,12 @@ struct svga_winsys_screen
 
    /** 
     * Map the entire data store of a buffer object into the client's address.
-    * flags is a bitmaks of PIPE_TRANSFER_*
+    * usage is a bitmask of PIPE_TRANSFER_*
     */
    void *
    (*buffer_map)( struct svga_winsys_screen *sws, 
 	          struct svga_winsys_buffer *buf,
-		  unsigned flags );
+		  unsigned usage );
    
    void 
    (*buffer_unmap)( struct svga_winsys_screen *sws, 

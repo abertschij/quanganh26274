@@ -32,12 +32,12 @@
 
 #include "os/os_thread.h"
 
-struct pipe_surface;
+struct pipe_resource;
 struct st_framebuffer_iface;
 struct stw_pixelformat_info;
 
 /**
- * Windows framebuffer, derived from gl_framebuffer.
+ * Windows framebuffer.
  */
 struct stw_framebuffer
 {
@@ -63,6 +63,10 @@ struct stw_framebuffer
 
    int iPixelFormat;
    const struct stw_pixelformat_info *pfi;
+
+   /* A pixel format that can be used by GDI */
+   int iDisplayablePixelFormat;
+   boolean bPbuffer;
 
    struct st_framebuffer_iface *stfb;
 
@@ -143,7 +147,7 @@ stw_framebuffer_from_hdc(
 BOOL
 stw_framebuffer_present_locked(HDC hdc,
                                struct stw_framebuffer *fb,
-                               struct pipe_surface *surface);
+                               struct pipe_resource *res);
 
 void
 stw_framebuffer_update(

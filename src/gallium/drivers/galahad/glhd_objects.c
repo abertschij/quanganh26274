@@ -71,7 +71,8 @@ galahad_resource_destroy(struct galahad_resource *glhd_resource)
 
 
 struct pipe_surface *
-galahad_surface_create(struct galahad_resource *glhd_resource,
+galahad_surface_create(struct galahad_context *glhd_context,
+                        struct galahad_resource *glhd_resource,
                         struct pipe_surface *surface)
 {
    struct galahad_surface *glhd_surface;
@@ -100,7 +101,8 @@ error:
 }
 
 void
-galahad_surface_destroy(struct galahad_surface *glhd_surface)
+galahad_surface_destroy(struct galahad_context *glhd_context,
+                         struct galahad_surface *glhd_surface)
 {
    pipe_resource_reference(&glhd_surface->base.texture, NULL);
    pipe_surface_reference(&glhd_surface->surface, NULL);
@@ -125,8 +127,8 @@ galahad_sampler_view_create(struct galahad_context *glhd_context,
    glhd_view->base = *view;
    glhd_view->base.reference.count = 1;
    glhd_view->base.texture = NULL;
-   pipe_resource_reference(&glhd_view->base.texture, glhd_resource->resource);
-   glhd_view->base.context = glhd_context->pipe;
+   pipe_resource_reference(&glhd_view->base.texture, &glhd_resource->base);
+   glhd_view->base.context = &glhd_context->base;
    glhd_view->sampler_view = view;
 
    return &glhd_view->base;
@@ -138,9 +140,8 @@ void
 galahad_sampler_view_destroy(struct galahad_context *glhd_context,
                               struct galahad_sampler_view *glhd_view)
 {
+   pipe_sampler_view_reference(&glhd_view->sampler_view, NULL);
    pipe_resource_reference(&glhd_view->base.texture, NULL);
-   glhd_context->pipe->sampler_view_destroy(glhd_context->pipe,
-                                          glhd_view->sampler_view);
    FREE(glhd_view);
 }
 

@@ -54,7 +54,6 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 
 	def printRealHeader(self):
 		print '#include "x86/assyntax.h"'
-		print '#include "glapi/glapioffsets.h"'
 		print ''
 		print '#if defined(STDCALL_API)'
 		print '# if defined(USE_MGL_NAMESPACE)'
@@ -74,12 +73,12 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 		print '#define GL_OFFSET(x) CODEPTR(REGOFF(4 * x, EAX))'
 		print ''
 		print '#if defined(GNU_ASSEMBLER) && !defined(__DJGPP__) && !defined(__MINGW32__) && !defined(__APPLE__)'
-		print '#define GLOBL_FN(x) GLOBL x ; .type x, function'
+		print '#define GLOBL_FN(x) GLOBL x ; .type x, @function'
 		print '#else'
 		print '#define GLOBL_FN(x) GLOBL x'
 		print '#endif'
 		print ''
-		print '#if defined(PTHREADS) || defined(WIN32_THREADS) || defined(BEOS_THREADS)'
+		print '#if defined(HAVE_PTHREAD) || defined(WIN32)'
 		print '#  define THREADS'
 		print '#endif'
 		print ''
@@ -99,7 +98,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 		print '\tCTX_INSNS ;					\\'
 		print '\tJMP(GL_OFFSET(off))'
 		print ''
-		print '#elif defined(PTHREADS)'
+		print '#elif defined(HAVE_PTHREAD)'
 		print '#  define GL_STUB(fn,off,fn_alt)\t\t\t\\'
 		print 'ALIGNTEXT16;\t\t\t\t\t\t\\'
 		print 'GLOBL_FN(GL_PREFIX(fn, fn_alt));\t\t\t\\'
@@ -153,7 +152,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 		print '\tmovl	_glapi_tls_Dispatch@GOTNTPOFF(%eax), %eax'
 		print '\tret'
 		print ''
-		print '#elif defined(PTHREADS)'
+		print '#elif defined(HAVE_PTHREAD)'
 		print 'EXTERN GLNAME(_glapi_Dispatch)'
 		print 'EXTERN GLNAME(_gl_DispatchTSD)'
 		print 'EXTERN GLNAME(pthread_getspecific)'
@@ -215,7 +214,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 			stack = self.get_stack_size(f)
 			alt = "%s@%u" % (name, stack)
 
-			print '\tGL_STUB(%s, _gloffset_%s, %s)' % (name, f.name, alt)
+			print '\tGL_STUB(%s, %d, %s)' % (name, f.offset, alt)
 
 			if not f.is_static_entry_point(f.name):
 				print '\tHIDDEN(GL_PREFIX(%s, %s))' % (name, alt)
@@ -230,7 +229,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
 				if f.is_static_entry_point(n):
 					if n != f.name:
 						alt2 = "%s@%u" % (n, stack)
-						text = '\tGL_STUB_ALIAS(%s, _gloffset_%s, %s, %s, %s)' % (n, f.name, alt2, name, alt)
+						text = '\tGL_STUB_ALIAS(%s, %d, %s, %s, %s)' % (n, f.offset, alt2, name, alt)
 
 						if f.has_different_protocol(n):
 							print '#ifndef GLX_INDIRECT_RENDERING'

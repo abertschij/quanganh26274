@@ -88,6 +88,7 @@ static Bool
 DRI2WireToEvent(Display *dpy, XEvent *event, xEvent *wire)
 {
    XExtDisplayInfo *info = DRI2FindDisplay(dpy);
+   struct glx_drawable *glxDraw;
 
    XextCheckExtension(dpy, info, dri2ExtensionName, False);
 
@@ -97,17 +98,17 @@ DRI2WireToEvent(Display *dpy, XEvent *event, xEvent *wire)
    case DRI2_BufferSwapComplete:
    {
       GLXBufferSwapComplete *aevent = (GLXBufferSwapComplete *)event;
-      xDRI2BufferSwapComplete *awire = (xDRI2BufferSwapComplete *)wire;
+      xDRI2BufferSwapComplete2 *awire = (xDRI2BufferSwapComplete2 *)wire;
       __GLXDRIdrawable *pdraw;
-      struct glx_display *glx_dpy = __glXInitialize(dpy);
+
+      pdraw = dri2GetGlxDrawableFromXDrawableId(dpy, awire->drawable);
 
       /* Ignore swap events if we're not looking for them */
-      pdraw = dri2GetGlxDrawableFromXDrawableId(dpy, awire->drawable);
-      if (!pdraw || !(pdraw->eventMask & GLX_BUFFER_SWAP_COMPLETE_INTEL_MASK))
-	 return False;
+      aevent->type = dri2GetSwapEventType(dpy, awire->drawable);
+      if(!aevent->type)
+         return False;
 
       aevent->serial = _XSetLastRequestRead(dpy, (xGenericReply *) wire);
-      aevent->type = glx_dpy->codes->first_event + GLX_BufferSwapComplete;
       aevent->send_event = (awire->type & 0x80) != 0;
       aevent->display = dpy;
       aevent->drawable = awire->drawable;
@@ -127,7 +128,13 @@ DRI2WireToEvent(Display *dpy, XEvent *event, xEvent *wire)
       }
       aevent->ust = ((CARD64)awire->ust_hi << 32) | awire->ust_lo;
       aevent->msc = ((CARD64)awire->msc_hi << 32) | awire->msc_lo;
-      aevent->sbc = ((CARD64)awire->sbc_hi << 32) | awire->sbc_lo;
+
+      glxDraw = GetGLXDrawable(dpy, pdraw->drawable);
+      if (awire->sbc < glxDraw->lastEventSbc)
+	 glxDraw->eventSbcWrap += 0x100000000;
+      glxDraw->lastEventSbc = awire->sbc;
+      aevent->sbc = awire->sbc + glxDraw->eventSbcWrap;
+
       return True;
    }
 #endif
@@ -182,6 +189,15 @@ DRI2Error(Display *display, xError *err, XExtCodes *codes, int *ret_code)
 	err->errorCode == BadDrawable &&
 	err->minorCode == X_DRI2DestroyDrawable)
 	return True;
+
+    /* If the server is non-local DRI2Connect will raise BadRequest.
+     * Swallow this so that DRI2Connect can signal this in its return code */
+    if (err->majorCode == codes->major_opcode &&
+        err->minorCode == X_DRI2Connect &&
+        err->errorCode == BadRequest) {
+	*ret_code = False;
+	return True;
+    }
 
     return False;
 }
@@ -253,6 +269,7 @@ DRI2Connect(Display * dpy, XID window, char **driverName, char **deviceName)
    XExtDisplayInfo *info = DRI2FindDisplay(dpy);
    xDRI2ConnectReply rep;
    xDRI2ConnectReq *req;
+   char *prime;
 
    XextCheckExtension(dpy, info, dri2ExtensionName, False);
 
@@ -261,7 +278,19 @@ DRI2Connect(Display * dpy, XID window, char **driverName, char **deviceName)
    req->reqType = info->codes->major_opcode;
    req->dri2ReqType = X_DRI2Connect;
    req->window = window;
+
    req->driverType = DRI2DriverDRI;
+#ifdef DRI2DriverPrimeShift
+   prime = getenv("DRI_PRIME");
+   if (prime) {
+      uint32_t primeid;
+      errno = 0;
+      primeid = strtoul(prime, NULL, 0);
+      if (errno == 0)
+         req->driverType |= ((primeid & DRI2DriverPrimeMask) << DRI2DriverPrimeShift);
+   }
+#endif
+
    if (!_XReply(dpy, (xReply *) & rep, 0, xFalse)) {
       UnlockDisplay(dpy);
       SyncHandle();

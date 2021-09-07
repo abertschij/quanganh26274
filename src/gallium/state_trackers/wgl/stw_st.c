@@ -27,6 +27,7 @@
 
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
+#include "util/u_atomic.h"
 #include "state_tracker/st_gl_api.h" /* for st_gl_api_create */
 
 #include "stw_st.h"
@@ -43,8 +44,6 @@ struct stw_st_framebuffer {
    struct pipe_resource *textures[ST_ATTACHMENT_COUNT];
    unsigned texture_width, texture_height;
    unsigned texture_mask;
-
-   struct pipe_surface *front_surface, *back_surface;
 };
 
 static INLINE struct stw_st_framebuffer *
@@ -65,10 +64,6 @@ stw_st_framebuffer_validate_locked(struct st_framebuffer_iface *stfb,
    struct pipe_resource templ;
    unsigned i;
 
-   /* remove outdated surface */
-   pipe_surface_reference(&stwfb->front_surface, NULL);
-   pipe_surface_reference(&stwfb->back_surface, NULL);
-
    /* remove outdated textures */
    if (stwfb->texture_width != width || stwfb->texture_height != height) {
       for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
@@ -80,6 +75,7 @@ stw_st_framebuffer_validate_locked(struct st_framebuffer_iface *stfb,
    templ.width0 = width;
    templ.height0 = height;
    templ.depth0 = 1;
+   templ.array_size = 1;
    templ.last_level = 0;
 
    for (i = 0; i < ST_ATTACHMENT_COUNT; i++) {
@@ -155,59 +151,20 @@ stw_st_framebuffer_validate(struct st_framebuffer_iface *stfb,
    return TRUE;
 }
 
-static struct pipe_surface *
-get_present_surface_locked(struct st_framebuffer_iface *stfb,
-                           enum st_attachment_type statt)
-{
-   struct stw_st_framebuffer *stwfb = stw_st_framebuffer(stfb);
-   struct pipe_resource *ptex;
-   struct pipe_surface *psurf, **cache;
-   
-   ptex = stwfb->textures[statt];
-   if (!ptex)
-      return NULL;
-
-   psurf = NULL;
-
-   switch (statt) {
-   case ST_ATTACHMENT_FRONT_LEFT:
-      cache = &stwfb->front_surface;
-      break;
-   case ST_ATTACHMENT_BACK_LEFT:
-      cache = &stwfb->back_surface;
-      break;
-   default:
-      cache = &psurf;
-      break;
-   }
-
-   if (!*cache) {
-      *cache = stw_dev->screen->get_tex_surface(stw_dev->screen,
-            ptex, 0, 0, 0,
-            PIPE_BIND_DISPLAY_TARGET |
-            PIPE_BIND_RENDER_TARGET);
-   }
-
-   if (psurf != *cache)
-      pipe_surface_reference(&psurf, *cache);
-
-   return psurf;
-}
-
 /**
  * Present an attachment of the framebuffer.
  */
 static boolean
-stw_st_framebuffer_present_locked(struct st_framebuffer_iface *stfb,
+stw_st_framebuffer_present_locked(HDC hdc,
+                                  struct st_framebuffer_iface *stfb,
                                   enum st_attachment_type statt)
 {
    struct stw_st_framebuffer *stwfb = stw_st_framebuffer(stfb);
-   struct pipe_surface *psurf;
-   
-   psurf = get_present_surface_locked(&stwfb->base, statt);
-   if (psurf) {
-      stw_framebuffer_present_locked(stwfb->fb->hDC, stwfb->fb, psurf);
-      pipe_surface_reference(&psurf, NULL);
+   struct pipe_resource *resource;
+
+   resource = stwfb->textures[statt];
+   if (resource) {
+      stw_framebuffer_present_locked(hdc, stwfb->fb, resource);
    }
 
    return TRUE;
@@ -221,7 +178,7 @@ stw_st_framebuffer_flush_front(struct st_framebuffer_iface *stfb,
 
    pipe_mutex_lock(stwfb->fb->mutex);
 
-   return stw_st_framebuffer_present_locked(&stwfb->base, statt);
+   return stw_st_framebuffer_present_locked(stwfb->fb->hDC, &stwfb->base, statt);
 }
 
 /**
@@ -240,6 +197,7 @@ stw_st_create_framebuffer(struct stw_framebuffer *fb)
    stwfb->stvis = fb->pfi->stvis;
 
    stwfb->base.visual = &stwfb->stvis;
+   p_atomic_set(&stwfb->base.stamp, 1);
    stwfb->base.flush_front = stw_st_framebuffer_flush_front;
    stwfb->base.validate = stw_st_framebuffer_validate;
 
@@ -255,9 +213,6 @@ stw_st_destroy_framebuffer_locked(struct st_framebuffer_iface *stfb)
    struct stw_st_framebuffer *stwfb = stw_st_framebuffer(stfb);
    int i;
 
-   pipe_surface_reference(&stwfb->front_surface, NULL);
-   pipe_surface_reference(&stwfb->back_surface, NULL);
-
    for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
       pipe_resource_reference(&stwfb->textures[i], NULL);
 
@@ -268,23 +223,17 @@ stw_st_destroy_framebuffer_locked(struct st_framebuffer_iface *stfb)
  * Swap the buffers of the given framebuffer.
  */
 boolean
-stw_st_swap_framebuffer_locked(struct st_framebuffer_iface *stfb)
+stw_st_swap_framebuffer_locked(HDC hdc, struct st_framebuffer_iface *stfb)
 {
    struct stw_st_framebuffer *stwfb = stw_st_framebuffer(stfb);
    unsigned front = ST_ATTACHMENT_FRONT_LEFT, back = ST_ATTACHMENT_BACK_LEFT;
    struct pipe_resource *ptex;
-   struct pipe_surface *psurf;
    unsigned mask;
 
    /* swap the textures */
    ptex = stwfb->textures[front];
    stwfb->textures[front] = stwfb->textures[back];
    stwfb->textures[back] = ptex;
-
-   /* swap the surfaces */
-   psurf = stwfb->front_surface;
-   stwfb->front_surface = stwfb->back_surface;
-   stwfb->back_surface = psurf;
 
    /* convert to mask */
    front = 1 << front;
@@ -299,7 +248,7 @@ stw_st_swap_framebuffer_locked(struct st_framebuffer_iface *stfb)
    stwfb->texture_mask = mask;
 
    front = ST_ATTACHMENT_FRONT_LEFT;
-   return stw_st_framebuffer_present_locked(&stwfb->base, front);
+   return stw_st_framebuffer_present_locked(hdc, &stwfb->base, front);
 }
 
 /**

@@ -64,7 +64,7 @@ dri2_do_create_buffer(DrawablePtr pDraw, DRI2BufferPtr buffer, unsigned int form
 {
     struct pipe_resource *tex = NULL;
     ScreenPtr pScreen = pDraw->pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     struct exa_pixmap_priv *exa_priv;
     BufferPrivatePtr private = buffer->driverPrivate;
@@ -124,11 +124,12 @@ dri2_do_create_buffer(DrawablePtr pDraw, DRI2BufferPtr buffer, unsigned int form
                }
             } else {
                template.format = ms->ds_depth_bits_last ?
-                                 PIPE_FORMAT_Z24_UNORM_S8_USCALED : PIPE_FORMAT_S8_USCALED_Z24_UNORM;
+                                 PIPE_FORMAT_Z24_UNORM_S8_UINT : PIPE_FORMAT_S8_UINT_Z24_UNORM;
             }
 	    template.width0 = pDraw->width;
 	    template.height0 = pDraw->height;
 	    template.depth0 = 1;
+	    template.array_size = 1;
 	    template.last_level = 0;
 	    template.bind = PIPE_BIND_DEPTH_STENCIL |
 		PIPE_BIND_SHARED;
@@ -182,7 +183,7 @@ static void
 dri2_do_destroy_buffer(DrawablePtr pDraw, DRI2BufferPtr buffer)
 {
     ScreenPtr pScreen = pDraw->pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     BufferPrivatePtr private = buffer->driverPrivate;
     struct exa_pixmap_priv *exa_priv = exaGetPixmapDriverPrivate(private->pPixmap);
@@ -201,11 +202,11 @@ dri2_create_buffer(DrawablePtr pDraw, unsigned int attachment, unsigned int form
     DRI2Buffer2Ptr buffer;
     BufferPrivatePtr private;
 
-    buffer = xcalloc(1, sizeof *buffer);
+    buffer = calloc(1, sizeof *buffer);
     if (!buffer)
 	return NULL;
 
-    private = xcalloc(1, sizeof *private);
+    private = calloc(1, sizeof *private);
     if (!private) {
 	goto fail;
     }
@@ -217,9 +218,9 @@ dri2_create_buffer(DrawablePtr pDraw, unsigned int attachment, unsigned int form
     if (dri2_do_create_buffer(pDraw, (DRI2BufferPtr)buffer, format))
 	return buffer;
 
-    xfree(private);
+    free(private);
 fail:
-    xfree(buffer);
+    free(buffer);
     return NULL;
 }
 
@@ -229,8 +230,8 @@ dri2_destroy_buffer(DrawablePtr pDraw, DRI2Buffer2Ptr buffer)
     /* So far it is safe to downcast a DRI2Buffer2Ptr to DRI2BufferPtr */
     dri2_do_destroy_buffer(pDraw, (DRI2BufferPtr)buffer);
 
-    xfree(buffer->driverPrivate);
-    xfree(buffer);
+    free(buffer->driverPrivate);
+    free(buffer);
 }
 
 #endif /* DRI2INFOREC_VERSION >= 2 */
@@ -244,11 +245,11 @@ dri2_create_buffers(DrawablePtr pDraw, unsigned int *attachments, int count)
     DRI2BufferPtr buffers;
     int i;
 
-    buffers = xcalloc(count, sizeof *buffers);
+    buffers = calloc(count, sizeof *buffers);
     if (!buffers)
 	goto fail_buffers;
 
-    privates = xcalloc(count, sizeof *privates);
+    privates = calloc(count, sizeof *privates);
     if (!privates)
 	goto fail_privates;
 
@@ -263,9 +264,9 @@ dri2_create_buffers(DrawablePtr pDraw, unsigned int *attachments, int count)
     return buffers;
 
 fail:
-    xfree(privates);
+    free(privates);
 fail_privates:
-    xfree(buffers);
+    free(buffers);
 fail_buffers:
     return NULL;
 }
@@ -280,8 +281,8 @@ dri2_destroy_buffers(DrawablePtr pDraw, DRI2BufferPtr buffers, int count)
     }
 
     if (buffers) {
-	xfree(buffers[0].driverPrivate);
-	xfree(buffers);
+	free(buffers[0].driverPrivate);
+	free(buffers);
     }
 }
 
@@ -292,7 +293,7 @@ dri2_copy_region(DrawablePtr pDraw, RegionPtr pRegion,
                  DRI2BufferPtr pDestBuffer, DRI2BufferPtr pSrcBuffer)
 {
     ScreenPtr pScreen = pDraw->pScreen;
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     BufferPrivatePtr dst_priv = pDestBuffer->driverPrivate;
     BufferPrivatePtr src_priv = pSrcBuffer->driverPrivate;
@@ -335,7 +336,7 @@ dri2_copy_region(DrawablePtr pDraw, RegionPtr pRegion,
 	/* pixmap glXWaitX */
 	if (pSrcBuffer->attachment == DRI2BufferFrontLeft &&
 	    pDestBuffer->attachment == DRI2BufferFakeFrontLeft) {
-	    ms->ctx->flush(ms->ctx, PIPE_FLUSH_SWAPBUFFERS, NULL);
+	    ms->ctx->flush(ms->ctx, NULL);
 	    return;
 	}
 	/* pixmap glXWaitGL */
@@ -361,7 +362,8 @@ dri2_copy_region(DrawablePtr pDraw, RegionPtr pRegion,
 
 	if (extents->x1 == 0 && extents->y1 == 0 &&
 	    extents->x2 == pDraw->width && extents->y2 == pDraw->height) {
-	    ms->screen->fence_finish(ms->screen, dst_priv->fence, 0);
+            ms->screen->fence_finish(ms->screen, dst_priv->fence,
+                                     PIPE_TIMEOUT_INFINITE);
 	    ms->screen->fence_reference(ms->screen, &dst_priv->fence, NULL);
 	}
     }
@@ -370,13 +372,15 @@ dri2_copy_region(DrawablePtr pDraw, RegionPtr pRegion,
     save_accel = ms->exa->accel;
     ms->exa->accel = TRUE;
 
-    /* In case it won't be though, make sure the GPU copy contents of the
-     * source pixmap will be used for the software fallback - presumably the
-     * client modified them before calling in here.
-     */
-    exaMoveInPixmap(src_priv->pPixmap);
-    DamageRegionAppend(src_draw, pRegion);
-    DamageRegionProcessPending(src_draw);
+    if (pSrcBuffer->attachment != DRI2BufferFrontLeft) {
+	/* In case it won't be though, make sure the GPU copy contents of the
+	 * source pixmap will be used for the software fallback - presumably the
+	 * client modified them before calling in here.
+	 */
+	exaMoveInPixmap(src_priv->pPixmap);
+	DamageRegionAppend(src_draw, pRegion);
+	DamageRegionProcessPending(src_draw);
+    }
 
    if (cust && cust->winsys_context_throttle)
        cust->winsys_context_throttle(cust, ms->ctx, THROTTLE_SWAP);
@@ -387,7 +391,7 @@ dri2_copy_region(DrawablePtr pDraw, RegionPtr pRegion,
 
     FreeScratchGC(gc);
 
-    ms->ctx->flush(ms->ctx, PIPE_FLUSH_SWAPBUFFERS,
+    ms->ctx->flush(ms->ctx,
 		   (pDestBuffer->attachment == DRI2BufferFrontLeft
 		    && ms->swapThrottling) ?
 		   &dst_priv->fence : NULL);
@@ -400,7 +404,7 @@ dri2_copy_region(DrawablePtr pDraw, RegionPtr pRegion,
 Bool
 xorg_dri2_init(ScreenPtr pScreen)
 {
-    ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
+    ScrnInfoPtr pScrn = xf86ScreenToScrn(pScreen);
     modesettingPtr ms = modesettingPTR(pScrn);
     DRI2InfoRec dri2info;
 #if DRI2INFOREC_VERSION >= 2
@@ -450,12 +454,12 @@ xorg_dri2_init(ScreenPtr pScreen)
 	 ms->screen->is_format_supported(ms->screen, PIPE_FORMAT_Z24X8_UNORM,
 					 PIPE_TEXTURE_2D,
 					 0,
-					 PIPE_BIND_DEPTH_STENCIL, 0);
+                                         PIPE_BIND_DEPTH_STENCIL);
     ms->ds_depth_bits_last =
-	 ms->screen->is_format_supported(ms->screen, PIPE_FORMAT_Z24_UNORM_S8_USCALED,
+	 ms->screen->is_format_supported(ms->screen, PIPE_FORMAT_Z24_UNORM_S8_UINT,
 					 PIPE_TEXTURE_2D,
 					 0,
-					 PIPE_BIND_DEPTH_STENCIL, 0);
+                                         PIPE_BIND_DEPTH_STENCIL);
 
     return DRI2ScreenInit(pScreen, &dri2info);
 }

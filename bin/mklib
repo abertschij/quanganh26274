@@ -260,7 +260,7 @@ if [ $STATIC = 1 ]; then
     NEWOBJECTS=""
     for OBJ in $OBJECTS ; do
 	case $OBJ in
-	    -Wl,*)
+	    -Wl,*|-L*|-l*)
 		echo "mklib: warning: ignoring $OBJ for static library"
 		;;
 	    *)
@@ -307,7 +307,7 @@ fi
 #
 case $ARCH in
 
-    'Linux' | 'OpenBSD' | 'DragonFly' | 'GNU' | GNU/*)
+    'Linux' | 'OpenBSD' | 'DragonFly' | 'GNU' | GNU/* | 'NetBSD')
 	# we assume gcc
 
 	if [ "x$LINK" = "x" ] ; then
@@ -318,6 +318,25 @@ case $ARCH in
                 LINK=gcc
             fi
 	fi
+
+	# Check if objects are 32-bit and we're running in 64-bit
+	# environment.  If so, pass -m32 flag to linker.
+	add_abi_flag_to_opts() {
+	    case $(file $1) in
+		*32-bit*x86-64*)
+		    # x86_64 x32 ABI.
+		    OPTS="-mx32 ${OPTS}"
+		    ;;
+		*64-bit*x86-64*)
+		    # x86_64 64-bit ABI.
+		    OPTS="-m64 ${OPTS}"
+		    ;;
+		*32-bit*Intel*)
+		    # x86 32-bit ABI.
+		    OPTS="-m32 ${OPTS}"
+		    ;;
+	    esac
+	}
 
 	if [ $NOPREFIX = 1 ] ; then
 	    # No "lib" or ".so" part
@@ -330,13 +349,8 @@ case $ARCH in
 	    ;;
 	    esac
 
-	    # Check if objects are 32-bit and we're running in 64-bit
-	    # environment.  If so, pass -m32 flag to linker.
-	    set ${OBJECTS}
-	    ABI32=`file $1 | grep 32-bit`
-	    if [ "${ABI32}" -a `uname -m` = "x86_64" ] ; then
-		OPTS="-m32 ${OPTS}"
-	    fi
+	    # Check to see if we are building for a different ABI.
+	    add_abi_flag_to_opts ${OBJECTS}
 
             if [ "${ALTOPTS}" ] ; then
                 OPTS=${ALTOPTS}
@@ -387,13 +401,9 @@ case $ARCH in
 		# exptmp is removed below
 	    fi
 
-	    # Check if objects are 32-bit and we're running in 64-bit
-	    # environment.  If so, pass -m32 flag to linker.
-	    set ${OBJECTS}
-	    ABI32=`file $1 | grep 32-bit`
-	    if [ "${ABI32}" -a `uname -m` = "x86_64" ] ; then
-		OPTS="-m32 ${OPTS}"
-	    fi
+	    # Check to see if we are building for a different ABI.
+	    add_abi_flag_to_opts ${OBJECTS}
+
             if [ "${ALTOPTS}" ] ; then
                 OPTS=${ALTOPTS}
             fi
@@ -571,20 +581,6 @@ case $ARCH in
 	    ${LINK} ${OPTS} ${LDFLAGS} -o ${SHLIB} ${OBJECTS} ${DEPS}
 	    ln -sf ${SHLIB} "lib${LIBNAME}.so"
 	    FINAL_LIBS="${SHLIB} lib${LIBNAME}.so"
-	fi
-	;;
-
-    'NetBSD')
-        if [ $STATIC = 1 ] ; then
-	    LIBNAME="lib${LIBNAME}_pic.a"
-	    echo "mklib: Making NetBSD PIC static library: " ${LIBNAME}
-	    FINAL_LIBS=`make_ar_static_lib cq 1 ${LIBNAME} ${OBJECTS}`
-	else
-	    LIBNAME="lib${LIBNAME}.so.${MAJOR}.${MINOR}"
-	    echo "mklib: Making NetBSD PIC shared library: " ${LIBNAME}
-	    rm -f ${LIBNAME}
-	    ld -x -Bshareable -Bforcearchive -o ${LIBNAME} ${OBJECTS}
-	    FINAL_LIBS=${LIBNAME}
 	fi
 	;;
 
@@ -781,9 +777,8 @@ case $ARCH in
                 OPTS="${OPTS} -exported_symbols_list ${EXPORTS}"
             fi
 
-            LINKNAME="lib${LIBNAME}.${MAJOR}.${LIBSUFFIX}"
-            LINKNAME2="lib${LIBNAME}.${LIBSUFFIX}"
-            LIBNAME="lib${LIBNAME}.${MAJOR}.${MINOR}.${LIBSUFFIX}"
+            LINKNAME="lib${LIBNAME}.${LIBSUFFIX}"
+            LIBNAME="lib${LIBNAME}.${MAJOR}.${LIBSUFFIX}"
 
 	    # examine first object to determine ABI
     	    set ${OBJECTS}
@@ -796,9 +791,6 @@ case $ARCH in
                 OPTS=${ALTOPTS}
             fi
 
-	    # XXX can we always add -isysroot /Developer/SDKs/MacOSX10.4u.sdk
-	    # to OPTS here?
-
 	    # determine linker
 	    if [ $CPLUSPLUS = 1 ] ; then
 		LINK="g++"
@@ -810,8 +802,7 @@ case $ARCH in
 
             ${LINK} ${OPTS} ${LDFLAGS} -o ${LIBNAME} ${OBJECTS} ${DEPS}
             ln -s ${LIBNAME} ${LINKNAME}
-            ln -s ${LIBNAME} ${LINKNAME2}
-            FINAL_LIBS="${LIBNAME} ${LINKNAME} ${LINKNAME2}"
+            FINAL_LIBS="${LIBNAME} ${LINKNAME}"
         fi
         ;;
 
@@ -819,22 +810,6 @@ case $ARCH in
 	LIBNAME="lib${LIBNAME}.a"
 	echo "mklib: Making LynxOS static library: " ${LIBNAME}
         FINAL_LIBS=`make_ar_static_lib -ru 0 ${LIBNAME} ${OBJECTS}`
-	;;
-
-    'BeOS')
-        if [ $STATIC = 1 ] ; then
-            LIBNAME="lib${LIBNAME}.a"
-            echo "mklib: Making BeOS static library: " ${LIBNAME}
-            FINAL_LIBS=`make_ar_static_lib -cru 0 ${LIBNAME} ${OBJECTS}`
-        else
-	    LIBNAME="lib${LIBNAME}.so"
-	    echo "mklib: Making BeOS shared library: " ${LIBNAME}
-	    gcc -nostart -Xlinker "-soname=${LIBNAME}" -L/Be/develop/lib/x86 -lbe ${DEPS} ${OBJECTS} -o "${LIBNAME}"
-	    mimeset -f "${LIBNAME}"
-	    # XXX remove the Mesa3D stuff here since mklib isn't mesa-specific.
-	    setversion "${LIBNAME}" -app ${MAJOR} ${MINOR} ${PATCH} -short "Powered by Mesa3D!" -long "Powered by Mesa3D!"
-	fi
-	FINAL_LIBS=${LIBNAME}
 	;;
 
     'QNX')
@@ -992,6 +967,43 @@ case $ARCH in
             FINAL_BINS="${CYGNAME}-${MAJOR}.dll"
         fi
         fi
+	;;
+
+	'Haiku')
+		if [ $STATIC = 1 ] ; then
+			LIBNAME="lib${LIBNAME}.a"
+			if [ "x$LINK" = "x" ] ; then
+				# -linker was not specified so set default link command now
+				if [ $CPLUSPLUS = 1 ] ; then
+					LINK=g++
+				else
+					LINK=gcc
+				fi
+			fi
+
+			OPTS="-ru"
+			if [ "${ALTOPTS}" ] ; then
+				OPTS=${ALTOPTS}
+			fi
+
+			echo "mklib: Making static library for Haiku: " ${LIBNAME}
+
+			# expand .a into .o files
+			NEW_OBJECTS=`expand_archives ${LIBNAME}.obj $OBJECTS`
+
+			# make static lib
+			FINAL_LIBS=`make_ar_static_lib ${OPTS} 1 ${LIBNAME} ${NEW_OBJECTS}`
+
+			# remove temporary extracted .o files
+			rm -rf ${LIBNAME}.obj
+		else
+			LIBNAME="lib${LIBNAME}.so"  # prefix with "lib", suffix with ".so"
+			OPTS="-shared"
+
+			echo "mklib: Making shared library for Haiku: " ${LIBNAME}
+			${LINK} ${OPTS} ${LDFLAGS} ${OBJECTS} ${DEPS} -o ${LIBNAME}
+			FINAL_LIBS="${LIBNAME}"
+		fi
 	;;
 
     'example')

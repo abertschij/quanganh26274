@@ -93,8 +93,11 @@ static GLuint get_texcoord_mask( GLuint tex_idx )
    case TEXTURE_1D_INDEX:
       return WRITEMASK_X;
    case TEXTURE_2D_INDEX:
+   case TEXTURE_1D_ARRAY_INDEX:
+   case TEXTURE_EXTERNAL_INDEX:
       return WRITEMASK_XY;
    case TEXTURE_3D_INDEX:
+   case TEXTURE_2D_ARRAY_INDEX:
       return WRITEMASK_XYZ;
    case TEXTURE_CUBE_INDEX:
       return WRITEMASK_XYZ;
@@ -128,8 +131,7 @@ void brw_wm_pass1( struct brw_wm_compile *c )
       if (inst->opcode == WM_FB_WRITE) {
 	 track_arg(c, inst, 0, WRITEMASK_XYZW); 
 	 track_arg(c, inst, 1, WRITEMASK_XYZW); 
-	 if (c->key.source_depth_to_render_target &&
-	     c->key.computes_depth)
+	 if (c->source_depth_to_render_target && c->computes_depth)
 	    track_arg(c, inst, 2, WRITEMASK_Z); 
 	 else
 	    track_arg(c, inst, 2, 0); 
@@ -281,7 +283,6 @@ void brw_wm_pass1( struct brw_wm_compile *c )
 
       case OPCODE_DST:
       case WM_FRONTFACING:
-      case OPCODE_KIL_NV:
       default:
 	 break;
       }
@@ -291,7 +292,7 @@ void brw_wm_pass1( struct brw_wm_compile *c )
       track_arg(c, inst, 2, read2);
    }
 
-   if (INTEL_DEBUG & DEBUG_WM) {
+   if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
       brw_wm_print_program(c, "pass1");
    }
 }

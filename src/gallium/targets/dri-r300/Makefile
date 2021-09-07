@@ -6,7 +6,6 @@ LIBNAME = r300_dri.so
 PIPE_DRIVERS = \
 	$(TOP)/src/gallium/state_trackers/dri/drm/libdridrm.a \
 	$(TOP)/src/gallium/winsys/radeon/drm/libradeonwinsys.a \
-	$(TOP)/src/gallium/drivers/softpipe/libsoftpipe.a \
 	$(TOP)/src/gallium/drivers/galahad/libgalahad.a \
 	$(TOP)/src/gallium/drivers/trace/libtrace.a \
 	$(TOP)/src/gallium/drivers/rbug/librbug.a \
@@ -22,6 +21,6 @@ DRIVER_DEFINES = \
 
 include ../Makefile.dri
 
-DRI_LIB_DEPS += -ldrm_radeon
+GALLIUM_DRI_LIB_DEPS += $(RADEON_LIBS)
 
 symlinks:

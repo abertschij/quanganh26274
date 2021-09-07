@@ -57,9 +57,10 @@ static GLuint translate_fill( GLenum mode )
 
 static void update_raster_state( struct st_context *st )
 {
-   GLcontext *ctx = st->ctx;
+   struct gl_context *ctx = st->ctx;
    struct pipe_rasterizer_state *raster = &st->state.rasterizer;
    const struct gl_vertex_program *vertProg = ctx->VertexProgram._Current;
+   const struct gl_fragment_program *fragProg = ctx->FragmentProgram._Current;
    uint i;
 
    memset(raster, 0, sizeof(*raster));
@@ -69,14 +70,16 @@ static void update_raster_state( struct st_context *st )
    {
       raster->front_ccw = (ctx->Polygon.FrontFace == GL_CCW);
 
-      /* XXX
-       * I think the intention here is that user-created framebuffer objects
-       * use Y=0=TOP layout instead of OpenGL's normal Y=0=bottom layout.
-       * Flipping Y changes CW to CCW and vice-versa.
-       * But this is an implementation/driver-specific artifact - remove...
+      /*
+       * Gallium's surfaces are Y=0=TOP orientation.  OpenGL is the
+       * opposite.  Window system surfaces are Y=0=TOP.  Mesa's FBOs
+       * must match OpenGL conventions so FBOs use Y=0=BOTTOM.  In that
+       * case, we must invert Y and flip the notion of front vs. back.
        */
-      if (ctx->DrawBuffer && ctx->DrawBuffer->Name != 0)
+      if (st_fb_orientation(ctx->DrawBuffer) == Y_0_BOTTOM) {
+         /* Drawing to an FBO.  The viewport will be inverted. */
          raster->front_ccw ^= 1;
+      }
    }
 
    /* _NEW_LIGHT
@@ -87,28 +90,12 @@ static void update_raster_state( struct st_context *st )
    if (ctx->Light.ProvokingVertex == GL_FIRST_VERTEX_CONVENTION_EXT)
       raster->flatshade_first = 1;
 
-   /* _NEW_LIGHT | _NEW_PROGRAM
-    *
-    * Back-face colors can come from traditional lighting (when
-    * GL_LIGHT_MODEL_TWO_SIDE is set) or from vertex programs/shaders (when
-    * GL_VERTEX_PROGRAM_TWO_SIDE is set).  Note the logic here.
-    */
-   if (ctx->VertexProgram._Current) {
-      if (ctx->VertexProgram._Enabled ||
-          (ctx->Shader.CurrentProgram &&
-           ctx->Shader.CurrentProgram->VertexProgram &&
-           ctx->Shader.CurrentProgram->LinkStatus)) {
-         /* user-defined vertex program or shader */
-         raster->light_twoside = ctx->VertexProgram.TwoSideEnabled;
-      }
-      else {
-         /* TNL-generated program */
-         raster->light_twoside = ctx->Light.Enabled && ctx->Light.Model.TwoSide;
-      }
-   }
-   else if (ctx->Light.Enabled && ctx->Light.Model.TwoSide) {
-      raster->light_twoside = 1;
-   }
+   /* _NEW_LIGHT | _NEW_PROGRAM */
+   raster->light_twoside = ctx->VertexProgram._TwoSideEnabled;
+
+   /*_NEW_LIGHT | _NEW_BUFFERS */
+   raster->clamp_vertex_color = !st->clamp_vert_color_in_shader &&
+                                ctx->Light._ClampVertexColor;
 
    /* _NEW_POLYGON
     */
@@ -175,17 +162,30 @@ static void update_raster_state( struct st_context *st )
    if (!ctx->Point.PointSprite && ctx->Point.SmoothFlag)
       raster->point_smooth = 1;
 
+   /* _NEW_POINT | _NEW_PROGRAM
+    */
    if (ctx->Point.PointSprite) {
+      /* origin */
       if ((ctx->Point.SpriteOrigin == GL_UPPER_LEFT) ^
           (st_fb_orientation(ctx->DrawBuffer) == Y_0_BOTTOM))
          raster->sprite_coord_mode = PIPE_SPRITE_COORD_UPPER_LEFT;
       else 
          raster->sprite_coord_mode = PIPE_SPRITE_COORD_LOWER_LEFT;
+
+      /* Coord replacement flags.  If bit 'k' is set that means
+       * that we need to replace GENERIC[k] attrib with an automatically
+       * computed texture coord.
+       */
       for (i = 0; i < MAX_TEXTURE_COORD_UNITS; i++) {
          if (ctx->Point.CoordReplace[i]) {
             raster->sprite_coord_enable |= 1 << i;
          }
       }
+      if (fragProg->Base.InputsRead & FRAG_BIT_PNTC) {
+         raster->sprite_coord_enable |=
+            1 << (FRAG_ATTRIB_PNTC - FRAG_ATTRIB_TEX0);
+      }
+
       raster->point_quad_rasterization = 1;
    }
 
@@ -237,7 +237,18 @@ static void update_raster_state( struct st_context *st )
    if (ctx->Scissor.Enabled)
       raster->scissor = 1;
 
+   /* _NEW_FRAG_CLAMP */
+   raster->clamp_fragment_color = !st->clamp_frag_color_in_shader &&
+                                  ctx->Color._ClampFragmentColor &&
+                                  !ctx->DrawBuffer->_IntegerColor;
    raster->gl_rasterization_rules = 1;
+
+   /* _NEW_RASTERIZER_DISCARD */
+   raster->rasterizer_discard = ctx->RasterDiscard;
+
+   /* _NEW_TRANSFORM */
+   raster->depth_clip = ctx->Transform.DepthClamp == GL_FALSE;
+   raster->clip_plane_enable = ctx->Transform.ClipPlanesEnabled;
 
    cso_set_rasterizer(st->cso_context, raster);
 }
@@ -252,7 +263,10 @@ const struct st_tracked_state st_update_rasterizer = {
        _NEW_POINT |
        _NEW_POLYGON |
        _NEW_PROGRAM |
-       _NEW_SCISSOR),      /* mesa state dependencies*/
+       _NEW_SCISSOR |
+       _NEW_FRAG_CLAMP |
+       _NEW_RASTERIZER_DISCARD |
+       _NEW_TRANSFORM),      /* mesa state dependencies*/
       ST_NEW_VERTEX_PROGRAM,  /* state tracker dependencies */
    },
    update_raster_state     /* update function */

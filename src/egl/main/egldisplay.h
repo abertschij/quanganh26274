@@ -1,3 +1,33 @@
+/**************************************************************************
+ *
+ * Copyright 2008 Tungsten Graphics, Inc., Cedar Park, Texas.
+ * Copyright 2009-2010 Chia-I Wu <olvaffe@gmail.com>
+ * Copyright 2010-2011 LunarG, Inc.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
 #ifndef EGLDISPLAY_INCLUDED
 #define EGLDISPLAY_INCLUDED
 
@@ -11,8 +41,11 @@
 enum _egl_platform_type {
    _EGL_PLATFORM_WINDOWS,
    _EGL_PLATFORM_X11,
+   _EGL_PLATFORM_WAYLAND,
    _EGL_PLATFORM_DRM,
    _EGL_PLATFORM_FBDEV,
+   _EGL_PLATFORM_NULL,
+   _EGL_PLATFORM_ANDROID,
 
    _EGL_NUM_PLATFORMS,
    _EGL_INVALID_PLATFORM = -1
@@ -40,6 +73,7 @@ struct _egl_resource
    /* which display the resource belongs to */
    _EGLDisplay *Display;
    EGLBoolean IsLinked;
+   EGLint RefCount;
 
    /* used to link resources of the same type */
    _EGLResource *Next;
@@ -56,6 +90,8 @@ struct _egl_extensions
    EGLBoolean MESA_drm_display;
    EGLBoolean MESA_drm_image;
 
+   EGLBoolean WL_bind_wayland_display;
+
    EGLBoolean KHR_image_base;
    EGLBoolean KHR_image_pixmap;
    EGLBoolean KHR_vg_parent_image;
@@ -67,14 +103,17 @@ struct _egl_extensions
    EGLBoolean KHR_reusable_sync;
    EGLBoolean KHR_fence_sync;
 
-   EGLBoolean KHR_surfaceless_gles1;
-   EGLBoolean KHR_surfaceless_gles2;
-   EGLBoolean KHR_surfaceless_opengl;
+   EGLBoolean KHR_surfaceless_context;
+   EGLBoolean KHR_create_context;
 
    EGLBoolean NOK_swap_region;
    EGLBoolean NOK_texture_from_pixmap;
 
-   char String[_EGL_MAX_EXTENSIONS_LEN];
+   EGLBoolean ANDROID_image_native_buffer;
+
+   EGLBoolean NV_post_sub_buffer;
+
+   EGLBoolean EXT_create_context_robustness;
 };
 
 
@@ -85,21 +124,29 @@ struct _egl_display
 
    _EGLMutex Mutex;
 
-   _EGLPlatformType Platform;
-   EGLNativeDisplayType PlatformDisplay;
+   _EGLPlatformType Platform; /**< The type of the platform display */
+   void *PlatformDisplay;     /**< A pointer to the platform display */
 
-   EGLBoolean Initialized; /**< True if the display is initialized */
-   _EGLDriver *Driver;
-   void *DriverData; /* private to driver */
+   _EGLDriver *Driver;        /**< Matched driver of the display */
+   EGLBoolean Initialized;    /**< True if the display is initialized */
 
-   int APImajor, APIminor; /**< as returned by eglInitialize() */
-   char Version[1000];     /**< initialized from APImajor/minor, DriverName */
+   /* options that affect how the driver initializes the display */
+   struct {
+      EGLBoolean TestOnly;    /**< Driver should not set fields when true */
+      EGLBoolean UseFallback; /**< Use fallback driver (sw or less features) */
+   } Options;
 
-   /** Bitmask of supported APIs (EGL_xx_BIT) set by the driver during init */
-   EGLint ClientAPIsMask;
-   char ClientAPIs[1000];   /**< updated by eglQueryString */
+   /* these fields are set by the driver during init */
+   void *DriverData;          /**< Driver private data */
+   EGLint VersionMajor;       /**< EGL major version */
+   EGLint VersionMinor;       /**< EGL minor version */
+   EGLint ClientAPIs;         /**< Bitmask of APIs supported (EGL_xxx_BIT) */
+   _EGLExtensions Extensions; /**< Extensions supported */
 
-   _EGLExtensions Extensions;
+   /* these fields are derived from above */
+   char VersionString[1000];                       /**< EGL_VERSION */
+   char ClientAPIsString[1000];                    /**< EGL_CLIENT_APIS */
+   char ExtensionsString[_EGL_MAX_EXTENSIONS_LEN]; /**< EGL_EXTENSIONS */
 
    _EGLArray *Screens;
    _EGLArray *Configs;
@@ -110,7 +157,7 @@ struct _egl_display
 
 
 extern _EGLPlatformType
-_eglGetNativePlatform(void);
+_eglGetNativePlatform(EGLNativeDisplayType nativeDisplay);
 
 
 extern void
@@ -118,7 +165,7 @@ _eglFiniDisplay(void);
 
 
 extern _EGLDisplay *
-_eglFindDisplay(_EGLPlatformType plat, EGLNativeDisplayType plat_dpy);
+_eglFindDisplay(_EGLPlatformType plat, void *plat_dpy);
 
 
 PUBLIC void
@@ -162,7 +209,19 @@ _eglGetDisplayHandle(_EGLDisplay *dpy)
 
 
 extern void
-_eglLinkResource(_EGLResource *res, _EGLResourceType type, _EGLDisplay *dpy);
+_eglInitResource(_EGLResource *res, EGLint size, _EGLDisplay *dpy);
+
+
+PUBLIC void
+_eglGetResource(_EGLResource *res);
+
+
+PUBLIC EGLBoolean
+_eglPutResource(_EGLResource *res);
+
+
+extern void
+_eglLinkResource(_EGLResource *res, _EGLResourceType type);
 
 
 extern void

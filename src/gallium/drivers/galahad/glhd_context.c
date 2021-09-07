@@ -37,7 +37,7 @@
 
 
 static void
-galahad_destroy(struct pipe_context *_pipe)
+galahad_context_destroy(struct pipe_context *_pipe)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
@@ -48,7 +48,7 @@ galahad_destroy(struct pipe_context *_pipe)
 }
 
 static void
-galahad_draw_vbo(struct pipe_context *_pipe,
+galahad_context_draw_vbo(struct pipe_context *_pipe,
                  const struct pipe_draw_info *info)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -62,7 +62,7 @@ galahad_draw_vbo(struct pipe_context *_pipe,
 }
 
 static struct pipe_query *
-galahad_create_query(struct pipe_context *_pipe,
+galahad_context_create_query(struct pipe_context *_pipe,
                       unsigned query_type)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -83,7 +83,7 @@ galahad_create_query(struct pipe_context *_pipe,
 }
 
 static void
-galahad_destroy_query(struct pipe_context *_pipe,
+galahad_context_destroy_query(struct pipe_context *_pipe,
                        struct pipe_query *query)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -94,7 +94,7 @@ galahad_destroy_query(struct pipe_context *_pipe,
 }
 
 static void
-galahad_begin_query(struct pipe_context *_pipe,
+galahad_context_begin_query(struct pipe_context *_pipe,
                      struct pipe_query *query)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -105,7 +105,7 @@ galahad_begin_query(struct pipe_context *_pipe,
 }
 
 static void
-galahad_end_query(struct pipe_context *_pipe,
+galahad_context_end_query(struct pipe_context *_pipe,
                    struct pipe_query *query)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -116,10 +116,10 @@ galahad_end_query(struct pipe_context *_pipe,
 }
 
 static boolean
-galahad_get_query_result(struct pipe_context *_pipe,
+galahad_context_get_query_result(struct pipe_context *_pipe,
                           struct pipe_query *query,
                           boolean wait,
-                          void *result)
+                          union pipe_query_result *result)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
@@ -131,7 +131,7 @@ galahad_get_query_result(struct pipe_context *_pipe,
 }
 
 static void *
-galahad_create_blend_state(struct pipe_context *_pipe,
+galahad_context_create_blend_state(struct pipe_context *_pipe,
                             const struct pipe_blend_state *blend)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -149,7 +149,7 @@ galahad_create_blend_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_bind_blend_state(struct pipe_context *_pipe,
+galahad_context_bind_blend_state(struct pipe_context *_pipe,
                           void *blend)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -160,7 +160,7 @@ galahad_bind_blend_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_delete_blend_state(struct pipe_context *_pipe,
+galahad_context_delete_blend_state(struct pipe_context *_pipe,
                             void *blend)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -171,7 +171,7 @@ galahad_delete_blend_state(struct pipe_context *_pipe,
 }
 
 static void *
-galahad_create_sampler_state(struct pipe_context *_pipe,
+galahad_context_create_sampler_state(struct pipe_context *_pipe,
                               const struct pipe_sampler_state *sampler)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -182,45 +182,54 @@ galahad_create_sampler_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_bind_fragment_sampler_states(struct pipe_context *_pipe,
-                                      unsigned num_samplers,
-                                      void **samplers)
-{
-   struct galahad_context *glhd_pipe = galahad_context(_pipe);
-   struct pipe_context *pipe = glhd_pipe->pipe;
-
-   if (num_samplers > PIPE_MAX_SAMPLERS) {
-      glhd_error("%u fragment samplers requested, "
-         "but only %u are permitted by API",
-         num_samplers, PIPE_MAX_SAMPLERS);
-   }
-
-   pipe->bind_fragment_sampler_states(pipe,
-                                      num_samplers,
-                                      samplers);
-}
-
-static void
-galahad_bind_vertex_sampler_states(struct pipe_context *_pipe,
+galahad_context_bind_sampler_states(struct pipe_context *_pipe,
+                                    unsigned shader,
+                                    unsigned start,
                                     unsigned num_samplers,
                                     void **samplers)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
 
-   if (num_samplers > PIPE_MAX_VERTEX_SAMPLERS) {
-      glhd_error("%u vertex samplers requested, "
+   if (num_samplers > PIPE_MAX_SAMPLERS) {
+      glhd_error("%u samplers requested, "
          "but only %u are permitted by API",
-         num_samplers, PIPE_MAX_VERTEX_SAMPLERS);
+         num_samplers, PIPE_MAX_SAMPLERS);
    }
 
-   pipe->bind_vertex_sampler_states(pipe,
-                                    num_samplers,
-                                    samplers);
+   switch (shader) {
+   case PIPE_SHADER_VERTEX:
+      pipe->bind_vertex_sampler_states(pipe, num_samplers, samplers);
+      break;
+   case PIPE_SHADER_FRAGMENT:
+      pipe->bind_fragment_sampler_states(pipe, num_samplers, samplers);
+      break;
+   default:
+      assert(0);
+   }
 }
 
 static void
-galahad_delete_sampler_state(struct pipe_context *_pipe,
+galahad_context_bind_vertex_sampler_states(struct pipe_context *_pipe,
+                                           unsigned num_samplers,
+                                           void **samplers)
+{
+   galahad_context_bind_sampler_states(_pipe, PIPE_SHADER_VERTEX,
+                                       0, num_samplers, samplers);
+}
+
+static void
+galahad_context_bind_fragment_sampler_states(struct pipe_context *_pipe,
+                                             unsigned num_samplers,
+                                             void **samplers)
+{
+   galahad_context_bind_sampler_states(_pipe, PIPE_SHADER_FRAGMENT,
+                                       0, num_samplers, samplers);
+}
+
+
+static void
+galahad_context_delete_sampler_state(struct pipe_context *_pipe,
                               void *sampler)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -231,7 +240,7 @@ galahad_delete_sampler_state(struct pipe_context *_pipe,
 }
 
 static void *
-galahad_create_rasterizer_state(struct pipe_context *_pipe,
+galahad_context_create_rasterizer_state(struct pipe_context *_pipe,
                                  const struct pipe_rasterizer_state *rasterizer)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -252,7 +261,7 @@ galahad_create_rasterizer_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_bind_rasterizer_state(struct pipe_context *_pipe,
+galahad_context_bind_rasterizer_state(struct pipe_context *_pipe,
                                void *rasterizer)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -263,7 +272,7 @@ galahad_bind_rasterizer_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_delete_rasterizer_state(struct pipe_context *_pipe,
+galahad_context_delete_rasterizer_state(struct pipe_context *_pipe,
                                  void *rasterizer)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -274,7 +283,7 @@ galahad_delete_rasterizer_state(struct pipe_context *_pipe,
 }
 
 static void *
-galahad_create_depth_stencil_alpha_state(struct pipe_context *_pipe,
+galahad_context_create_depth_stencil_alpha_state(struct pipe_context *_pipe,
                                           const struct pipe_depth_stencil_alpha_state *depth_stencil_alpha)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -285,7 +294,7 @@ galahad_create_depth_stencil_alpha_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_bind_depth_stencil_alpha_state(struct pipe_context *_pipe,
+galahad_context_bind_depth_stencil_alpha_state(struct pipe_context *_pipe,
                                         void *depth_stencil_alpha)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -296,7 +305,7 @@ galahad_bind_depth_stencil_alpha_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_delete_depth_stencil_alpha_state(struct pipe_context *_pipe,
+galahad_context_delete_depth_stencil_alpha_state(struct pipe_context *_pipe,
                                           void *depth_stencil_alpha)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -307,7 +316,7 @@ galahad_delete_depth_stencil_alpha_state(struct pipe_context *_pipe,
 }
 
 static void *
-galahad_create_fs_state(struct pipe_context *_pipe,
+galahad_context_create_fs_state(struct pipe_context *_pipe,
                          const struct pipe_shader_state *fs)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -318,7 +327,7 @@ galahad_create_fs_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_bind_fs_state(struct pipe_context *_pipe,
+galahad_context_bind_fs_state(struct pipe_context *_pipe,
                        void *fs)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -329,7 +338,7 @@ galahad_bind_fs_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_delete_fs_state(struct pipe_context *_pipe,
+galahad_context_delete_fs_state(struct pipe_context *_pipe,
                          void *fs)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -340,7 +349,7 @@ galahad_delete_fs_state(struct pipe_context *_pipe,
 }
 
 static void *
-galahad_create_vs_state(struct pipe_context *_pipe,
+galahad_context_create_vs_state(struct pipe_context *_pipe,
                          const struct pipe_shader_state *vs)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -351,7 +360,7 @@ galahad_create_vs_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_bind_vs_state(struct pipe_context *_pipe,
+galahad_context_bind_vs_state(struct pipe_context *_pipe,
                        void *vs)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -362,7 +371,7 @@ galahad_bind_vs_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_delete_vs_state(struct pipe_context *_pipe,
+galahad_context_delete_vs_state(struct pipe_context *_pipe,
                          void *vs)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -374,12 +383,14 @@ galahad_delete_vs_state(struct pipe_context *_pipe,
 
 
 static void *
-galahad_create_vertex_elements_state(struct pipe_context *_pipe,
+galahad_context_create_vertex_elements_state(struct pipe_context *_pipe,
                                       unsigned num_elements,
                                       const struct pipe_vertex_element *vertex_elements)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
+
+   /* XXX check if stride lines up with element size, at least for floats */
 
    return pipe->create_vertex_elements_state(pipe,
                                              num_elements,
@@ -387,7 +398,7 @@ galahad_create_vertex_elements_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_bind_vertex_elements_state(struct pipe_context *_pipe,
+galahad_context_bind_vertex_elements_state(struct pipe_context *_pipe,
                                     void *velems)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -398,7 +409,7 @@ galahad_bind_vertex_elements_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_delete_vertex_elements_state(struct pipe_context *_pipe,
+galahad_context_delete_vertex_elements_state(struct pipe_context *_pipe,
                                       void *velems)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -409,7 +420,7 @@ galahad_delete_vertex_elements_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_blend_color(struct pipe_context *_pipe,
+galahad_context_set_blend_color(struct pipe_context *_pipe,
                          const struct pipe_blend_color *blend_color)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -420,7 +431,7 @@ galahad_set_blend_color(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_stencil_ref(struct pipe_context *_pipe,
+galahad_context_set_stencil_ref(struct pipe_context *_pipe,
                          const struct pipe_stencil_ref *stencil_ref)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -431,7 +442,7 @@ galahad_set_stencil_ref(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_clip_state(struct pipe_context *_pipe,
+galahad_context_set_clip_state(struct pipe_context *_pipe,
                         const struct pipe_clip_state *clip)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -442,7 +453,7 @@ galahad_set_clip_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_sample_mask(struct pipe_context *_pipe,
+galahad_context_set_sample_mask(struct pipe_context *_pipe,
                          unsigned sample_mask)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -453,15 +464,14 @@ galahad_set_sample_mask(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_constant_buffer(struct pipe_context *_pipe,
+galahad_context_set_constant_buffer(struct pipe_context *_pipe,
                              uint shader,
                              uint index,
-                             struct pipe_resource *_resource)
+                             struct pipe_constant_buffer *_cb)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
-   struct pipe_resource *unwrapped_resource;
-   struct pipe_resource *resource = NULL;
+   struct pipe_constant_buffer cb;
 
    if (shader >= PIPE_SHADER_TYPES) {
       glhd_error("Unknown shader type %u", shader);
@@ -477,19 +487,19 @@ galahad_set_constant_buffer(struct pipe_context *_pipe,
    }
 
    /* XXX hmm? unwrap the input state */
-   if (_resource) {
-      unwrapped_resource = galahad_resource_unwrap(_resource);
-      resource = unwrapped_resource;
+   if (_cb) {
+      cb = *_cb;
+      cb.buffer = galahad_resource_unwrap(_cb->buffer);
    }
 
    pipe->set_constant_buffer(pipe,
                              shader,
                              index,
-                             resource);
+                             _cb ? &cb : NULL);
 }
 
 static void
-galahad_set_framebuffer_state(struct pipe_context *_pipe,
+galahad_context_set_framebuffer_state(struct pipe_context *_pipe,
                                const struct pipe_framebuffer_state *_state)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -524,7 +534,7 @@ galahad_set_framebuffer_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_polygon_stipple(struct pipe_context *_pipe,
+galahad_context_set_polygon_stipple(struct pipe_context *_pipe,
                              const struct pipe_poly_stipple *poly_stipple)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -535,7 +545,7 @@ galahad_set_polygon_stipple(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_scissor_state(struct pipe_context *_pipe,
+galahad_context_set_scissor_state(struct pipe_context *_pipe,
                            const struct pipe_scissor_state *scissor)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -546,7 +556,7 @@ galahad_set_scissor_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_viewport_state(struct pipe_context *_pipe,
+galahad_context_set_viewport_state(struct pipe_context *_pipe,
                             const struct pipe_viewport_state *viewport)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
@@ -557,9 +567,11 @@ galahad_set_viewport_state(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_fragment_sampler_views(struct pipe_context *_pipe,
-                                    unsigned num,
-                                    struct pipe_sampler_view **_views)
+galahad_context_set_sampler_views(struct pipe_context *_pipe,
+                                  unsigned shader,
+                                  unsigned start,
+                                  unsigned num,
+                                  struct pipe_sampler_view **_views)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
@@ -576,34 +588,39 @@ galahad_set_fragment_sampler_views(struct pipe_context *_pipe,
       views = unwrapped_views;
    }
 
-   pipe->set_fragment_sampler_views(pipe, num, views);
-}
-
-static void
-galahad_set_vertex_sampler_views(struct pipe_context *_pipe,
-                                  unsigned num,
-                                  struct pipe_sampler_view **_views)
-{
-   struct galahad_context *glhd_pipe = galahad_context(_pipe);
-   struct pipe_context *pipe = glhd_pipe->pipe;
-   struct pipe_sampler_view *unwrapped_views[PIPE_MAX_VERTEX_SAMPLERS];
-   struct pipe_sampler_view **views = NULL;
-   unsigned i;
-
-   if (_views) {
-      for (i = 0; i < num; i++)
-         unwrapped_views[i] = galahad_sampler_view_unwrap(_views[i]);
-      for (; i < PIPE_MAX_VERTEX_SAMPLERS; i++)
-         unwrapped_views[i] = NULL;
-
-      views = unwrapped_views;
+   switch (shader) {
+   case PIPE_SHADER_VERTEX:
+      pipe->set_vertex_sampler_views(pipe, num, views);
+      break;
+   case PIPE_SHADER_FRAGMENT:
+      pipe->set_fragment_sampler_views(pipe, num, views);
+      break;
+   default:
+      assert(0);
    }
-
-   pipe->set_vertex_sampler_views(pipe, num, views);
 }
 
 static void
-galahad_set_vertex_buffers(struct pipe_context *_pipe,
+galahad_context_set_vertex_sampler_views(struct pipe_context *_pipe,
+                                         unsigned num,
+                                         struct pipe_sampler_view **_views)
+{
+   galahad_context_set_sampler_views(_pipe, PIPE_SHADER_VERTEX,
+                                     0, num, _views);
+}
+
+static void
+galahad_context_set_fragment_sampler_views(struct pipe_context *_pipe,
+                                         unsigned num,
+                                         struct pipe_sampler_view **_views)
+{
+   galahad_context_set_sampler_views(_pipe, PIPE_SHADER_FRAGMENT,
+                                     0, num, _views);
+}
+
+
+static void
+galahad_context_set_vertex_buffers(struct pipe_context *_pipe,
                             unsigned num_buffers,
                             const struct pipe_vertex_buffer *_buffers)
 {
@@ -626,31 +643,30 @@ galahad_set_vertex_buffers(struct pipe_context *_pipe,
 }
 
 static void
-galahad_set_index_buffer(struct pipe_context *_pipe,
+galahad_context_set_index_buffer(struct pipe_context *_pipe,
                          const struct pipe_index_buffer *_ib)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
    struct pipe_index_buffer unwrapped_ib, *ib = NULL;
 
-   if (_ib->buffer) {
-      switch (_ib->index_size) {
-      case 1:
-      case 2:
-      case 4:
-         break;
-      default:
-         glhd_warn("index buffer %p has unrecognized index size %d",
-               _ib->buffer, _ib->index_size);
-         break;
-      }
-   }
-   else if (_ib->offset || _ib->index_size) {
-      glhd_warn("non-indexed state with index offset %d and index size %d",
-            _ib->offset, _ib->index_size);
-   }
-
    if (_ib) {
+      if (_ib->buffer || _ib->user_buffer) {
+         switch (_ib->index_size) {
+         case 1:
+         case 2:
+         case 4:
+            break;
+         default:
+            glhd_warn("unrecognized index size %d", _ib->index_size);
+            break;
+         }
+      }
+      else if (_ib->offset || _ib->index_size) {
+         glhd_warn("non-indexed state with index offset %d and index size %d",
+               _ib->offset, _ib->index_size);
+      }
+
       unwrapped_ib = *_ib;
       unwrapped_ib.buffer = galahad_resource_unwrap(_ib->buffer);
       ib = &unwrapped_ib;
@@ -660,19 +676,15 @@ galahad_set_index_buffer(struct pipe_context *_pipe,
 }
 
 static void
-galahad_resource_copy_region(struct pipe_context *_pipe,
+galahad_context_resource_copy_region(struct pipe_context *_pipe,
                               struct pipe_resource *_dst,
-                              struct pipe_subresource subdst,
+                              unsigned dst_level,
                               unsigned dstx,
                               unsigned dsty,
                               unsigned dstz,
                               struct pipe_resource *_src,
-                              struct pipe_subresource subsrc,
-                              unsigned srcx,
-                              unsigned srcy,
-                              unsigned srcz,
-                              unsigned width,
-                              unsigned height)
+                              unsigned src_level,
+                              const struct pipe_box *src_box)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct galahad_resource *glhd_resource_dst = galahad_resource(_dst);
@@ -682,30 +694,37 @@ galahad_resource_copy_region(struct pipe_context *_pipe,
    struct pipe_resource *src = glhd_resource_src->resource;
 
    if (_dst->format != _src->format) {
-      glhd_warn("Format mismatch: Source is %s, destination is %s",
-         util_format_short_name(_src->format),
-         util_format_short_name(_dst->format));
+      const struct util_format_description *src_desc =
+         util_format_description(_src->format);
+      const struct util_format_description *dst_desc =
+         util_format_description(_dst->format);
+      if (!util_is_format_compatible(src_desc, dst_desc))
+         glhd_warn("Format mismatch: Source is %s, destination is %s",
+            src_desc->short_name,
+            dst_desc->short_name);
+   }
+
+   if ((_src->target == PIPE_BUFFER && _dst->target != PIPE_BUFFER) ||
+       (_src->target != PIPE_BUFFER && _dst->target == PIPE_BUFFER)) {
+      glhd_warn("Resource target mismatch: Source is %i, destination is %i",
+                _src->target, _dst->target);
    }
 
    pipe->resource_copy_region(pipe,
                               dst,
-                              subdst,
+                              dst_level,
                               dstx,
                               dsty,
                               dstz,
                               src,
-                              subsrc,
-                              srcx,
-                              srcy,
-                              srcz,
-                              width,
-                              height);
+                              src_level,
+                              src_box);
 }
 
 static void
-galahad_clear(struct pipe_context *_pipe,
+galahad_context_clear(struct pipe_context *_pipe,
                unsigned buffers,
-               const float *rgba,
+               const union pipe_color_union *color,
                double depth,
                unsigned stencil)
 {
@@ -714,15 +733,15 @@ galahad_clear(struct pipe_context *_pipe,
 
    pipe->clear(pipe,
                buffers,
-               rgba,
+               color,
                depth,
                stencil);
 }
 
 static void
-galahad_clear_render_target(struct pipe_context *_pipe,
+galahad_context_clear_render_target(struct pipe_context *_pipe,
                              struct pipe_surface *_dst,
-                             const float *rgba,
+                             const union pipe_color_union *color,
                              unsigned dstx, unsigned dsty,
                              unsigned width, unsigned height)
 {
@@ -733,14 +752,14 @@ galahad_clear_render_target(struct pipe_context *_pipe,
 
    pipe->clear_render_target(pipe,
                              dst,
-                             rgba,
+                             color,
                              dstx,
                              dsty,
                              width,
                              height);
 }
 static void
-galahad_clear_depth_stencil(struct pipe_context *_pipe,
+galahad_context_clear_depth_stencil(struct pipe_context *_pipe,
                              struct pipe_surface *_dst,
                              unsigned clear_flags,
                              double depth,
@@ -766,33 +785,14 @@ galahad_clear_depth_stencil(struct pipe_context *_pipe,
 }
 
 static void
-galahad_flush(struct pipe_context *_pipe,
-               unsigned flags,
+galahad_context_flush(struct pipe_context *_pipe,
                struct pipe_fence_handle **fence)
 {
    struct galahad_context *glhd_pipe = galahad_context(_pipe);
    struct pipe_context *pipe = glhd_pipe->pipe;
 
    pipe->flush(pipe,
-               flags,
                fence);
-}
-
-static unsigned int
-galahad_is_resource_referenced(struct pipe_context *_pipe,
-                                struct pipe_resource *_resource,
-                                unsigned face,
-                                unsigned level)
-{
-   struct galahad_context *glhd_pipe = galahad_context(_pipe);
-   struct galahad_resource *glhd_resource = galahad_resource(_resource);
-   struct pipe_context *pipe = glhd_pipe->pipe;
-   struct pipe_resource *resource = glhd_resource->resource;
-
-   return pipe->is_resource_referenced(pipe,
-                                       resource,
-                                       face,
-                                       level);
 }
 
 static struct pipe_sampler_view *
@@ -823,10 +823,40 @@ galahad_context_sampler_view_destroy(struct pipe_context *_pipe,
                                  galahad_sampler_view(_view));
 }
 
+static struct pipe_surface *
+galahad_context_create_surface(struct pipe_context *_pipe,
+                                struct pipe_resource *_resource,
+                                const struct pipe_surface *templ)
+{
+   struct galahad_context *glhd_context = galahad_context(_pipe);
+   struct galahad_resource *glhd_resource = galahad_resource(_resource);
+   struct pipe_context *pipe = glhd_context->pipe;
+   struct pipe_resource *resource = glhd_resource->resource;
+   struct pipe_surface *result;
+
+   result = pipe->create_surface(pipe,
+                                 resource,
+                                 templ);
+
+   if (result)
+      return galahad_surface_create(glhd_context, glhd_resource, result);
+   return NULL;
+}
+
+static void
+galahad_context_surface_destroy(struct pipe_context *_pipe,
+                                struct pipe_surface *_surface)
+{
+   galahad_surface_destroy(galahad_context(_pipe),
+                           galahad_surface(_surface));
+}
+
+
+
 static struct pipe_transfer *
 galahad_context_get_transfer(struct pipe_context *_context,
                               struct pipe_resource *_resource,
-                              struct pipe_subresource sr,
+                              unsigned level,
                               unsigned usage,
                               const struct pipe_box *box)
 {
@@ -838,7 +868,7 @@ galahad_context_get_transfer(struct pipe_context *_context,
 
    result = context->get_transfer(context,
                                   resource,
-                                  sr,
+                                  level,
                                   usage,
                                   box);
 
@@ -915,7 +945,7 @@ galahad_context_transfer_unmap(struct pipe_context *_context,
 static void
 galahad_context_transfer_inline_write(struct pipe_context *_context,
                                        struct pipe_resource *_resource,
-                                       struct pipe_subresource sr,
+                                       unsigned level,
                                        unsigned usage,
                                        const struct pipe_box *box,
                                        const void *data,
@@ -929,12 +959,24 @@ galahad_context_transfer_inline_write(struct pipe_context *_context,
 
    context->transfer_inline_write(context,
                                   resource,
-                                  sr,
+                                  level,
                                   usage,
                                   box,
                                   data,
                                   stride,
                                   slice_stride);
+}
+
+
+static void
+galahad_context_render_condition(struct pipe_context *_context,
+                                 struct pipe_query *query,
+                                 uint mode)
+{
+   struct galahad_context *glhd_context = galahad_context(_context);
+   struct pipe_context *context = glhd_context->pipe;
+
+   context->render_condition(context, query, mode);
 }
 
 
@@ -949,71 +991,97 @@ galahad_context_create(struct pipe_screen *_screen, struct pipe_context *pipe)
       return NULL;
    }
 
-   glhd_pipe->base.winsys = NULL;
    glhd_pipe->base.screen = _screen;
    glhd_pipe->base.priv = pipe->priv; /* expose wrapped data */
    glhd_pipe->base.draw = NULL;
 
-   glhd_pipe->base.destroy = galahad_destroy;
-   glhd_pipe->base.draw_vbo = galahad_draw_vbo;
-   glhd_pipe->base.create_query = galahad_create_query;
-   glhd_pipe->base.destroy_query = galahad_destroy_query;
-   glhd_pipe->base.begin_query = galahad_begin_query;
-   glhd_pipe->base.end_query = galahad_end_query;
-   glhd_pipe->base.get_query_result = galahad_get_query_result;
-   glhd_pipe->base.create_blend_state = galahad_create_blend_state;
-   glhd_pipe->base.bind_blend_state = galahad_bind_blend_state;
-   glhd_pipe->base.delete_blend_state = galahad_delete_blend_state;
-   glhd_pipe->base.create_sampler_state = galahad_create_sampler_state;
-   glhd_pipe->base.bind_fragment_sampler_states = galahad_bind_fragment_sampler_states;
-   glhd_pipe->base.bind_vertex_sampler_states = galahad_bind_vertex_sampler_states;
-   glhd_pipe->base.delete_sampler_state = galahad_delete_sampler_state;
-   glhd_pipe->base.create_rasterizer_state = galahad_create_rasterizer_state;
-   glhd_pipe->base.bind_rasterizer_state = galahad_bind_rasterizer_state;
-   glhd_pipe->base.delete_rasterizer_state = galahad_delete_rasterizer_state;
-   glhd_pipe->base.create_depth_stencil_alpha_state = galahad_create_depth_stencil_alpha_state;
-   glhd_pipe->base.bind_depth_stencil_alpha_state = galahad_bind_depth_stencil_alpha_state;
-   glhd_pipe->base.delete_depth_stencil_alpha_state = galahad_delete_depth_stencil_alpha_state;
-   glhd_pipe->base.create_fs_state = galahad_create_fs_state;
-   glhd_pipe->base.bind_fs_state = galahad_bind_fs_state;
-   glhd_pipe->base.delete_fs_state = galahad_delete_fs_state;
-   glhd_pipe->base.create_vs_state = galahad_create_vs_state;
-   glhd_pipe->base.bind_vs_state = galahad_bind_vs_state;
-   glhd_pipe->base.delete_vs_state = galahad_delete_vs_state;
-   glhd_pipe->base.create_vertex_elements_state = galahad_create_vertex_elements_state;
-   glhd_pipe->base.bind_vertex_elements_state = galahad_bind_vertex_elements_state;
-   glhd_pipe->base.delete_vertex_elements_state = galahad_delete_vertex_elements_state;
-   glhd_pipe->base.set_blend_color = galahad_set_blend_color;
-   glhd_pipe->base.set_stencil_ref = galahad_set_stencil_ref;
-   glhd_pipe->base.set_clip_state = galahad_set_clip_state;
-   glhd_pipe->base.set_sample_mask = galahad_set_sample_mask;
-   glhd_pipe->base.set_constant_buffer = galahad_set_constant_buffer;
-   glhd_pipe->base.set_framebuffer_state = galahad_set_framebuffer_state;
-   glhd_pipe->base.set_polygon_stipple = galahad_set_polygon_stipple;
-   glhd_pipe->base.set_scissor_state = galahad_set_scissor_state;
-   glhd_pipe->base.set_viewport_state = galahad_set_viewport_state;
-   glhd_pipe->base.set_fragment_sampler_views = galahad_set_fragment_sampler_views;
-   glhd_pipe->base.set_vertex_sampler_views = galahad_set_vertex_sampler_views;
-   glhd_pipe->base.set_vertex_buffers = galahad_set_vertex_buffers;
-   glhd_pipe->base.set_index_buffer = galahad_set_index_buffer;
-   glhd_pipe->base.resource_copy_region = galahad_resource_copy_region;
-   glhd_pipe->base.clear = galahad_clear;
-   glhd_pipe->base.clear_render_target = galahad_clear_render_target;
-   glhd_pipe->base.clear_depth_stencil = galahad_clear_depth_stencil;
-   glhd_pipe->base.flush = galahad_flush;
-   glhd_pipe->base.is_resource_referenced = galahad_is_resource_referenced;
-   glhd_pipe->base.create_sampler_view = galahad_context_create_sampler_view;
-   glhd_pipe->base.sampler_view_destroy = galahad_context_sampler_view_destroy;
-   glhd_pipe->base.get_transfer = galahad_context_get_transfer;
-   glhd_pipe->base.transfer_destroy = galahad_context_transfer_destroy;
-   glhd_pipe->base.transfer_map = galahad_context_transfer_map;
-   glhd_pipe->base.transfer_unmap = galahad_context_transfer_unmap;
-   glhd_pipe->base.transfer_flush_region = galahad_context_transfer_flush_region;
-   glhd_pipe->base.transfer_inline_write = galahad_context_transfer_inline_write;
+   glhd_pipe->base.destroy = galahad_context_destroy;
+
+#define GLHD_PIPE_INIT(_member) \
+   glhd_pipe->base . _member = pipe -> _member ? galahad_context_ ## _member : NULL
+
+   GLHD_PIPE_INIT(draw_vbo);
+   GLHD_PIPE_INIT(render_condition);
+   GLHD_PIPE_INIT(create_query);
+   GLHD_PIPE_INIT(destroy_query);
+   GLHD_PIPE_INIT(begin_query);
+   GLHD_PIPE_INIT(end_query);
+   GLHD_PIPE_INIT(get_query_result);
+   GLHD_PIPE_INIT(create_blend_state);
+   GLHD_PIPE_INIT(bind_blend_state);
+   GLHD_PIPE_INIT(delete_blend_state);
+   GLHD_PIPE_INIT(create_sampler_state);
+   GLHD_PIPE_INIT(bind_fragment_sampler_states);
+   GLHD_PIPE_INIT(bind_vertex_sampler_states);
+   //GLHD_PIPE_INIT(bind_geometry_sampler_states);
+   //GLHD_PIPE_INIT(bind_compute_sampler_states);
+   GLHD_PIPE_INIT(delete_sampler_state);
+   GLHD_PIPE_INIT(create_rasterizer_state);
+   GLHD_PIPE_INIT(bind_rasterizer_state);
+   GLHD_PIPE_INIT(delete_rasterizer_state);
+   GLHD_PIPE_INIT(create_depth_stencil_alpha_state);
+   GLHD_PIPE_INIT(bind_depth_stencil_alpha_state);
+   GLHD_PIPE_INIT(delete_depth_stencil_alpha_state);
+   GLHD_PIPE_INIT(create_fs_state);
+   GLHD_PIPE_INIT(bind_fs_state);
+   GLHD_PIPE_INIT(delete_fs_state);
+   GLHD_PIPE_INIT(create_vs_state);
+   GLHD_PIPE_INIT(bind_vs_state);
+   GLHD_PIPE_INIT(delete_vs_state);
+   //GLHD_PIPE_INIT(create_gs_state);
+   //GLHD_PIPE_INIT(bind_gs_state);
+   //GLHD_PIPE_INIT(delete_gs_state);
+   GLHD_PIPE_INIT(create_vertex_elements_state);
+   GLHD_PIPE_INIT(bind_vertex_elements_state);
+   GLHD_PIPE_INIT(delete_vertex_elements_state);
+   GLHD_PIPE_INIT(set_blend_color);
+   GLHD_PIPE_INIT(set_stencil_ref);
+   GLHD_PIPE_INIT(set_sample_mask);
+   GLHD_PIPE_INIT(set_clip_state);
+   GLHD_PIPE_INIT(set_constant_buffer);
+   GLHD_PIPE_INIT(set_framebuffer_state);
+   GLHD_PIPE_INIT(set_polygon_stipple);
+   GLHD_PIPE_INIT(set_scissor_state);
+   GLHD_PIPE_INIT(set_viewport_state);
+   GLHD_PIPE_INIT(set_fragment_sampler_views);
+   GLHD_PIPE_INIT(set_vertex_sampler_views);
+   //GLHD_PIPE_INIT(set_geometry_sampler_views);
+   //GLHD_PIPE_INIT(set_compute_sampler_views);
+   //GLHD_PIPE_INIT(set_shader_resources);
+   GLHD_PIPE_INIT(set_vertex_buffers);
+   GLHD_PIPE_INIT(set_index_buffer);
+   //GLHD_PIPE_INIT(create_stream_output_target);
+   //GLHD_PIPE_INIT(stream_output_target_destroy);
+   //GLHD_PIPE_INIT(set_stream_output_targets);
+   GLHD_PIPE_INIT(resource_copy_region);
+   //GLHD_PIPE_INIT(resource_resolve);
+   GLHD_PIPE_INIT(clear);
+   GLHD_PIPE_INIT(clear_render_target);
+   GLHD_PIPE_INIT(clear_depth_stencil);
+   GLHD_PIPE_INIT(flush);
+   GLHD_PIPE_INIT(create_sampler_view);
+   GLHD_PIPE_INIT(sampler_view_destroy);
+   GLHD_PIPE_INIT(create_surface);
+   GLHD_PIPE_INIT(surface_destroy);
+   GLHD_PIPE_INIT(get_transfer);
+   GLHD_PIPE_INIT(transfer_destroy);
+   GLHD_PIPE_INIT(transfer_map);
+   GLHD_PIPE_INIT(transfer_flush_region);
+   GLHD_PIPE_INIT(transfer_unmap);
+   GLHD_PIPE_INIT(transfer_inline_write);
+   //GLHD_PIPE_INIT(texture_barrier);
+   //GLHD_PIPE_INIT(create_video_decoder);
+   //GLHD_PIPE_INIT(create_video_buffer);
+   //GLHD_PIPE_INIT(create_compute_state);
+   //GLHD_PIPE_INIT(bind_compute_state);
+   //GLHD_PIPE_INIT(delete_compute_state);
+   //GLHD_PIPE_INIT(set_compute_resources);
+   //GLHD_PIPE_INIT(set_global_binding);
+   //GLHD_PIPE_INIT(launch_grid);
+
+#undef GLHD_PIPE_INIT
 
    glhd_pipe->pipe = pipe;
-
-   glhd_warn("Created context %p", glhd_pipe);
 
    return &glhd_pipe->base;
 }

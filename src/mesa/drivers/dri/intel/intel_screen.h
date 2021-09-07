@@ -28,6 +28,7 @@
 #ifndef _INTEL_INIT_H_
 #define _INTEL_INIT_H_
 
+#include <stdbool.h>
 #include <sys/time.h>
 #include "dri_util.h"
 #include "intel_bufmgr.h"
@@ -37,14 +38,29 @@
 struct intel_screen
 {
    int deviceID;
+   int gen;
 
    int logTextureGranularity;
 
    __DRIscreen *driScrnPriv;
 
-   GLboolean no_hw;
+   bool no_hw;
+   GLuint relaxed_relocations;
 
-   GLboolean no_vbo;
+   /*
+    * The hardware hiz and separate stencil fields are needed in intel_screen,
+    * rather than solely in intel_context, because glXCreatePbuffer and
+    * glXCreatePixmap are not passed a GLXContext.
+    */
+   bool hw_has_separate_stencil;
+   bool hw_must_use_separate_stencil;
+
+   bool kernel_has_gen7_sol_reset;
+
+   bool hw_has_llc;
+   bool hw_has_swizzling;
+
+   bool no_vbo;
    dri_bufmgr *bufmgr;
    struct _mesa_HashTable *named_regions;
 
@@ -54,7 +70,7 @@ struct intel_screen
    driOptionCache optionCache;
 };
 
-extern GLboolean intelMapScreenRegions(__DRIscreen * sPriv);
+extern bool intelMapScreenRegions(__DRIscreen * sPriv);
 
 extern void intelDestroyContext(__DRIcontext * driContextPriv);
 
@@ -64,5 +80,8 @@ extern GLboolean
 intelMakeCurrent(__DRIcontext * driContextPriv,
                  __DRIdrawable * driDrawPriv,
                  __DRIdrawable * driReadPriv);
+
+double get_time(void);
+void aub_dump_bmp(struct gl_context *ctx);
 
 #endif

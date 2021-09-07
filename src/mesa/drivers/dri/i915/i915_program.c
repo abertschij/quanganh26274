@@ -442,14 +442,16 @@ i915_emit_param4fv(struct i915_fragment_program * p, const GLfloat * values)
 void
 i915_program_error(struct i915_fragment_program *p, const char *fmt, ...)
 {
-   va_list args;
+   if (unlikely((INTEL_DEBUG & (DEBUG_WM | DEBUG_PERF)) != 0)) {
+      va_list args;
 
-   fprintf(stderr, "i915_program_error: ");
-   va_start(args, fmt);
-   vfprintf(stderr, fmt, args);
-   va_end(args);
+      fprintf(stderr, "i915_program_error: ");
+      va_start(args, fmt);
+      vfprintf(stderr, fmt, args);
+      va_end(args);
 
-   fprintf(stderr, "\n");
+      fprintf(stderr, "\n");
+   }
    p->error = 1;
 }
 
@@ -457,7 +459,7 @@ i915_program_error(struct i915_fragment_program *p, const char *fmt, ...)
 void
 i915_init_program(struct i915_context *i915, struct i915_fragment_program *p)
 {
-   GLcontext *ctx = &i915->intel.ctx;
+   struct gl_context *ctx = &i915->intel.ctx;
 
    p->translated = 0;
    p->params_uptodate = 0;

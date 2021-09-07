@@ -31,12 +31,63 @@
 #include "util/u_memory.h"
 #include "util/u_format.h"
 #include "util/u_string.h"
+#include "util/u_atomic.h"
 
 #include "egl_g3d.h"
 #include "egl_g3d_api.h"
 #include "egl_g3d_st.h"
 #include "egl_g3d_loader.h"
 #include "native.h"
+
+static void
+egl_g3d_invalid_surface(struct native_display *ndpy,
+                        struct native_surface *nsurf,
+                        unsigned int seq_num)
+{
+   /* XXX not thread safe? */
+   struct egl_g3d_surface *gsurf = egl_g3d_surface(nsurf->user_data);
+
+   if (gsurf && gsurf->stfbi)
+      p_atomic_inc(&gsurf->stfbi->stamp);
+}
+
+static struct pipe_screen *
+egl_g3d_new_drm_screen(struct native_display *ndpy, const char *name, int fd)
+{
+   _EGLDisplay *dpy = (_EGLDisplay *) ndpy->user_data;
+   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
+   return gdpy->loader->create_drm_screen(name, fd);
+}
+
+static struct pipe_screen *
+egl_g3d_new_sw_screen(struct native_display *ndpy, struct sw_winsys *ws)
+{
+   _EGLDisplay *dpy = (_EGLDisplay *) ndpy->user_data;
+   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
+   return gdpy->loader->create_sw_screen(ws);
+}
+
+static struct pipe_resource *
+egl_g3d_lookup_egl_image(struct native_display *ndpy, void *egl_image)
+{
+   _EGLDisplay *dpy = (_EGLDisplay *) ndpy->user_data;
+   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
+   struct st_egl_image img;
+   struct pipe_resource *resource = NULL;
+
+   memset(&img, 0, sizeof(img));
+   if (gdpy->smapi->get_egl_image(gdpy->smapi, egl_image, &img))
+      resource = img.texture;
+
+   return resource;
+}
+
+static const struct native_event_handler egl_g3d_native_event_handler = {
+   egl_g3d_invalid_surface,
+   egl_g3d_new_drm_screen,
+   egl_g3d_new_sw_screen,
+   egl_g3d_lookup_egl_image
+};
 
 /**
  * Get the native platform.
@@ -54,25 +105,43 @@ egl_g3d_get_platform(_EGLDriver *drv, _EGLPlatformType plat)
       case _EGL_PLATFORM_WINDOWS:
          plat_name = "Windows";
 #ifdef HAVE_GDI_BACKEND
-         nplat = native_get_gdi_platform();
+         nplat = native_get_gdi_platform(&egl_g3d_native_event_handler);
 #endif
          break;
       case _EGL_PLATFORM_X11:
          plat_name = "X11";
 #ifdef HAVE_X11_BACKEND
-         nplat = native_get_x11_platform();
+         nplat = native_get_x11_platform(&egl_g3d_native_event_handler);
+#endif
+	 break;
+      case _EGL_PLATFORM_WAYLAND:
+         plat_name = "wayland";
+#ifdef HAVE_WAYLAND_BACKEND
+         nplat = native_get_wayland_platform(&egl_g3d_native_event_handler);
 #endif
          break;
       case _EGL_PLATFORM_DRM:
          plat_name = "DRM";
 #ifdef HAVE_DRM_BACKEND
-         nplat = native_get_drm_platform();
+         nplat = native_get_drm_platform(&egl_g3d_native_event_handler);
 #endif
          break;
       case _EGL_PLATFORM_FBDEV:
          plat_name = "FBDEV";
 #ifdef HAVE_FBDEV_BACKEND
-         nplat = native_get_fbdev_platform();
+         nplat = native_get_fbdev_platform(&egl_g3d_native_event_handler);
+#endif
+         break;
+      case _EGL_PLATFORM_NULL:
+         plat_name = "NULL";
+#ifdef HAVE_NULL_BACKEND
+         nplat = native_get_null_platform(&egl_g3d_native_event_handler);
+#endif
+         break;
+      case _EGL_PLATFORM_ANDROID:
+         plat_name = "Android";
+#ifdef HAVE_ANDROID_BACKEND
+         nplat = native_get_android_platform(&egl_g3d_native_event_handler);
 #endif
          break;
       default:
@@ -126,24 +195,24 @@ egl_g3d_add_screens(_EGLDriver *drv, _EGLDisplay *dpy)
          continue;
       }
 
-      _eglInitScreen(&gscr->base);
-
-      for (j = 0; j < num_modes; j++) {
+      _eglInitScreen(&gscr->base, dpy, num_modes);
+      for (j = 0; j < gscr->base.NumModes; j++) {
          const struct native_mode *nmode = native_modes[j];
-         _EGLMode *mode;
+         _EGLMode *mode = &gscr->base.Modes[j];
 
-         mode = _eglAddNewMode(&gscr->base, nmode->width, nmode->height,
-               nmode->refresh_rate, nmode->desc);
-         if (!mode)
-            break;
-         /* gscr->native_modes and gscr->base.Modes should be consistent */
-         assert(mode == &gscr->base.Modes[j]);
+         mode->Width = nmode->width;
+         mode->Height = nmode->height;
+         mode->RefreshRate = nmode->refresh_rate;
+         mode->Optimal = EGL_FALSE;
+         mode->Interlaced = EGL_FALSE;
+         /* no need to strdup() */
+         mode->Name = nmode->desc;
       }
 
       gscr->native = nconn;
       gscr->native_modes = native_modes;
 
-      _eglAddScreen(dpy, &gscr->base);
+      _eglLinkScreen(&gscr->base);
    }
 
    FREE(native_connectors);
@@ -156,7 +225,9 @@ egl_g3d_add_screens(_EGLDriver *drv, _EGLDisplay *dpy)
  */
 static EGLBoolean
 init_config_attributes(_EGLConfig *conf, const struct native_config *nconf,
-                       EGLint api_mask, enum pipe_format depth_stencil_format)
+                       EGLint api_mask, enum pipe_format depth_stencil_format,
+                       EGLint preserve_buffer, EGLint max_swap_interval,
+                       EGLBoolean pre_alpha)
 {
    uint rgba[4], depth_stencil[2], buffer_size;
    EGLint surface_type;
@@ -182,66 +253,76 @@ init_config_attributes(_EGLConfig *conf, const struct native_config *nconf,
    }
 
    surface_type = 0x0;
-   if (nconf->window_bit)
-      surface_type |= EGL_WINDOW_BIT;
-   if (nconf->pixmap_bit)
-      surface_type |= EGL_PIXMAP_BIT;
+   /* pixmap surfaces should be EGL_SINGLE_BUFFER */
+   if (nconf->buffer_mask & (1 << NATIVE_ATTACHMENT_FRONT_LEFT)) {
+      if (nconf->pixmap_bit)
+         surface_type |= EGL_PIXMAP_BIT;
+   }
+   /* the others surfaces should be EGL_BACK_BUFFER (or settable) */
+   if (nconf->buffer_mask & (1 << NATIVE_ATTACHMENT_BACK_LEFT)) {
+      if (nconf->window_bit)
+         surface_type |= EGL_WINDOW_BIT;
 #ifdef EGL_MESA_screen_surface
-   if (nconf->scanout_bit)
-      surface_type |= EGL_SCREEN_BIT_MESA;
+      if (nconf->scanout_bit)
+         surface_type |= EGL_SCREEN_BIT_MESA;
 #endif
-
-   if (nconf->buffer_mask & (1 << NATIVE_ATTACHMENT_BACK_LEFT))
       surface_type |= EGL_PBUFFER_BIT;
+   }
 
-   SET_CONFIG_ATTRIB(conf, EGL_CONFORMANT, api_mask);
-   SET_CONFIG_ATTRIB(conf, EGL_RENDERABLE_TYPE, api_mask);
+   if (preserve_buffer)
+      surface_type |= EGL_SWAP_BEHAVIOR_PRESERVED_BIT;
 
-   SET_CONFIG_ATTRIB(conf, EGL_RED_SIZE, rgba[0]);
-   SET_CONFIG_ATTRIB(conf, EGL_GREEN_SIZE, rgba[1]);
-   SET_CONFIG_ATTRIB(conf, EGL_BLUE_SIZE, rgba[2]);
-   SET_CONFIG_ATTRIB(conf, EGL_ALPHA_SIZE, rgba[3]);
-   SET_CONFIG_ATTRIB(conf, EGL_BUFFER_SIZE, buffer_size);
+   if (pre_alpha && rgba[3]) {
+      surface_type |= EGL_VG_ALPHA_FORMAT_PRE_BIT;
+      /* st/vega does not support premultiplied alpha yet */
+      api_mask &= ~EGL_OPENVG_BIT;
+   }
 
-   SET_CONFIG_ATTRIB(conf, EGL_DEPTH_SIZE, depth_stencil[0]);
-   SET_CONFIG_ATTRIB(conf, EGL_STENCIL_SIZE, depth_stencil[1]);
+   conf->Conformant = api_mask;
+   conf->RenderableType = api_mask;
 
-   SET_CONFIG_ATTRIB(conf, EGL_SURFACE_TYPE, surface_type);
+   conf->RedSize = rgba[0];
+   conf->GreenSize = rgba[1];
+   conf->BlueSize = rgba[2];
+   conf->AlphaSize = rgba[3];
+   conf->BufferSize = buffer_size;
 
-   SET_CONFIG_ATTRIB(conf, EGL_NATIVE_RENDERABLE, EGL_TRUE);
+   conf->DepthSize = depth_stencil[0];
+   conf->StencilSize = depth_stencil[1];
+
+   /* st/vega will allocate the mask on demand */
+   if (api_mask & EGL_OPENVG_BIT)
+      conf->AlphaMaskSize = 8;
+
+   conf->SurfaceType = surface_type;
+
+   conf->NativeRenderable = EGL_TRUE;
    if (surface_type & EGL_WINDOW_BIT) {
-      SET_CONFIG_ATTRIB(conf, EGL_NATIVE_VISUAL_ID, nconf->native_visual_id);
-      SET_CONFIG_ATTRIB(conf, EGL_NATIVE_VISUAL_TYPE,
-            nconf->native_visual_type);
+      conf->NativeVisualID = nconf->native_visual_id;
+      conf->NativeVisualType = nconf->native_visual_type;
    }
 
    if (surface_type & EGL_PBUFFER_BIT) {
-      SET_CONFIG_ATTRIB(conf, EGL_BIND_TO_TEXTURE_RGB, EGL_TRUE);
+      conf->BindToTextureRGB = EGL_TRUE;
       if (rgba[3])
-         SET_CONFIG_ATTRIB(conf, EGL_BIND_TO_TEXTURE_RGBA, EGL_TRUE);
+         conf->BindToTextureRGBA = EGL_TRUE;
 
-      SET_CONFIG_ATTRIB(conf, EGL_MAX_PBUFFER_WIDTH, 4096);
-      SET_CONFIG_ATTRIB(conf, EGL_MAX_PBUFFER_HEIGHT, 4096);
-      SET_CONFIG_ATTRIB(conf, EGL_MAX_PBUFFER_PIXELS, 4096 * 4096);
+      conf->MaxPbufferWidth = 4096;
+      conf->MaxPbufferHeight = 4096;
+      conf->MaxPbufferPixels = 4096 * 4096;
    }
 
-   SET_CONFIG_ATTRIB(conf, EGL_LEVEL, nconf->level);
-   SET_CONFIG_ATTRIB(conf, EGL_SAMPLES, nconf->samples);
-   SET_CONFIG_ATTRIB(conf, EGL_SAMPLE_BUFFERS, 1);
-
-   if (nconf->slow_config)
-      SET_CONFIG_ATTRIB(conf, EGL_CONFIG_CAVEAT, EGL_SLOW_CONFIG);
+   conf->Level = nconf->level;
 
    if (nconf->transparent_rgb) {
-      rgba[0] = nconf->transparent_rgb_values[0];
-      rgba[1] = nconf->transparent_rgb_values[1];
-      rgba[2] = nconf->transparent_rgb_values[2];
-
-      SET_CONFIG_ATTRIB(conf, EGL_TRANSPARENT_TYPE, EGL_TRANSPARENT_RGB);
-      SET_CONFIG_ATTRIB(conf, EGL_TRANSPARENT_RED_VALUE, rgba[0]);
-      SET_CONFIG_ATTRIB(conf, EGL_TRANSPARENT_GREEN_VALUE, rgba[1]);
-      SET_CONFIG_ATTRIB(conf, EGL_TRANSPARENT_BLUE_VALUE, rgba[2]);
+      conf->TransparentType = EGL_TRANSPARENT_RGB;
+      conf->TransparentRedValue = nconf->transparent_rgb_values[0];
+      conf->TransparentGreenValue = nconf->transparent_rgb_values[1];
+      conf->TransparentBlueValue = nconf->transparent_rgb_values[2];
    }
+
+   conf->MinSwapInterval = 0;
+   conf->MaxSwapInterval = max_swap_interval;
 
    return _eglValidateConfig(conf, EGL_FALSE);
 }
@@ -252,10 +333,12 @@ init_config_attributes(_EGLConfig *conf, const struct native_config *nconf,
 static EGLBoolean
 egl_g3d_init_config(_EGLDriver *drv, _EGLDisplay *dpy,
                     _EGLConfig *conf, const struct native_config *nconf,
-                    enum pipe_format depth_stencil_format)
+                    enum pipe_format depth_stencil_format,
+                    int preserve_buffer, int max_swap_interval,
+                    int pre_alpha)
 {
    struct egl_g3d_config *gconf = egl_g3d_config(conf);
-   EGLint buffer_mask, api_mask;
+   EGLint buffer_mask;
    EGLBoolean valid;
 
    buffer_mask = 0x0;
@@ -272,24 +355,15 @@ egl_g3d_init_config(_EGLDriver *drv, _EGLDisplay *dpy,
    gconf->stvis.color_format = nconf->color_format;
    gconf->stvis.depth_stencil_format = depth_stencil_format;
    gconf->stvis.accum_format = PIPE_FORMAT_NONE;
-   gconf->stvis.samples = nconf->samples;
+   gconf->stvis.samples = 0;
 
+   /* will be overridden per surface */
    gconf->stvis.render_buffer = (buffer_mask & ST_ATTACHMENT_BACK_LEFT_MASK) ?
       ST_ATTACHMENT_BACK_LEFT : ST_ATTACHMENT_FRONT_LEFT;
 
-   api_mask = dpy->ClientAPIsMask;
-   /* this is required by EGL, not by OpenGL ES */
-   if (nconf->window_bit &&
-       gconf->stvis.render_buffer != ST_ATTACHMENT_BACK_LEFT)
-      api_mask &= ~(EGL_OPENGL_ES_BIT | EGL_OPENGL_ES2_BIT);
-
-   if (!api_mask) {
-      _eglLog(_EGL_DEBUG, "no state tracker supports config 0x%x",
-            nconf->native_visual_id);
-   }
-
    valid = init_config_attributes(&gconf->base,
-         nconf, api_mask, depth_stencil_format);
+         nconf, dpy->ClientAPIs, depth_stencil_format,
+         preserve_buffer, max_swap_interval, pre_alpha);
    if (!valid) {
       _eglLog(_EGL_DEBUG, "skip invalid config 0x%x", nconf->native_visual_id);
       return EGL_FALSE;
@@ -312,7 +386,7 @@ egl_g3d_fill_depth_stencil_formats(_EGLDisplay *dpy,
    const EGLint candidates[] = {
       1, PIPE_FORMAT_Z16_UNORM,
       1, PIPE_FORMAT_Z32_UNORM,
-      2, PIPE_FORMAT_Z24_UNORM_S8_USCALED, PIPE_FORMAT_S8_USCALED_Z24_UNORM,
+      2, PIPE_FORMAT_Z24_UNORM_S8_UINT, PIPE_FORMAT_S8_UINT_Z24_UNORM,
       2, PIPE_FORMAT_Z24X8_UNORM, PIPE_FORMAT_X8Z24_UNORM,
       0
    };
@@ -328,7 +402,7 @@ egl_g3d_fill_depth_stencil_formats(_EGLDisplay *dpy,
       /* pick the first supported format */
       for (i = 0; i < n; i++) {
          if (screen->is_format_supported(screen, fmt[i],
-                  PIPE_TEXTURE_2D, 0, PIPE_BIND_DEPTH_STENCIL, 0)) {
+                  PIPE_TEXTURE_2D, 0, PIPE_BIND_DEPTH_STENCIL)) {
             formats[count++] = fmt[i];
             break;
          }
@@ -350,6 +424,7 @@ egl_g3d_add_configs(_EGLDriver *drv, _EGLDisplay *dpy, EGLint id)
    const struct native_config **native_configs;
    enum pipe_format depth_stencil_formats[8];
    int num_formats, num_configs, i, j;
+   int preserve_buffer, max_swap_interval, premultiplied_alpha;
 
    native_configs = gdpy->native->get_configs(gdpy->native, &num_configs);
    if (!num_configs) {
@@ -357,6 +432,13 @@ egl_g3d_add_configs(_EGLDriver *drv, _EGLDisplay *dpy, EGLint id)
          FREE(native_configs);
       return id;
    }
+
+   preserve_buffer =
+      gdpy->native->get_param(gdpy->native, NATIVE_PARAM_PRESERVE_BUFFER);
+   max_swap_interval =
+      gdpy->native->get_param(gdpy->native, NATIVE_PARAM_MAX_SWAP_INTERVAL);
+   premultiplied_alpha =
+      gdpy->native->get_param(gdpy->native, NATIVE_PARAM_PREMULTIPLIED_ALPHA);
 
    num_formats = egl_g3d_fill_depth_stencil_formats(dpy,
          depth_stencil_formats);
@@ -369,12 +451,14 @@ egl_g3d_add_configs(_EGLDriver *drv, _EGLDisplay *dpy, EGLint id)
          if (gconf) {
             _eglInitConfig(&gconf->base, dpy, id);
             if (!egl_g3d_init_config(drv, dpy, &gconf->base,
-                     native_configs[i], depth_stencil_formats[j])) {
+                     native_configs[i], depth_stencil_formats[j],
+                     preserve_buffer, max_swap_interval,
+                     premultiplied_alpha)) {
                FREE(gconf);
                break;
             }
 
-            _eglAddConfig(dpy, &gconf->base);
+            _eglLinkConfig(&gconf->base);
             id++;
          }
       }
@@ -383,46 +467,6 @@ egl_g3d_add_configs(_EGLDriver *drv, _EGLDisplay *dpy, EGLint id)
    FREE(native_configs);
    return id;
 }
-
-static void
-egl_g3d_invalid_surface(struct native_display *ndpy,
-                        struct native_surface *nsurf,
-                        unsigned int seq_num)
-{
-   /* XXX not thread safe? */
-   struct egl_g3d_surface *gsurf = egl_g3d_surface(nsurf->user_data);
-   struct egl_g3d_context *gctx;
-   
-   /*
-    * Some functions such as egl_g3d_copy_buffers create a temporary native
-    * surface.  There is no gsurf associated with it.
-    */
-   gctx = (gsurf) ? egl_g3d_context(gsurf->base.CurrentContext) : NULL;
-   if (gctx)
-      gctx->stctxi->notify_invalid_framebuffer(gctx->stctxi, gsurf->stfbi);
-}
-
-static struct pipe_screen *
-egl_g3d_new_drm_screen(struct native_display *ndpy, const char *name, int fd)
-{
-   _EGLDisplay *dpy = (_EGLDisplay *) ndpy->user_data;
-   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
-   return gdpy->loader->create_drm_screen(name, fd);
-}
-
-static struct pipe_screen *
-egl_g3d_new_sw_screen(struct native_display *ndpy, struct sw_winsys *ws)
-{
-   _EGLDisplay *dpy = (_EGLDisplay *) ndpy->user_data;
-   struct egl_g3d_display *gdpy = egl_g3d_display(dpy);
-   return gdpy->loader->create_sw_screen(ws);
-}
-
-static struct native_event_handler egl_g3d_native_event_handler = {
-   egl_g3d_invalid_surface,
-   egl_g3d_new_drm_screen,
-   egl_g3d_new_sw_screen
-};
 
 static void
 egl_g3d_free_config(void *conf)
@@ -448,9 +492,6 @@ egl_g3d_terminate(_EGLDriver *drv, _EGLDisplay *dpy)
 
    _eglReleaseDisplayResources(drv, dpy);
 
-   if (gdpy->pipe)
-      gdpy->pipe->destroy(gdpy->pipe);
-
    if (dpy->Configs) {
       _eglDestroyArray(dpy->Configs, egl_g3d_free_config);
       dpy->Configs = NULL;
@@ -475,8 +516,7 @@ egl_g3d_terminate(_EGLDriver *drv, _EGLDisplay *dpy)
 }
 
 static EGLBoolean
-egl_g3d_initialize(_EGLDriver *drv, _EGLDisplay *dpy,
-                   EGLint *major, EGLint *minor)
+egl_g3d_initialize(_EGLDriver *drv, _EGLDisplay *dpy)
 {
    struct egl_g3d_driver *gdrv = egl_g3d_driver(drv);
    struct egl_g3d_display *gdpy;
@@ -486,6 +526,9 @@ egl_g3d_initialize(_EGLDriver *drv, _EGLDisplay *dpy,
    if (!nplat)
       return EGL_FALSE;
 
+   if (dpy->Options.TestOnly)
+      return EGL_TRUE;
+
    gdpy = CALLOC_STRUCT(egl_g3d_display);
    if (!gdpy) {
       _eglError(EGL_BAD_ALLOC, "eglInitialize");
@@ -494,22 +537,29 @@ egl_g3d_initialize(_EGLDriver *drv, _EGLDisplay *dpy,
    gdpy->loader = gdrv->loader;
    dpy->DriverData = gdpy;
 
-   _eglLog(_EGL_INFO, "use %s for display %p", nplat->name, dpy->PlatformDisplay);
-   gdpy->native = nplat->create_display(dpy->PlatformDisplay,
-         &egl_g3d_native_event_handler, (void *) dpy);
+   _eglLog(_EGL_INFO, "use %s for display %p",
+         nplat->name, dpy->PlatformDisplay);
+   gdpy->native =
+      nplat->create_display(dpy->PlatformDisplay, dpy->Options.UseFallback);
    if (!gdpy->native) {
       _eglError(EGL_NOT_INITIALIZED, "eglInitialize(no usable display)");
       goto fail;
    }
+   gdpy->native->user_data = (void *) dpy;
+   if (!gdpy->native->init_screen(gdpy->native)) {
+      _eglError(EGL_NOT_INITIALIZED,
+            "eglInitialize(failed to initialize screen)");
+      goto fail;
+   }
 
    if (gdpy->loader->profile_masks[ST_API_OPENGL] & ST_PROFILE_DEFAULT_MASK)
-      dpy->ClientAPIsMask |= EGL_OPENGL_BIT;
+      dpy->ClientAPIs |= EGL_OPENGL_BIT;
    if (gdpy->loader->profile_masks[ST_API_OPENGL] & ST_PROFILE_OPENGL_ES1_MASK)
-      dpy->ClientAPIsMask |= EGL_OPENGL_ES_BIT;
+      dpy->ClientAPIs |= EGL_OPENGL_ES_BIT;
    if (gdpy->loader->profile_masks[ST_API_OPENGL] & ST_PROFILE_OPENGL_ES2_MASK)
-      dpy->ClientAPIsMask |= EGL_OPENGL_ES2_BIT;
+      dpy->ClientAPIs |= EGL_OPENGL_ES2_BIT;
    if (gdpy->loader->profile_masks[ST_API_OPENVG] & ST_PROFILE_DEFAULT_MASK)
-      dpy->ClientAPIsMask |= EGL_OPENVG_BIT;
+      dpy->ClientAPIs |= EGL_OPENVG_BIT;
 
    gdpy->smapi = egl_g3d_create_st_manager(dpy);
    if (!gdpy->smapi) {
@@ -533,13 +583,33 @@ egl_g3d_initialize(_EGLDriver *drv, _EGLDisplay *dpy,
    dpy->Extensions.KHR_reusable_sync = EGL_TRUE;
    dpy->Extensions.KHR_fence_sync = EGL_TRUE;
 
-   dpy->Extensions.KHR_surfaceless_gles1 = EGL_TRUE;
-   dpy->Extensions.KHR_surfaceless_gles2 = EGL_TRUE;
-   dpy->Extensions.KHR_surfaceless_opengl = EGL_TRUE;
+   dpy->Extensions.KHR_surfaceless_context = EGL_TRUE;
 
    if (dpy->Platform == _EGL_PLATFORM_DRM) {
       dpy->Extensions.MESA_drm_display = EGL_TRUE;
+      if (gdpy->native->buffer)
+         dpy->Extensions.MESA_drm_image = EGL_TRUE;
+   }
+
+   if (dpy->Platform == _EGL_PLATFORM_WAYLAND && gdpy->native->buffer)
       dpy->Extensions.MESA_drm_image = EGL_TRUE;
+
+#ifdef EGL_ANDROID_image_native_buffer
+   if (dpy->Platform == _EGL_PLATFORM_ANDROID && gdpy->native->buffer)
+      dpy->Extensions.ANDROID_image_native_buffer = EGL_TRUE;
+#endif
+
+#ifdef EGL_WL_bind_wayland_display
+   if (gdpy->native->wayland_bufmgr)
+      dpy->Extensions.WL_bind_wayland_display = EGL_TRUE;
+#endif
+
+   if (gdpy->native->get_param(gdpy->native, NATIVE_PARAM_PRESENT_REGION) &&
+       gdpy->native->get_param(gdpy->native, NATIVE_PARAM_PRESERVE_BUFFER)) {
+#ifdef EGL_NOK_swap_region
+      dpy->Extensions.NOK_swap_region = EGL_TRUE;
+#endif
+      dpy->Extensions.NV_post_sub_buffer = EGL_TRUE;
    }
 
    if (egl_g3d_add_configs(drv, dpy, 1) == 1) {
@@ -547,8 +617,8 @@ egl_g3d_initialize(_EGLDriver *drv, _EGLDisplay *dpy,
       goto fail;
    }
 
-   *major = 1;
-   *minor = 4;
+   dpy->VersionMajor = 1;
+   dpy->VersionMinor = 4;
 
    return EGL_TRUE;
 
@@ -573,12 +643,6 @@ egl_g3d_get_proc_address(_EGLDriver *drv, const char *procname)
          stapi->get_proc_address(stapi, procname) : NULL);
 }
 
-static EGLint
-egl_g3d_probe(_EGLDriver *drv, _EGLDisplay *dpy)
-{
-   return (egl_g3d_get_platform(drv, dpy->Platform)) ? 90 : 0;
-}
-
 _EGLDriver *
 egl_g3d_create_driver(const struct egl_g3d_loader *loader)
 {
@@ -594,8 +658,6 @@ egl_g3d_create_driver(const struct egl_g3d_loader *loader)
    gdrv->base.API.Initialize = egl_g3d_initialize;
    gdrv->base.API.Terminate = egl_g3d_terminate;
    gdrv->base.API.GetProcAddress = egl_g3d_get_proc_address;
-
-   gdrv->base.Probe = egl_g3d_probe;
 
    /* to be filled by the caller */
    gdrv->base.Name = NULL;

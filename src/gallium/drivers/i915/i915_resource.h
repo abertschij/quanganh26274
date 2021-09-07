@@ -32,6 +32,7 @@ struct i915_screen;
 
 #include "util/u_transfer.h"
 #include "util/u_debug.h"
+#include "i915_winsys.h"
 
 
 struct i915_context;
@@ -44,33 +45,49 @@ struct i915_buffer {
    boolean free_on_destroy;
 };
 
-#define I915_MAX_TEXTURE_2D_LEVELS 11  /* max 1024x1024 */
-#define I915_MAX_TEXTURE_3D_LEVELS  8  /* max 128x128x128 */
+
+/* Texture transfer. */
+struct i915_transfer {
+   /* Base class. */
+   struct pipe_transfer b;
+   struct pipe_resource *staging_texture;
+};
 
 
+#define I915_MAX_TEXTURE_2D_LEVELS 12  /* max 2048x2048 */
+#define I915_MAX_TEXTURE_3D_LEVELS  9  /* max 256x256x256 */
+
+
+struct offset_pair {
+	unsigned short nblocksx;
+	unsigned short nblocksy;
+};
 
 struct i915_texture {
    struct u_resource b;
 
+   /* tiling flags */
+   enum i915_winsys_buffer_tile tiling;
    unsigned stride;
    unsigned depth_stride;          /* per-image on i945? */
    unsigned total_nblocksy;
-
-   unsigned sw_tiled; /**< tiled with software flags */
-   unsigned hw_tiled; /**< tiled with hardware fences */
 
    unsigned nr_images[I915_MAX_TEXTURE_2D_LEVELS];
 
    /* Explicitly store the offset of each image for each cube face or
     * depth value.
+    *
+    * Array [depth] off offsets.
     */
-   unsigned *image_offset[I915_MAX_TEXTURE_2D_LEVELS];   /**< array [depth] of offsets */
+   struct offset_pair *image_offset[I915_MAX_TEXTURE_2D_LEVELS];
 
    /* The data is held here:
     */
    struct i915_winsys_buffer *buffer;
 };
 
+unsigned i915_texture_offset(struct i915_texture *tex,
+                             unsigned level, unsigned layer);
 void i915_init_screen_resource_functions(struct i915_screen *is);
 void i915_init_resource_functions(struct i915_context *i915);
 
@@ -93,7 +110,8 @@ static INLINE struct i915_buffer *i915_buffer(struct pipe_resource *resource)
 
 struct pipe_resource *
 i915_texture_create(struct pipe_screen *screen,
-                    const struct pipe_resource *template);
+                    const struct pipe_resource *template,
+                    boolean force_untiled);
 
 struct pipe_resource *
 i915_texture_from_handle(struct pipe_screen * screen,

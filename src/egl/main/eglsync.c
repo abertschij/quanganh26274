@@ -1,11 +1,36 @@
+/**************************************************************************
+ *
+ * Copyright 2010 LunarG, Inc.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sub license, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ **************************************************************************/
+
+
 #include <string.h>
 
 #include "eglsync.h"
 #include "eglcurrent.h"
 #include "egllog.h"
-
-
-#ifdef EGL_KHR_reusable_sync
 
 
 /**
@@ -50,10 +75,7 @@ _eglInitSync(_EGLSync *sync, _EGLDisplay *dpy, EGLenum type,
        !(type == EGL_SYNC_FENCE_KHR && dpy->Extensions.KHR_fence_sync))
       return _eglError(EGL_BAD_ATTRIBUTE, "eglCreateSyncKHR");
 
-   memset(sync, 0, sizeof(*sync));
-
-   sync->Resource.Display = dpy;
-
+   _eglInitResource(&sync->Resource, sizeof(*sync), dpy);
    sync->Type = type;
    sync->SyncStatus = EGL_UNSIGNALED_KHR;
    sync->SyncCondition = EGL_SYNC_PRIOR_COMMANDS_COMPLETE_KHR;
@@ -63,37 +85,6 @@ _eglInitSync(_EGLSync *sync, _EGLDisplay *dpy, EGLenum type,
       return _eglError(err, "eglCreateSyncKHR");
 
    return EGL_TRUE;
-}
-
-
-_EGLSync *
-_eglCreateSyncKHR(_EGLDriver *drv, _EGLDisplay *dpy,
-                  EGLenum type, const EGLint *attrib_list)
-{
-   return NULL;
-}
-
-
-EGLBoolean
-_eglDestroySyncKHR(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync)
-{
-   return EGL_TRUE;
-}
-
-
-EGLint
-_eglClientWaitSyncKHR(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
-                      EGLint flags, EGLTimeKHR timeout)
-{
-   return EGL_FALSE;
-}
-
-
-EGLBoolean
-_eglSignalSyncKHR(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
-                  EGLenum mode)
-{
-   return EGL_FALSE;
 }
 
 
@@ -123,6 +114,3 @@ _eglGetSyncAttribKHR(_EGLDriver *drv, _EGLDisplay *dpy, _EGLSync *sync,
 
    return EGL_TRUE;
 }
-
-
-#endif /* EGL_KHR_reusable_sync */

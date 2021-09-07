@@ -39,6 +39,7 @@
 
 #include "draw_vs.h"
 #include "draw_pipe.h"
+#include "draw_fs.h"
 
 
 #ifndef IS_NEGATIVE
@@ -49,20 +50,19 @@
 #define DIFFERENT_SIGNS(x, y) ((x) * (y) <= 0.0F && (x) - (y) != 0.0F)
 #endif
 
-#ifndef MAX_CLIPPED_VERTICES
 #define MAX_CLIPPED_VERTICES ((2 * (6 + PIPE_MAX_CLIP_PLANES))+1)
-#endif
 
 
 
 struct clip_stage {
    struct draw_stage stage;      /**< base class */
 
-   /* Basically duplicate some of the flatshading logic here:
-    */
-   boolean flat;
-   uint num_color_attribs;
-   uint color_attribs[4];  /* front/back primary/secondary colors */
+   /* List of the attributes to be flatshaded. */
+   uint num_flat_attribs;
+   uint flat_attribs[PIPE_MAX_SHADER_OUTPUTS];
+
+   /* Mask of attributes in noperspective mode */
+   boolean noperspective_attribs[PIPE_MAX_SHADER_OUTPUTS];
 
    float (*plane)[4];
 };
@@ -93,17 +93,16 @@ static void interp_attr( float dst[4],
 
 
 /**
- * Copy front/back, primary/secondary colors from src vertex to dst vertex.
- * Used when flat shading.
+ * Copy flat shaded attributes src vertex to dst vertex.
  */
-static void copy_colors( struct draw_stage *stage,
-			 struct vertex_header *dst,
-			 const struct vertex_header *src )
+static void copy_flat( struct draw_stage *stage,
+                       struct vertex_header *dst,
+                       const struct vertex_header *src )
 {
    const struct clip_stage *clipper = clip_stage(stage);
    uint i;
-   for (i = 0; i < clipper->num_color_attribs; i++) {
-      const uint attr = clipper->color_attribs[i];
+   for (i = 0; i < clipper->num_flat_attribs; i++) {
+      const uint attr = clipper->flat_attribs[i];
       COPY_4FV(dst->data[attr], src->data[attr]);
    }
 }
@@ -120,24 +119,28 @@ static void interp( const struct clip_stage *clip,
 {
    const unsigned nr_attrs = draw_current_shader_outputs(clip->stage.draw);
    const unsigned pos_attr = draw_current_shader_position_output(clip->stage.draw);
+   const unsigned clip_attr = draw_current_shader_clipvertex_output(clip->stage.draw);
    unsigned j;
+   float t_nopersp;
 
    /* Vertex header.
     */
    dst->clipmask = 0;
    dst->edgeflag = 0;        /* will get overwritten later */
-   dst->pad = 0;
+   dst->have_clipdist = in->have_clipdist;
    dst->vertex_id = UNDEFINED_VERTEX_ID;
 
    /* Interpolate the clip-space coords.
     */
    interp_attr(dst->clip, t, in->clip, out->clip);
+   /* interpolate the clip-space position */
+   interp_attr(dst->pre_clip_pos, t, in->pre_clip_pos, out->pre_clip_pos);
 
    /* Do the projective divide and viewport transformation to get
     * new window coordinates:
     */
    {
-      const float *pos = dst->clip;
+      const float *pos = dst->pre_clip_pos;
       const float *scale = clip->stage.draw->viewport.scale;
       const float *trans = clip->stage.draw->viewport.translate;
       const float oow = 1.0f / pos[3];
@@ -147,12 +150,36 @@ static void interp( const struct clip_stage *clip,
       dst->data[pos_attr][2] = pos[2] * oow * scale[2] + trans[2];
       dst->data[pos_attr][3] = oow;
    }
+   
+   /**
+    * Compute the t in screen-space instead of 3d space to use
+    * for noperspective interpolation.
+    *
+    * The points can be aligned with the X axis, so in that case try
+    * the Y.  When both points are at the same screen position, we can
+    * pick whatever value (the interpolated point won't be in front
+    * anyway), so just use the 3d t.
+    */
+   {
+      int k;
+      t_nopersp = t;
+      for (k = 0; k < 2; k++)
+         if (in->data[pos_attr][k] != out->data[pos_attr][k]) {
+            t_nopersp = (dst->data[pos_attr][k] - out->data[pos_attr][k]) /
+               (in->data[pos_attr][k] - out->data[pos_attr][k]);
+            break;
+         }
+   }
 
    /* Other attributes
     */
    for (j = 0; j < nr_attrs; j++) {
-      if (j != pos_attr)
-         interp_attr(dst->data[j], t, in->data[j], out->data[j]);
+      if (j != pos_attr && j != clip_attr) {
+         if (clip->noperspective_attribs[j])
+            interp_attr(dst->data[j], t_nopersp, in->data[j], out->data[j]);
+         else
+            interp_attr(dst->data[j], t, in->data[j], out->data[j]);
+      }
    }
 }
 
@@ -163,6 +190,7 @@ static void interp( const struct clip_stage *clip,
  */
 static void emit_poly( struct draw_stage *stage,
 		       struct vertex_header **inlist,
+                       const boolean *edgeflags,
 		       unsigned n,
 		       const struct prim_header *origPrim)
 {
@@ -180,6 +208,9 @@ static void emit_poly( struct draw_stage *stage,
       edge_middle = DRAW_PIPE_EDGE_FLAG_0;
       edge_last   = DRAW_PIPE_EDGE_FLAG_1;
    }
+
+   if (!edgeflags[0])
+      edge_first = 0;
 
    /* later stages may need the determinant, but only the sign matters */
    header.det = origPrim->det;
@@ -199,7 +230,11 @@ static void emit_poly( struct draw_stage *stage,
          header.v[2] = inlist[0];  /* the provoking vertex */
       }
 
-      if (i == n-1)
+      if (!edgeflags[i-1]) {
+         header.flags &= ~edge_middle;
+      }
+
+      if (i == n - 1 && edgeflags[i])
          header.flags |= edge_last;
 
       if (0) {
@@ -232,6 +267,29 @@ dot4(const float *a, const float *b)
            a[3] * b[3]);
 }
 
+/*
+ * this function extracts the clip distance for the current plane,
+ * it first checks if the shader provided a clip distance, otherwise
+ * it works out the value using the clipvertex
+ */
+static INLINE float getclipdist(const struct clip_stage *clipper,
+                                struct vertex_header *vert,
+                                int plane_idx)
+{
+   const float *plane;
+   float dp;
+   if (vert->have_clipdist && plane_idx >= 6) {
+      /* pick the correct clipdistance element from the output vectors */
+      int _idx = plane_idx - 6;
+      int cdi = _idx >= 4;
+      int vidx = cdi ? _idx - 4 : _idx;
+      dp = vert->data[draw_current_shader_clipdistance_output(clipper->stage.draw, cdi)][vidx];
+   } else {
+      plane = clipper->plane[plane_idx];
+      dp = dot4(vert->clip, plane);
+   }
+   return dp;
+}
 
 /* Clip a triangle against the viewport and user clip planes.
  */
@@ -248,39 +306,61 @@ do_clip_tri( struct draw_stage *stage,
    unsigned tmpnr = 0;
    unsigned n = 3;
    unsigned i;
+   boolean aEdges[MAX_CLIPPED_VERTICES];
+   boolean bEdges[MAX_CLIPPED_VERTICES];
+   boolean *inEdges = aEdges;
+   boolean *outEdges = bEdges;
 
    inlist[0] = header->v[0];
    inlist[1] = header->v[1];
    inlist[2] = header->v[2];
 
+   /*
+    * Note: at this point we can't just use the per-vertex edge flags.
+    * We have to observe the edge flag bits set in header->flags which
+    * were set during primitive decomposition.  Put those flags into
+    * an edge flags array which parallels the vertex array.
+    * Later, in the 'unfilled' pipeline stage we'll draw the edge if both
+    * the header.flags bit is set AND the per-vertex edgeflag field is set.
+    */
+   inEdges[0] = !!(header->flags & DRAW_PIPE_EDGE_FLAG_0);
+   inEdges[1] = !!(header->flags & DRAW_PIPE_EDGE_FLAG_1);
+   inEdges[2] = !!(header->flags & DRAW_PIPE_EDGE_FLAG_2);
+
    while (clipmask && n >= 3) {
       const unsigned plane_idx = ffs(clipmask)-1;
-      const float *plane = clipper->plane[plane_idx];
+      const boolean is_user_clip_plane = plane_idx >= 6;
       struct vertex_header *vert_prev = inlist[0];
-      float dp_prev = dot4( vert_prev->clip, plane );
+      boolean *edge_prev = &inEdges[0];
+      float dp_prev;
       unsigned outcount = 0;
 
+      dp_prev = getclipdist(clipper, vert_prev, plane_idx);
       clipmask &= ~(1<<plane_idx);
 
       assert(n < MAX_CLIPPED_VERTICES);
       if (n >= MAX_CLIPPED_VERTICES)
          return;
       inlist[n] = inlist[0]; /* prevent rotation of vertices */
+      inEdges[n] = inEdges[0];
 
       for (i = 1; i <= n; i++) {
 	 struct vertex_header *vert = inlist[i];
+         boolean *edge = &inEdges[i];
 
-	 float dp = dot4( vert->clip, plane );
+         float dp = getclipdist(clipper, vert, plane_idx);
 
 	 if (!IS_NEGATIVE(dp_prev)) {
             assert(outcount < MAX_CLIPPED_VERTICES);
             if (outcount >= MAX_CLIPPED_VERTICES)
                return;
+            outEdges[outcount] = *edge_prev;
 	    outlist[outcount++] = vert_prev;
 	 }
 
 	 if (DIFFERENT_SIGNS(dp, dp_prev)) {
 	    struct vertex_header *new_vert;
+            boolean *new_edge;
 
             assert(tmpnr < MAX_CLIPPED_VERTICES + 1);
             if (tmpnr >= MAX_CLIPPED_VERTICES + 1)
@@ -290,6 +370,8 @@ do_clip_tri( struct draw_stage *stage,
             assert(outcount < MAX_CLIPPED_VERTICES);
             if (outcount >= MAX_CLIPPED_VERTICES)
                return;
+
+            new_edge = &outEdges[outcount];
 	    outlist[outcount++] = new_vert;
 
 	    if (IS_NEGATIVE(dp)) {
@@ -299,10 +381,22 @@ do_clip_tri( struct draw_stage *stage,
 	       float t = dp / (dp - dp_prev);
 	       interp( clipper, new_vert, t, vert, vert_prev );
 	       
-	       /* Force edgeflag true in this case:
+	       /* Whether or not to set edge flag for the new vert depends
+                * on whether it's a user-defined clipping plane.  We're
+                * copying NVIDIA's behaviour here.
 		*/
-	       new_vert->edgeflag = 1;
-	    } else {
+               if (is_user_clip_plane) {
+                  /* we want to see an edge along the clip plane */
+                  *new_edge = TRUE;
+                  new_vert->edgeflag = TRUE;
+               }
+               else {
+                  /* we don't want to see an edge along the frustum clip plane */
+                  *new_edge = *edge_prev;
+                  new_vert->edgeflag = FALSE;
+               }
+	    }
+            else {
 	       /* Coming back in.
 		*/
 	       float t = dp_prev / (dp_prev - dp);
@@ -311,10 +405,12 @@ do_clip_tri( struct draw_stage *stage,
 	       /* Copy starting vert's edgeflag:
 		*/
 	       new_vert->edgeflag = vert_prev->edgeflag;
+               *new_edge = *edge_prev;
 	    }
 	 }
 
 	 vert_prev = vert;
+         edge_prev = edge;
 	 dp_prev = dp;
       }
 
@@ -325,19 +421,25 @@ do_clip_tri( struct draw_stage *stage,
 	 outlist = tmp;
 	 n = outcount;
       }
+      {
+         boolean *tmp = inEdges;
+         inEdges = outEdges;
+         outEdges = tmp;
+      }
+
    }
 
    /* If flat-shading, copy provoking vertex color to polygon vertex[0]
     */
    if (n >= 3) {
-      if (clipper->flat) {
+      if (clipper->num_flat_attribs) {
          if (stage->draw->rasterizer->flatshade_first) {
             if (inlist[0] != header->v[0]) {
                assert(tmpnr < MAX_CLIPPED_VERTICES + 1);
                if (tmpnr >= MAX_CLIPPED_VERTICES + 1)
                   return;
                inlist[0] = dup_vert(stage, inlist[0], tmpnr++);
-               copy_colors(stage, inlist[0], header->v[0]);
+               copy_flat(stage, inlist[0], header->v[0]);
             }
          }
          else {
@@ -346,14 +448,14 @@ do_clip_tri( struct draw_stage *stage,
                if (tmpnr >= MAX_CLIPPED_VERTICES + 1)
                   return;
                inlist[0] = dup_vert(stage, inlist[0], tmpnr++);
-               copy_colors(stage, inlist[0], header->v[2]);
+               copy_flat(stage, inlist[0], header->v[2]);
             }
          }
       }
       
       /* Emit the polygon as triangles to the setup stage:
        */
-      emit_poly( stage, inlist, n, header );
+      emit_poly( stage, inlist, inEdges, n, header );
    }
 }
 
@@ -368,17 +470,14 @@ do_clip_line( struct draw_stage *stage,
    const struct clip_stage *clipper = clip_stage( stage );
    struct vertex_header *v0 = header->v[0];
    struct vertex_header *v1 = header->v[1];
-   const float *pos0 = v0->clip;
-   const float *pos1 = v1->clip;
    float t0 = 0.0F;
    float t1 = 0.0F;
    struct prim_header newprim;
 
    while (clipmask) {
       const unsigned plane_idx = ffs(clipmask)-1;
-      const float *plane = clipper->plane[plane_idx];
-      const float dp0 = dot4( pos0, plane );
-      const float dp1 = dot4( pos1, plane );
+      const float dp0 = getclipdist(clipper, v0, plane_idx);
+      const float dp1 = getclipdist(clipper, v1, plane_idx);
 
       if (dp1 < 0.0F) {
 	 float t = dp1 / (dp1 - dp0);
@@ -398,10 +497,7 @@ do_clip_line( struct draw_stage *stage,
 
    if (v0->clipmask) {
       interp( clipper, stage->tmp[0], t0, v0, v1 );
-
-      if (clipper->flat)
-	 copy_colors(stage, stage->tmp[0], v0);
-
+      copy_flat(stage, stage->tmp[0], v0);
       newprim.v[0] = stage->tmp[0];
    }
    else {
@@ -475,20 +571,86 @@ static void
 clip_init_state( struct draw_stage *stage )
 {
    struct clip_stage *clipper = clip_stage( stage );
+   const struct draw_vertex_shader *vs = stage->draw->vs.vertex_shader;
+   const struct draw_fragment_shader *fs = stage->draw->fs.fragment_shader;
+   uint i;
 
-   clipper->flat = stage->draw->rasterizer->flatshade ? TRUE : FALSE;
+   /* We need to know for each attribute what kind of interpolation is
+    * done on it (flat, smooth or noperspective).  But the information
+    * is not directly accessible for outputs, only for inputs.  So we
+    * have to match semantic name and index between the VS (or GS/ES)
+    * outputs and the FS inputs to get to the interpolation mode.
+    *
+    * The only hitch is with gl_FrontColor/gl_BackColor which map to
+    * gl_Color, and their Secondary versions.  First there are (up to)
+    * two outputs for one input, so we tuck the information in a
+    * specific array.  Second if they don't have qualifiers, the
+    * default value has to be picked from the global shade mode.
+    *
+    * Of course, if we don't have a fragment shader in the first
+    * place, defaults should be used.
+    */
 
-   if (clipper->flat) {
-      const struct draw_vertex_shader *vs = stage->draw->vs.vertex_shader;
-      uint i;
+   /* First pick up the interpolation mode for
+    * gl_Color/gl_SecondaryColor, with the correct default.
+    */
+   int indexed_interp[2];
+   indexed_interp[0] = indexed_interp[1] = stage->draw->rasterizer->flatshade ?
+      TGSI_INTERPOLATE_CONSTANT : TGSI_INTERPOLATE_PERSPECTIVE;
 
-      clipper->num_color_attribs = 0;
-      for (i = 0; i < vs->info.num_outputs; i++) {
-	 if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_COLOR ||
-	     vs->info.output_semantic_name[i] == TGSI_SEMANTIC_BCOLOR) {
-	    clipper->color_attribs[clipper->num_color_attribs++] = i;
-	 }
+   if (fs) {
+      for (i = 0; i < fs->info.num_inputs; i++) {
+         if (fs->info.input_semantic_name[i] == TGSI_SEMANTIC_COLOR) {
+            if (fs->info.input_interpolate[i] != TGSI_INTERPOLATE_COLOR)
+               indexed_interp[fs->info.input_semantic_index[i]] = fs->info.input_interpolate[i];
+         }
       }
+   }
+
+   /* Then resolve the interpolation mode for every output attribute.
+    *
+    * Given how the rest of the code, the most efficient way is to
+    * have a vector of flat-mode attributes, and a mask for
+    * noperspective attributes.
+    */
+
+   clipper->num_flat_attribs = 0;
+   memset(clipper->noperspective_attribs, 0, sizeof(clipper->noperspective_attribs));
+   for (i = 0; i < vs->info.num_outputs; i++) {
+      /* Find the interpolation mode for a specific attribute
+       */
+      int interp;
+
+      /* If it's gl_{Front,Back}{,Secondary}Color, pick up the mode
+       * from the array we've filled before. */
+      if (vs->info.output_semantic_name[i] == TGSI_SEMANTIC_COLOR ||
+          vs->info.output_semantic_name[i] == TGSI_SEMANTIC_BCOLOR) {
+         interp = indexed_interp[vs->info.output_semantic_index[i]];
+      } else {
+         /* Otherwise, search in the FS inputs, with a decent default
+          * if we don't find it.
+          */
+         uint j;
+         interp = TGSI_INTERPOLATE_PERSPECTIVE;
+         if (fs) {
+            for (j = 0; j < fs->info.num_inputs; j++) {
+               if (vs->info.output_semantic_name[i] == fs->info.input_semantic_name[j] &&
+                   vs->info.output_semantic_index[i] == fs->info.input_semantic_index[j]) {
+                  interp = fs->info.input_interpolate[j];
+                  break;
+               }
+            }
+         }
+      }
+
+      /* If it's flat, add it to the flat vector.  Otherwise update
+       * the noperspective mask.
+       */
+      if (interp == TGSI_INTERPOLATE_CONSTANT) {
+         clipper->flat_attribs[clipper->num_flat_attribs] = i;
+         clipper->num_flat_attribs++;
+      } else
+         clipper->noperspective_attribs[i] = interp == TGSI_INTERPOLATE_LINEAR;
    }
    
    stage->tri = clip_tri;

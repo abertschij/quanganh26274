@@ -92,7 +92,7 @@ rbug_screen_get_shader_param(struct pipe_screen *_screen,
 
 static float
 rbug_screen_get_paramf(struct pipe_screen *_screen,
-                       enum pipe_cap param)
+                       enum pipe_capf param)
 {
    struct rbug_screen *rb_screen = rbug_screen(_screen);
    struct pipe_screen *screen = rb_screen->screen;
@@ -106,8 +106,7 @@ rbug_screen_is_format_supported(struct pipe_screen *_screen,
                                 enum pipe_format format,
                                 enum pipe_texture_target target,
                                 unsigned sample_count,
-                                unsigned tex_usage,
-                                unsigned geom_flags)
+                                unsigned tex_usage)
 {
    struct rbug_screen *rb_screen = rbug_screen(_screen);
    struct pipe_screen *screen = rb_screen->screen;
@@ -116,8 +115,7 @@ rbug_screen_is_format_supported(struct pipe_screen *_screen,
                                       format,
                                       target,
                                       sample_count,
-                                      tex_usage,
-                                      geom_flags);
+                                      tex_usage);
 }
 
 static struct pipe_context *
@@ -188,74 +186,20 @@ rbug_screen_resource_destroy(struct pipe_screen *screen,
    rbug_resource_destroy(rbug_resource(_resource));
 }
 
-static struct pipe_surface *
-rbug_screen_get_tex_surface(struct pipe_screen *_screen,
-                            struct pipe_resource *_resource,
-                            unsigned face,
-                            unsigned level,
-                            unsigned zslice,
-                            unsigned usage)
+static void
+rbug_screen_flush_frontbuffer(struct pipe_screen *_screen,
+                              struct pipe_resource *_resource,
+                              unsigned level, unsigned layer,
+                              void *context_private)
 {
    struct rbug_screen *rb_screen = rbug_screen(_screen);
    struct rbug_resource *rb_resource = rbug_resource(_resource);
    struct pipe_screen *screen = rb_screen->screen;
    struct pipe_resource *resource = rb_resource->resource;
-   struct pipe_surface *result;
-
-   result = screen->get_tex_surface(screen,
-                                    resource,
-                                    face,
-                                    level,
-                                    zslice,
-                                    usage);
-
-   if (result)
-      return rbug_surface_create(rb_resource, result);
-   return NULL;
-}
-
-static void
-rbug_screen_tex_surface_destroy(struct pipe_surface *_surface)
-{
-   rbug_surface_destroy(rbug_surface(_surface));
-}
-
-
-
-static struct pipe_resource *
-rbug_screen_user_buffer_create(struct pipe_screen *_screen,
-                               void *ptr,
-                               unsigned bytes,
-                               unsigned usage)
-{
-   struct rbug_screen *rb_screen = rbug_screen(_screen);
-   struct pipe_screen *screen = rb_screen->screen;
-   struct pipe_resource *result;
-
-   result = screen->user_buffer_create(screen,
-                                       ptr,
-                                       bytes,
-                                       usage);
-
-   if (result)
-      return rbug_resource_create(rb_screen, result);
-   return NULL;
-}
-
-
-
-static void
-rbug_screen_flush_frontbuffer(struct pipe_screen *_screen,
-                              struct pipe_surface *_surface,
-                              void *context_private)
-{
-   struct rbug_screen *rb_screen = rbug_screen(_screen);
-   struct rbug_surface *rb_surface = rbug_surface(_surface);
-   struct pipe_screen *screen = rb_screen->screen;
-   struct pipe_surface *surface = rb_surface->surface;
 
    screen->flush_frontbuffer(screen,
-                             surface,
+                             resource,
+                             level, layer,
                              context_private);
 }
 
@@ -272,30 +216,28 @@ rbug_screen_fence_reference(struct pipe_screen *_screen,
                            fence);
 }
 
-static int
+static boolean
 rbug_screen_fence_signalled(struct pipe_screen *_screen,
-                            struct pipe_fence_handle *fence,
-                            unsigned flags)
+                            struct pipe_fence_handle *fence)
 {
    struct rbug_screen *rb_screen = rbug_screen(_screen);
    struct pipe_screen *screen = rb_screen->screen;
 
    return screen->fence_signalled(screen,
-                                  fence,
-                                  flags);
+                                  fence);
 }
 
-static int
+static boolean
 rbug_screen_fence_finish(struct pipe_screen *_screen,
                          struct pipe_fence_handle *fence,
-                         unsigned flags)
+                         uint64_t timeout)
 {
    struct rbug_screen *rb_screen = rbug_screen(_screen);
    struct pipe_screen *screen = rb_screen->screen;
 
    return screen->fence_finish(screen,
                                fence,
-                               flags);
+                               timeout);
 }
 
 boolean
@@ -322,8 +264,6 @@ rbug_screen_create(struct pipe_screen *screen)
    make_empty_list(&rb_screen->surfaces);
    make_empty_list(&rb_screen->transfers);
 
-   rb_screen->base.winsys = NULL;
-
    rb_screen->base.destroy = rbug_screen_destroy;
    rb_screen->base.get_name = rbug_screen_get_name;
    rb_screen->base.get_vendor = rbug_screen_get_vendor;
@@ -336,9 +276,6 @@ rbug_screen_create(struct pipe_screen *screen)
    rb_screen->base.resource_from_handle = rbug_screen_resource_from_handle;
    rb_screen->base.resource_get_handle = rbug_screen_resource_get_handle;
    rb_screen->base.resource_destroy = rbug_screen_resource_destroy;
-   rb_screen->base.get_tex_surface = rbug_screen_get_tex_surface;
-   rb_screen->base.tex_surface_destroy = rbug_screen_tex_surface_destroy;
-   rb_screen->base.user_buffer_create = rbug_screen_user_buffer_create;
    rb_screen->base.flush_frontbuffer = rbug_screen_flush_frontbuffer;
    rb_screen->base.fence_reference = rbug_screen_fence_reference;
    rb_screen->base.fence_signalled = rbug_screen_fence_signalled;

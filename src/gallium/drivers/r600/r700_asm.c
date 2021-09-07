@@ -21,24 +21,29 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 #include "r600_asm.h"
-#include "r600_context.h"
-#include "util/u_memory.h"
 #include "r700_sq.h"
-#include <stdio.h>
 
-
-int r700_bc_alu_build(struct r600_bc *bc, struct r600_bc_alu *alu, unsigned id)
+void r700_bytecode_cf_vtx_build(uint32_t *bytecode, const struct r600_bytecode_cf *cf)
 {
-	unsigned i;
+	unsigned count = (cf->ndw / 4) - 1;
+	*bytecode++ = S_SQ_CF_WORD0_ADDR(cf->addr >> 1);
+	*bytecode++ = cf->inst |
+			S_SQ_CF_WORD1_BARRIER(1) |
+			S_SQ_CF_WORD1_COUNT(count) |
+			S_SQ_CF_WORD1_COUNT_3(count >> 3);
+}
 
+int r700_bytecode_alu_build(struct r600_bytecode *bc, struct r600_bytecode_alu *alu, unsigned id)
+{
 	bc->bytecode[id++] = S_SQ_ALU_WORD0_SRC0_SEL(alu->src[0].sel) |
 		S_SQ_ALU_WORD0_SRC0_REL(alu->src[0].rel) |
 		S_SQ_ALU_WORD0_SRC0_CHAN(alu->src[0].chan) |
 		S_SQ_ALU_WORD0_SRC0_NEG(alu->src[0].neg) |
 		S_SQ_ALU_WORD0_SRC1_SEL(alu->src[1].sel) |
-		S_SQ_ALU_WORD0_SRC0_REL(alu->src[1].rel) |
+		S_SQ_ALU_WORD0_SRC1_REL(alu->src[1].rel) |
 		S_SQ_ALU_WORD0_SRC1_CHAN(alu->src[1].chan) |
 		S_SQ_ALU_WORD0_SRC1_NEG(alu->src[1].neg) |
+		S_SQ_ALU_WORD0_PRED_SEL(alu->pred_sel) |
 		S_SQ_ALU_WORD0_LAST(alu->last);
 
 	/* don't replace gpr by pv or ps for destination register */
@@ -61,18 +66,11 @@ int r700_bc_alu_build(struct r600_bc *bc, struct r600_bc_alu *alu, unsigned id)
 					S_SQ_ALU_WORD1_OP2_SRC0_ABS(alu->src[0].abs) |
 					S_SQ_ALU_WORD1_OP2_SRC1_ABS(alu->src[1].abs) |
 					S_SQ_ALU_WORD1_OP2_WRITE_MASK(alu->dst.write) |
+					S_SQ_ALU_WORD1_OP2_OMOD(alu->omod) |
 					S_SQ_ALU_WORD1_OP2_ALU_INST(alu->inst) |
 					S_SQ_ALU_WORD1_BANK_SWIZZLE(alu->bank_swizzle) |
-			                S_SQ_ALU_WORD1_OP2_UPDATE_EXECUTE_MASK(alu->predicate) |
-		 	                S_SQ_ALU_WORD1_OP2_UPDATE_PRED(alu->predicate);
-	}
-	if (alu->last) {
-		if (alu->nliteral && !alu->literal_added) {
-			R600_ERR("Bug in ALU processing for instruction 0x%08x, literal not added correctly\n", alu->inst);
-		}
-		for (i = 0; i < alu->nliteral; i++) {
-			bc->bytecode[id++] = alu->value[i];
-		}
+			                S_SQ_ALU_WORD1_OP2_UPDATE_EXECUTE_MASK(alu->execute_mask) |
+			                S_SQ_ALU_WORD1_OP2_UPDATE_PRED(alu->update_pred);
 	}
 	return 0;
 }

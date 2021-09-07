@@ -10,7 +10,7 @@ include $(TOP)/configs/current
 
 GL_MAJOR = 1
 GL_MINOR = 5
-GL_TINY = 0$(MESA_MAJOR)0$(MESA_MINOR)0$(MESA_TINY)
+GL_TINY = 0$(MESA_MAJOR)$(MESA_MINOR)0$(MESA_TINY)
 
 
 INCLUDE_DIRS = \
@@ -26,8 +26,9 @@ INCLUDE_DIRS = \
 
 DEFINES += \
 	-DGALLIUM_SOFTPIPE \
+	-DGALLIUM_RBUG \
+	-DGALLIUM_TRACE \
 	-DGALLIUM_GALAHAD
-#-DGALLIUM_CELL will be defined by the config */
 
 XLIB_TARGET_SOURCES = \
 	xlib.c
@@ -36,7 +37,6 @@ XLIB_TARGET_SOURCES = \
 XLIB_TARGET_OBJECTS = $(XLIB_TARGET_SOURCES:.c=.o)
 
 
-# Note: CELL_SPU_LIB is only defined for cell configs
 
 LIBS = \
 	$(GALLIUM_DRIVERS) \
@@ -44,18 +44,22 @@ LIBS = \
 	$(TOP)/src/gallium/winsys/sw/xlib/libws_xlib.a \
 	$(TOP)/src/gallium/drivers/trace/libtrace.a \
 	$(TOP)/src/gallium/drivers/rbug/librbug.a \
-	$(TOP)/src/gallium/drivers/identity/libidentity.a \
+	$(TOP)/src/gallium/drivers/galahad/libgalahad.a \
 	$(TOP)/src/mapi/glapi/libglapi.a \
 	$(TOP)/src/mesa/libmesagallium.a \
 	$(GALLIUM_AUXILIARIES) \
-	$(CELL_SPU_LIB) \
 
 
 # LLVM
 ifeq ($(MESA_LLVM),1)
+PIPE_DRIVERS += $(TOP)/src/gallium/drivers/llvmpipe/libllvmpipe.a
 DEFINES += -DGALLIUM_LLVMPIPE
 GL_LIB_DEPS += $(LLVM_LIBS) 
 LDFLAGS += $(LLVM_LDFLAGS)
+endif
+
+ifeq ($(SHARED_GLAPI),1)
+GL_LIB_DEPS := -L$(TOP)/$(LIB_DIR) -l$(GLAPI_LIB) $(GL_LIB_DEPS)
 endif
 
 

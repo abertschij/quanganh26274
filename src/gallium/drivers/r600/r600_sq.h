@@ -74,6 +74,10 @@
 #define   S_SQ_CF_ALU_WORD0_KCACHE_MODE0(x)                          (((x) & 0x3) << 30)
 #define   G_SQ_CF_ALU_WORD0_KCACHE_MODE0(x)                          (((x) >> 30) & 0x3)
 #define   C_SQ_CF_ALU_WORD0_KCACHE_MODE0                             0x3FFFFFFF
+#define     V_SQ_CF_KCACHE_NOP                                       0x00000000
+#define     V_SQ_CF_KCACHE_LOCK_1                                    0x00000001
+#define     V_SQ_CF_KCACHE_LOCK_2                                    0x00000002
+#define     V_SQ_CF_KCACHE_LOCK_LOOP_INDEX                           0x00000003
 #define P_SQ_CF_ALU_WORD1
 #define   S_SQ_CF_ALU_WORD1_KCACHE_MODE1(x)                          (((x) & 0x3) << 0)
 #define   G_SQ_CF_ALU_WORD1_KCACHE_MODE1(x)                          (((x) >> 0) & 0x3)
@@ -110,6 +114,10 @@
 #define     V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_POS                 0x00000001
 #define     V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_PARAM               0x00000002
 #define     V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_SX                  0x00000003
+#define     V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_WRITE               0x00000000
+#define     V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_WRITE_IND           0x00000001
+#define     V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_READ                0x00000002
+#define     V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_READ_IND            0x00000003
 #define   S_SQ_CF_ALLOC_EXPORT_WORD0_RW_GPR(x)                       (((x) & 0x7F) << 15)
 #define   G_SQ_CF_ALLOC_EXPORT_WORD0_RW_GPR(x)                       (((x) >> 15) & 0x7F)
 #define   C_SQ_CF_ALLOC_EXPORT_WORD0_RW_GPR                          0xFFC07FFF
@@ -187,6 +195,8 @@
 #define     V_SQ_ALU_SRC_M_1_INT                                     0x000000FB
 #define     V_SQ_ALU_SRC_0_5                                         0x000000FC
 #define     V_SQ_ALU_SRC_LITERAL                                     0x000000FD
+#define     V_SQ_ALU_SRC_PV                                          0x000000FE
+#define     V_SQ_ALU_SRC_PS                                          0x000000FF
 #define     V_SQ_ALU_SRC_PARAM_BASE                                  0x000001C0
 #define   S_SQ_ALU_WORD0_SRC0_REL(x)                                 (((x) & 0x1) << 9)
 #define   G_SQ_ALU_WORD0_SRC0_REL(x)                                 (((x) >> 9) & 0x1)
@@ -461,4 +471,11 @@
 #define SQ_ALU_SCL_122                           0x00000001
 #define SQ_ALU_SCL_212                           0x00000002
 #define SQ_ALU_SCL_221                           0x00000003
+
+#define   INDEX_MODE_AR_X 0
+#define   INDEX_MODE_AR_Y 1
+#define   INDEX_MODE_AR_Z 2
+#define   INDEX_MODE_AR_W 3
+#define   INDEX_MODE_LOOP 4
+
 #endif

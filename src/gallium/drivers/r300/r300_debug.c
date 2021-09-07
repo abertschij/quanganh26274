@@ -27,27 +27,28 @@
 #include <stdio.h>
 
 static const struct debug_named_value debug_options[] = {
+    { "info", DBG_INFO, "Print hardware info (printed by default on debug builds"},
     { "fp", DBG_FP, "Log fragment program compilation" },
     { "vp", DBG_VP, "Log vertex program compilation" },
+    { "pstat", DBG_P_STAT, "Log vertex/fragment program stats" },
     { "draw", DBG_DRAW, "Log draw calls" },
     { "swtcl", DBG_SWTCL, "Log SWTCL-specific info" },
     { "rsblock", DBG_RS_BLOCK, "Log rasterizer registers" },
     { "psc", DBG_PSC, "Log vertex stream registers" },
     { "tex", DBG_TEX, "Log basic info about textures" },
     { "texalloc", DBG_TEXALLOC, "Log texture mipmap tree info" },
-    { "fall", DBG_FALL, "Log fallbacks" },
     { "rs", DBG_RS, "Log rasterizer" },
     { "fb", DBG_FB, "Log framebuffer" },
     { "cbzb", DBG_CBZB, "Log fast color clear info" },
-    { "stats", DBG_STATS, "Log emission statistics" },
     { "hyperz", DBG_HYPERZ, "Log HyperZ info" },
     { "scissor", DBG_SCISSOR, "Log scissor info" },
-    { "fakeocc", DBG_FAKE_OCC, "Use fake occlusion queries" },
     { "anisohq", DBG_ANISOHQ, "Use high quality anisotropic filtering" },
     { "notiling", DBG_NO_TILING, "Disable tiling" },
     { "noimmd", DBG_NO_IMMD, "Disable immediate mode" },
     { "noopt", DBG_NO_OPT, "Disable shader optimizations" },
     { "nocbzb", DBG_NO_CBZB, "Disable fast color clear" },
+    { "nozmask", DBG_NO_ZMASK, "Disable zbuffer compression" },
+    { "nohiz", DBG_NO_HIZ, "Disable hierarchical zbuffer" },
 
     /* must be last */
     DEBUG_NAMED_VALUE_END

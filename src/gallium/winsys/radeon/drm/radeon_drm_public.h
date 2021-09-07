@@ -1,9 +1,10 @@
-
 #ifndef RADEON_DRM_PUBLIC_H
 #define RADEON_DRM_PUBLIC_H
 
-struct r300_winsys_screen;
+#include "pipe/p_defines.h"
 
-struct r300_winsys_screen *r300_drm_winsys_screen_create(int drmFD);
+struct radeon_winsys;
+
+struct radeon_winsys *radeon_drm_winsys_create(int fd);
 
 #endif

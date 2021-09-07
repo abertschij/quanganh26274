@@ -36,12 +36,12 @@
 #include "program/program.h"
 #include "program/programopt.h"
 #include "tnl/tnl.h"
-#include "talloc.h"
+#include "glsl/ralloc.h"
 
 #include "brw_context.h"
 #include "brw_wm.h"
 
-static void brwBindProgram( GLcontext *ctx,
+static void brwBindProgram( struct gl_context *ctx,
 			    GLenum target, 
 			    struct gl_program *prog )
 {
@@ -57,7 +57,7 @@ static void brwBindProgram( GLcontext *ctx,
    }
 }
 
-static struct gl_program *brwNewProgram( GLcontext *ctx,
+static struct gl_program *brwNewProgram( struct gl_context *ctx,
 				      GLenum target, 
 				      GLuint id )
 {
@@ -93,36 +93,38 @@ static struct gl_program *brwNewProgram( GLcontext *ctx,
    }
 }
 
-static void brwDeleteProgram( GLcontext *ctx,
+static void brwDeleteProgram( struct gl_context *ctx,
 			      struct gl_program *prog )
 {
    _mesa_delete_program( ctx, prog );
 }
 
 
-static GLboolean brwIsProgramNative( GLcontext *ctx,
-				     GLenum target, 
-				     struct gl_program *prog )
+static GLboolean
+brwIsProgramNative(struct gl_context *ctx,
+		   GLenum target,
+		   struct gl_program *prog)
 {
-   return GL_TRUE;
+   return true;
 }
 
 static void
-shader_error(GLcontext *ctx, struct gl_program *prog, const char *msg)
+shader_error(struct gl_context *ctx, struct gl_program *prog, const char *msg)
 {
    struct gl_shader_program *shader;
 
    shader = _mesa_lookup_shader_program(ctx, prog->Id);
 
    if (shader) {
-      shader->InfoLog = talloc_strdup_append(shader->InfoLog, msg);
-      shader->LinkStatus = GL_FALSE;
+      ralloc_strcat(&shader->InfoLog, msg);
+      shader->LinkStatus = false;
    }
 }
 
-static GLboolean brwProgramStringNotify( GLcontext *ctx,
-                                         GLenum target,
-                                         struct gl_program *prog )
+static GLboolean
+brwProgramStringNotify(struct gl_context *ctx,
+		       GLenum target,
+		       struct gl_program *prog)
 {
    struct brw_context *brw = brw_context(ctx);
    int i;
@@ -134,29 +136,17 @@ static GLboolean brwProgramStringNotify( GLcontext *ctx,
          brw_fragment_program_const(brw->fragment_program);
       struct gl_shader_program *shader_program;
 
-      if (fprog->FogOption) {
-         _mesa_append_fog_code(ctx, fprog);
-         fprog->FogOption = GL_NONE;
-      }
-
       if (newFP == curFP)
 	 brw->state.dirty.brw |= BRW_NEW_FRAGMENT_PROGRAM;
       newFP->id = brw->program_id++;      
-      newFP->isGLSL = brw_wm_is_glsl(fprog);
 
       /* Don't reject fragment shaders for their Mesa IR state when we're
        * using the new FS backend.
        */
       shader_program = _mesa_lookup_shader_program(ctx, prog->Id);
-      if (shader_program) {
-	 for (i = 0; i < shader_program->_NumLinkedShaders; i++) {
-	    struct brw_shader *shader;
-
-	    shader = (struct brw_shader *)shader_program->_LinkedShaders[i];
-	    if (shader->base.Type == GL_FRAGMENT_SHADER && shader->ir) {
-	       return GL_TRUE;
-	    }
-	 }
+      if (shader_program
+	  && shader_program->_LinkedShaders[MESA_SHADER_FRAGMENT]) {
+	 return true;
       }
    }
    else if (target == GL_VERTEX_PROGRAM_ARB) {
@@ -192,14 +182,14 @@ static GLboolean brwProgramStringNotify( GLcontext *ctx,
 		      "i965 driver doesn't yet support uninlined function "
 		      "calls.  Move to using a single return statement at "
 		      "the end of the function to work around it.\n");
-	 return GL_FALSE;
+	 return false;
       }
 
       if (prog->Instructions[i].Opcode == OPCODE_RET) {
 	 shader_error(ctx, prog,
 		      "i965 driver doesn't yet support \"return\" "
 		      "from main().\n");
-	 return GL_FALSE;
+	 return false;
       }
 
       for (r = 0; r < _mesa_num_inst_src_regs(inst->Opcode); r++) {
@@ -207,7 +197,7 @@ static GLboolean brwProgramStringNotify( GLcontext *ctx,
 	     prog->Instructions[i].SrcReg[r].File == PROGRAM_INPUT) {
 	    shader_error(ctx, prog,
 			 "Variable indexing of shader inputs unsupported\n");
-	    return GL_FALSE;
+	    return false;
 	 }
       }
 
@@ -216,7 +206,7 @@ static GLboolean brwProgramStringNotify( GLcontext *ctx,
 	  prog->Instructions[i].DstReg.File == PROGRAM_OUTPUT) {
 	 shader_error(ctx, prog,
 		      "Variable indexing of FS outputs unsupported\n");
-	 return GL_FALSE;
+	 return false;
       }
       if (target == GL_FRAGMENT_PROGRAM_ARB) {
 	 if ((prog->Instructions[i].DstReg.RelAddr &&
@@ -230,12 +220,40 @@ static GLboolean brwProgramStringNotify( GLcontext *ctx,
 	    shader_error(ctx, prog,
 			 "Variable indexing of variable arrays in the FS "
 			 "unsupported\n");
-	    return GL_FALSE;
+	    return false;
 	 }
       }
    }
 
-   return GL_TRUE;
+   return true;
+}
+
+/* Per-thread scratch space is a power-of-two multiple of 1KB. */
+int
+brw_get_scratch_size(int size)
+{
+   int i;
+
+   for (i = 1024; i < size; i *= 2)
+      ;
+
+   return i;
+}
+
+void
+brw_get_scratch_bo(struct intel_context *intel,
+		   drm_intel_bo **scratch_bo, int size)
+{
+   drm_intel_bo *old_bo = *scratch_bo;
+
+   if (old_bo && old_bo->size < size) {
+      drm_intel_bo_unreference(old_bo);
+      old_bo = NULL;
+   }
+
+   if (!old_bo) {
+      *scratch_bo = drm_intel_bo_alloc(intel->bufmgr, "scratch bo", size, 4096);
+   }
 }
 
 void brwInitFragProgFuncs( struct dd_function_table *functions )
@@ -250,7 +268,6 @@ void brwInitFragProgFuncs( struct dd_function_table *functions )
 
    functions->NewShader = brw_new_shader;
    functions->NewShaderProgram = brw_new_shader_program;
-   functions->CompileShader = brw_compile_shader;
    functions->LinkShader = brw_link_shader;
 }
 

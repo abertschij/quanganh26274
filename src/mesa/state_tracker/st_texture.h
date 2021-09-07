@@ -45,13 +45,13 @@ struct st_texture_image
 {
    struct gl_texture_image base;
 
-   /* These aren't stored in gl_texture_image 
+   /** Used to store texture data that doesn't fit in the parent
+    * object's mipmap buffer.
     */
-   GLuint level;
-   GLuint face;
+   GLubyte *TexData;
 
    /* If stImage->pt != NULL, image data is stored here.
-    * Else if stImage->base.Data != NULL, image is stored there.
+    * Else if stImage->TexData != NULL, image is stored there.
     * Else there is no image data.
     */
    struct pipe_resource *pt;
@@ -71,7 +71,10 @@ struct st_texture_object
     */
    GLuint lastLevel;
 
-   /** The size of the level=0 mipmap image */
+   /** The size of the level=0 mipmap image.
+    * Note that the number of 1D array layers will be in height0 and the
+    * number of 2D array layers will be in depth0, as in GL.
+    */
    GLuint width0, height0, depth0;
 
    /* On validation any active images held in main memory or in other
@@ -120,34 +123,25 @@ st_get_stobj_resource(struct st_texture_object *stObj)
 
 
 static INLINE struct pipe_sampler_view *
-st_create_texture_sampler_view(struct pipe_context *pipe,
-                               struct pipe_resource *texture)
+st_create_texture_sampler_view_format(struct pipe_context *pipe,
+                                      struct pipe_resource *texture,
+                                      enum pipe_format format)
 {
    struct pipe_sampler_view templ;
 
-   u_sampler_view_default_template(&templ,
-                                   texture,
-                                   texture->format);
+   u_sampler_view_default_template(&templ, texture, format);
 
    return pipe->create_sampler_view(pipe, texture, &templ);
 }
 
-
 static INLINE struct pipe_sampler_view *
-st_get_texture_sampler_view(struct st_texture_object *stObj,
-                            struct pipe_context *pipe)
-
+st_create_texture_sampler_view(struct pipe_context *pipe,
+                               struct pipe_resource *texture)
 {
-   if (!stObj || !stObj->pt) {
-      return NULL;
-   }
-
-   if (!stObj->sampler_view) {
-      stObj->sampler_view = st_create_texture_sampler_view(pipe, stObj->pt);
-   }
-
-   return stObj->sampler_view;
+   return st_create_texture_sampler_view_format(pipe, texture,
+                                                texture->format);
 }
+
 
 
 extern struct pipe_resource *
@@ -158,15 +152,25 @@ st_texture_create(struct st_context *st,
                   GLuint width0,
                   GLuint height0,
                   GLuint depth0,
+                  GLuint layers,
                   GLuint tex_usage );
 
+
+extern void
+st_gl_texture_dims_to_pipe_dims(GLenum texture,
+                                GLuint widthIn,
+                                GLuint heightIn,
+                                GLuint depthIn,
+                                GLuint *widthOut,
+                                GLuint *heightOut,
+                                GLuint *depthOut,
+                                GLuint *layersOut);
 
 /* Check if an image fits into an existing texture object.
  */
 extern GLboolean
 st_texture_match_image(const struct pipe_resource *pt,
-                       const struct gl_texture_image *image,
-                       GLuint face, GLuint level);
+                       const struct gl_texture_image *image);
 
 /* Return a pointer to an image within a texture.  Return image stride as
  * well.
@@ -207,5 +211,9 @@ st_texture_image_copy(struct pipe_context *pipe,
                       struct pipe_resource *dst, GLuint dstLevel,
                       struct pipe_resource *src, GLuint srcLevel,
                       GLuint face);
+
+
+extern struct pipe_resource *
+st_create_color_map_texture(struct gl_context *ctx);
 
 #endif

@@ -48,79 +48,22 @@ extern "C" {
 #endif
 
 
-#if defined(PIPE_SUBSYSTEM_WINDOWS_MINIPORT)
-__inline double ceil(double val)
-{
-   double ceil_val;
-
-   if ((val - (long) val) == 0) {
-      ceil_val = val;
-   }
-   else {
-      if (val > 0) {
-         ceil_val = (long) val + 1;
-      }
-      else {
-         ceil_val = (long) val;
-      }
-   }
-
-   return ceil_val;
-}
-
-#ifndef PIPE_SUBSYSTEM_WINDOWS_CE_OGL
-__inline double floor(double val)
-{
-   double floor_val;
-
-   if ((val - (long) val) == 0) {
-      floor_val = val;
-   }
-   else {
-      if (val > 0) {
-         floor_val = (long) val;
-      }
-      else {
-         floor_val = (long) val - 1;
-      }
-   }
-
-   return floor_val;
-}
-#endif
-
-#pragma function(pow)
-__inline double __cdecl pow(double val, double exponent)
-{
-   /* XXX */
-   assert(0);
-   return 0;
-}
-
-#pragma function(log)
-__inline double __cdecl log(double val)
-{
-   /* XXX */
-   assert(0);
-   return 0;
-}
-
-#pragma function(atan2)
-__inline double __cdecl atan2(double val)
-{
-   /* XXX */
-   assert(0);
-   return 0;
-}
-#else
 #include <math.h>
 #include <stdarg.h>
+
+#ifdef PIPE_OS_UNIX
+#include <strings.h> /* for ffs */
+#endif
+
+
+#ifndef M_SQRT2
+#define M_SQRT2 1.41421356237309504880
 #endif
 
 
 #if defined(_MSC_VER) 
 
-#if _MSC_VER < 1400 && !defined(__cplusplus) || defined(PIPE_SUBSYSTEM_WINDOWS_CE)
+#if _MSC_VER < 1400 && !defined(__cplusplus)
  
 static INLINE float cosf( float f ) 
 {
@@ -171,7 +114,7 @@ static INLINE float logf( float f )
 
 #define isfinite(x) _finite((double)(x))
 #define isnan(x) _isnan((double)(x))
-#endif
+#endif /* _MSC_VER < 1400 && !defined(__cplusplus) */
 
 static INLINE double log2( double x )
 {
@@ -179,8 +122,41 @@ static INLINE double log2( double x )
    return log( x ) * invln2;
 }
 
+static INLINE double
+round(double x)
+{
+   return x >= 0.0 ? floor(x + 0.5) : ceil(x - 0.5);
+}
+
+static INLINE float
+roundf(float x)
+{
+   return x >= 0.0f ? floorf(x + 0.5f) : ceilf(x - 0.5f);
+}
+
 #endif /* _MSC_VER */
 
+
+#ifdef PIPE_OS_ANDROID
+
+static INLINE
+double log2(double d)
+{
+   return log(d) * (1.0 / M_LN2);
+}
+
+/* workaround a conflict with main/imports.h */
+#ifdef log2f
+#undef log2f
+#endif
+
+static INLINE
+float log2f(float f)
+{
+   return logf(f) * (float) (1.0 / M_LN2);
+}
+
+#endif
 
 
 
@@ -204,6 +180,13 @@ union fi {
    float f;
    int32_t i;
    uint32_t ui;
+};
+
+
+union di {
+   double d;
+   int64_t i;
+   uint64_t ui;
 };
 
 
@@ -349,14 +332,107 @@ util_is_approx(float a, float b, float tol)
 
 
 /**
- * Test if x is NaN or +/- infinity.
+ * util_is_X_inf_or_nan = test if x is NaN or +/- Inf
+ * util_is_X_nan        = test if x is NaN
+ * util_X_inf_sign      = return +1 for +Inf, -1 for -Inf, or 0 for not Inf
+ *
+ * NaN can be checked with x != x, however this fails with the fast math flag
+ **/
+
+
+/**
+ * Single-float
  */
 static INLINE boolean
 util_is_inf_or_nan(float x)
 {
    union fi tmp;
    tmp.f = x;
-   return !(int)((unsigned int)((tmp.i & 0x7fffffff)-0x7f800000) >> 31);
+   return (tmp.ui & 0x7f800000) == 0x7f800000;
+}
+
+
+static INLINE boolean
+util_is_nan(float x)
+{
+   union fi tmp;
+   tmp.f = x;
+   return (tmp.ui & 0x7fffffff) > 0x7f800000;
+}
+
+
+static INLINE int
+util_inf_sign(float x)
+{
+   union fi tmp;
+   tmp.f = x;
+   if ((tmp.ui & 0x7fffffff) != 0x7f800000) {
+      return 0;
+   }
+
+   return (x < 0) ? -1 : 1;
+}
+
+
+/**
+ * Double-float
+ */
+static INLINE boolean
+util_is_double_inf_or_nan(double x)
+{
+   union di tmp;
+   tmp.d = x;
+   return (tmp.ui & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL;
+}
+
+
+static INLINE boolean
+util_is_double_nan(double x)
+{
+   union di tmp;
+   tmp.d = x;
+   return (tmp.ui & 0x7fffffffffffffffULL) > 0x7ff0000000000000ULL;
+}
+
+
+static INLINE int
+util_double_inf_sign(double x)
+{
+   union di tmp;
+   tmp.d = x;
+   if ((tmp.ui & 0x7fffffffffffffffULL) != 0x7ff0000000000000ULL) {
+      return 0;
+   }
+
+   return (x < 0) ? -1 : 1;
+}
+
+
+/**
+ * Half-float
+ */
+static INLINE boolean
+util_is_half_inf_or_nan(int16_t x)
+{
+   return (x & 0x7c00) == 0x7c00;
+}
+
+
+static INLINE boolean
+util_is_half_nan(int16_t x)
+{
+   return (x & 0x7fff) > 0x7c00;
+}
+
+
+static INLINE int
+util_half_inf_sign(int16_t x)
+{
+   if ((x & 0x7fff) != 0x7c00) {
+      return 0;
+   }
+
+   return (x < 0) ? -1 : 1;
 }
 
 
@@ -364,6 +440,9 @@ util_is_inf_or_nan(float x)
  * Find first bit set in word.  Least significant bit is 1.
  * Return 0 if no bits set.
  */
+#ifndef FFS_DEFINED
+#define FFS_DEFINED 1
+
 #if defined(_MSC_VER) && _MSC_VER >= 1300 && (_M_IX86 || _M_AMD64 || _M_IA64)
 unsigned char _BitScanForward(unsigned long* Index, unsigned long Mask);
 #pragma intrinsic(_BitScanForward)
@@ -392,24 +471,40 @@ unsigned ffs( unsigned u )
 
    return i;
 }
-#elif defined(__MINGW32__)
+#elif defined(__MINGW32__) || defined(PIPE_OS_ANDROID)
 #define ffs __builtin_ffs
 #endif
 
-#ifdef __MINGW32__
-#define ffs __builtin_ffs
-#endif
+#endif /* FFS_DEFINED */
 
-
-/* Could also binary search for the highest bit.
+/**
+ * Find last bit set in a word.  The least significant bit is 1.
+ * Return 0 if no bits are set.
  */
-static INLINE unsigned
-util_unsigned_logbase2(unsigned n)
+static INLINE unsigned util_last_bit(unsigned u)
 {
-   unsigned log2 = 0;
-   while (n >>= 1)
-      ++log2;
-   return log2;
+   unsigned r = 0;
+   while (u) {
+       r++;
+       u >>= 1;
+   }
+   return r;
+}
+
+
+/* Destructively loop over all of the bits in a mask as in:
+ *
+ * while (mymask) {
+ *   int i = u_bit_scan(&mymask);
+ *   ... process element i
+ * }
+ * 
+ */
+static INLINE int u_bit_scan(unsigned *mask)
+{
+   int i = ffs(*mask) - 1;
+   *mask &= ~(1 << i);
+   return i;
 }
 
 
@@ -458,6 +553,17 @@ float_to_ubyte(float f)
    }
 }
 
+static INLINE float
+byte_to_float_tex(int8_t b)
+{
+   return (b == -128) ? -1.0F : b * 1.0F / 127.0F;
+}
+
+static INLINE int8_t
+float_to_byte_tex(float f)
+{
+   return (int8_t) (127.0F * f);
+}
 
 /**
  * Calc log base 2
@@ -465,10 +571,17 @@ float_to_ubyte(float f)
 static INLINE unsigned
 util_logbase2(unsigned n)
 {
-   unsigned log2 = 0;
-   while (n >>= 1)
-      ++log2;
-   return log2;
+#if defined(PIPE_CC_GCC) && (PIPE_CC_GCC_VERSION >= 304)
+   return ((sizeof(unsigned) * 8 - 1) - __builtin_clz(n | 1));
+#else
+   unsigned pos = 0;
+   if (n >= 1<<16) { n >>= 16; pos += 16; }
+   if (n >= 1<< 8) { n >>=  8; pos +=  8; }
+   if (n >= 1<< 4) { n >>=  4; pos +=  4; }
+   if (n >= 1<< 2) { n >>=  2; pos +=  2; }
+   if (n >= 1<< 1) {           pos +=  1; }
+   return pos;
+#endif
 }
 
 
@@ -478,17 +591,29 @@ util_logbase2(unsigned n)
 static INLINE unsigned
 util_next_power_of_two(unsigned x)
 {
-   unsigned i;
+#if defined(PIPE_CC_GCC) && (PIPE_CC_GCC_VERSION >= 304)
+   if (x <= 1)
+       return 1;
 
-   if (x == 0)
+   return (1 << ((sizeof(unsigned) * 8) - __builtin_clz(x - 1)));
+#else
+   unsigned val = x;
+
+   if (x <= 1)
       return 1;
 
-   --x;
+   if (util_is_power_of_two(x))
+      return x;
 
-   for (i = 1; i < sizeof(unsigned) * 8; i <<= 1)
-      x |= x >> i;
-
-   return x + 1;
+   val--;
+   val = (val >> 1) | val;
+   val = (val >> 2) | val;
+   val = (val >> 4) | val;
+   val = (val >> 8) | val;
+   val = (val >> 16) | val;
+   val++;
+   return val;
+#endif
 }
 
 
@@ -498,7 +623,7 @@ util_next_power_of_two(unsigned x)
 static INLINE unsigned
 util_bitcount(unsigned n)
 {
-#if defined(PIPE_CC_GCC)
+#if defined(PIPE_CC_GCC) && (PIPE_CC_GCC_VERSION >= 304)
    return __builtin_popcount(n);
 #else
    /* K&R classic bitcount.
@@ -514,6 +639,19 @@ util_bitcount(unsigned n)
    return bits;
 #endif
 }
+
+
+/**
+ * Convert from little endian to CPU byte order.
+ */
+
+#ifdef PIPE_ARCH_BIG_ENDIAN
+#define util_le32_to_cpu(x) util_bswap32(x)
+#define util_le16_to_cpu(x) util_bswap16(x)
+#else
+#define util_le32_to_cpu(x) (x)
+#define util_le16_to_cpu(x) (x)
+#endif
 
 
 /**
@@ -553,11 +691,11 @@ util_bswap16(uint16_t n)
 #define MIN2( A, B )   ( (A)<(B) ? (A) : (B) )
 #define MAX2( A, B )   ( (A)>(B) ? (A) : (B) )
 
-#define MIN3( A, B, C ) MIN2( MIN2( A, B ), C )
-#define MAX3( A, B, C ) MAX2( MAX2( A, B ), C )
+#define MIN3( A, B, C ) ((A) < (B) ? MIN2(A, C) : MIN2(B, C))
+#define MAX3( A, B, C ) ((A) > (B) ? MAX2(A, C) : MAX2(B, C))
 
-#define MIN4( A, B, C, D ) MIN2( MIN2( A, B ), MIN2(C, D) )
-#define MAX4( A, B, C, D ) MAX2( MAX2( A, B ), MAX2(C, D) )
+#define MIN4( A, B, C, D ) ((A) < (B) ? MIN3(A, C, D) : MIN3(B, C, D))
+#define MAX4( A, B, C, D ) ((A) > (B) ? MAX3(A, C, D) : MAX3(B, C, D))
 
 
 /**

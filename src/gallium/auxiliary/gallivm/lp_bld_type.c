@@ -30,34 +30,38 @@
 
 #include "lp_bld_type.h"
 #include "lp_bld_const.h"
+#include "lp_bld_init.h"
 
 
 LLVMTypeRef
-lp_build_elem_type(struct lp_type type)
+lp_build_elem_type(struct gallivm_state *gallivm, struct lp_type type)
 {
    if (type.floating) {
       switch(type.width) {
+      case 16:
+         return LLVMIntTypeInContext(gallivm->context, 16);
+         break;
       case 32:
-         return LLVMFloatType();
+         return LLVMFloatTypeInContext(gallivm->context);
          break;
       case 64:
-         return LLVMDoubleType();
+         return LLVMDoubleTypeInContext(gallivm->context);
          break;
       default:
          assert(0);
-         return LLVMFloatType();
+         return LLVMFloatTypeInContext(gallivm->context);
       }
    }
    else {
-      return LLVMIntType(type.width);
+      return LLVMIntTypeInContext(gallivm->context, type.width);
    }
 }
 
 
 LLVMTypeRef
-lp_build_vec_type(struct lp_type type)
+lp_build_vec_type(struct gallivm_state *gallivm,struct lp_type type)
 {
-   LLVMTypeRef elem_type = lp_build_elem_type(type);
+   LLVMTypeRef elem_type = lp_build_elem_type(gallivm, type);
    if (type.length == 1)
       return elem_type;
    else
@@ -84,6 +88,10 @@ lp_check_elem_type(struct lp_type type, LLVMTypeRef elem_type)
 
    if (type.floating) {
       switch(type.width) {
+      case 16:
+         if(elem_kind != LLVMIntegerTypeKind)
+            return FALSE;
+         break;
       case 32:
          if(elem_kind != LLVMFloatTypeKind)
             return FALSE;
@@ -149,16 +157,16 @@ lp_check_value(struct lp_type type, LLVMValueRef val)
 
 
 LLVMTypeRef
-lp_build_int_elem_type(struct lp_type type)
+lp_build_int_elem_type(struct gallivm_state *gallivm, struct lp_type type)
 {
-   return LLVMIntType(type.width);
+   return LLVMIntTypeInContext(gallivm->context, type.width);
 }
 
 
 LLVMTypeRef
-lp_build_int_vec_type(struct lp_type type)
+lp_build_int_vec_type(struct gallivm_state *gallivm, struct lp_type type)
 {
-   LLVMTypeRef elem_type = lp_build_int_elem_type(type);
+   LLVMTypeRef elem_type = lp_build_int_elem_type(gallivm, type);
    if (type.length == 1)
       return elem_type;
    else
@@ -167,23 +175,18 @@ lp_build_int_vec_type(struct lp_type type)
 
 
 /**
- * Build int32[4] vector type
+ * Create element of vector type
  */
-LLVMTypeRef
-lp_build_int32_vec4_type(void)
+struct lp_type
+lp_elem_type(struct lp_type type)
 {
-   struct lp_type t;
-   LLVMTypeRef type;
+   struct lp_type res_type;
 
-   memset(&t, 0, sizeof(t));
-   t.floating = FALSE; /* floating point values */
-   t.sign = TRUE;      /* values are signed */
-   t.norm = FALSE;     /* values are not limited to [0,1] or [-1,1] */
-   t.width = 32;       /* 32-bit int */
-   t.length = 4;       /* 4 elements per vector */
+   assert(type.length > 1);
+   res_type = type;
+   res_type.length = 1;
 
-   type = lp_build_int_elem_type(t);
-   return LLVMVectorType(type, t.length);
+   return res_type;
 }
 
 
@@ -308,16 +311,18 @@ lp_typekind_name(LLVMTypeKind t)
       return "LLVMArrayTypeKind";
    case LLVMPointerTypeKind:
       return "LLVMPointerTypeKind";
+#if HAVE_LLVM < 0x0300
    case LLVMOpaqueTypeKind:
       return "LLVMOpaqueTypeKind";
+#endif
    case LLVMVectorTypeKind:
       return "LLVMVectorTypeKind";
    case LLVMMetadataTypeKind:
       return "LLVMMetadataTypeKind";
-   /* Only in LLVM 2.7 and later???
+#if HAVE_LLVM == 0x0207
    case LLVMUnionTypeKind:
       return "LLVMUnionTypeKind";
-   */
+#endif
    default:
       return "unknown LLVMTypeKind";
    }
@@ -367,15 +372,15 @@ lp_dump_llvmtype(LLVMTypeRef t)
 
 void
 lp_build_context_init(struct lp_build_context *bld,
-                      LLVMBuilderRef builder,
+                      struct gallivm_state *gallivm,
                       struct lp_type type)
 {
-   bld->builder = builder;
+   bld->gallivm = gallivm;
    bld->type = type;
 
-   bld->int_elem_type = lp_build_int_elem_type(type);
+   bld->int_elem_type = lp_build_int_elem_type(gallivm, type);
    if (type.floating)
-      bld->elem_type = lp_build_elem_type(type);
+      bld->elem_type = lp_build_elem_type(gallivm, type);
    else
       bld->elem_type = bld->int_elem_type;
 
@@ -390,5 +395,30 @@ lp_build_context_init(struct lp_build_context *bld,
 
    bld->undef = LLVMGetUndef(bld->vec_type);
    bld->zero = LLVMConstNull(bld->vec_type);
-   bld->one = lp_build_one(type);
+   bld->one = lp_build_one(gallivm, type);
+}
+
+
+/**
+ * Count the number of instructions in a function.
+ */
+unsigned
+lp_build_count_instructions(LLVMValueRef function)
+{
+   unsigned num_instrs = 0;
+   LLVMBasicBlockRef block;
+
+   block = LLVMGetFirstBasicBlock(function);
+   while (block) {
+      LLVMValueRef instr;
+      instr = LLVMGetFirstInstruction(block);
+      while (instr) {
+         ++num_instrs;
+
+         instr = LLVMGetNextInstruction(instr);
+      }
+      block = LLVMGetNextBasicBlock(block);
+   }
+
+   return num_instrs;
 }

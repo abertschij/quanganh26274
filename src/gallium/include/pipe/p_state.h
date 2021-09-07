@@ -54,14 +54,14 @@ extern "C" {
  * Implementation limits
  */
 #define PIPE_MAX_ATTRIBS          32
-#define PIPE_MAX_CLIP_PLANES       6
+#define PIPE_MAX_CLIP_PLANES       8
 #define PIPE_MAX_COLOR_BUFS        8
 #define PIPE_MAX_CONSTANT_BUFFERS 32
 #define PIPE_MAX_SAMPLERS         16
-#define PIPE_MAX_VERTEX_SAMPLERS  16
-#define PIPE_MAX_GEOMETRY_SAMPLERS  16
 #define PIPE_MAX_SHADER_INPUTS    32
-#define PIPE_MAX_SHADER_OUTPUTS   32
+#define PIPE_MAX_SHADER_OUTPUTS   48 /* 32 GENERICs + POS, PSIZE, FOG, etc. */
+#define PIPE_MAX_SHADER_SAMPLER_VIEWS 32
+#define PIPE_MAX_SHADER_RESOURCES 32
 #define PIPE_MAX_TEXTURE_LEVELS   16
 #define PIPE_MAX_SO_BUFFERS        4
 
@@ -80,6 +80,8 @@ struct pipe_rasterizer_state
 {
    unsigned flatshade:1;
    unsigned light_twoside:1;
+   unsigned clamp_vertex_color:1;
+   unsigned clamp_fragment_color:1;
    unsigned front_ccw:1;
    unsigned cull_face:2;      /**< PIPE_FACE_x */
    unsigned fill_front:2;     /**< PIPE_POLYGON_MODE_x */
@@ -91,24 +93,21 @@ struct pipe_rasterizer_state
    unsigned poly_smooth:1;
    unsigned poly_stipple_enable:1;
    unsigned point_smooth:1;
-   unsigned sprite_coord_enable:PIPE_MAX_SHADER_OUTPUTS;
    unsigned sprite_coord_mode:1;     /**< PIPE_SPRITE_COORD_ */
    unsigned point_quad_rasterization:1; /** points rasterized as quads or points */
    unsigned point_size_per_vertex:1; /**< size computed in vertex shader */
    unsigned multisample:1;         /* XXX maybe more ms state in future */
    unsigned line_smooth:1;
    unsigned line_stipple_enable:1;
-   unsigned line_stipple_factor:8;  /**< [1..256] actually */
-   unsigned line_stipple_pattern:16;
    unsigned line_last_pixel:1;
 
-   /** 
+   /**
     * Use the first vertex of a primitive as the provoking vertex for
     * flat shading.
     */
-   unsigned flatshade_first:1;   
+   unsigned flatshade_first:1;
 
-   /** 
+   /**
     * When true, triangle rasterization uses (0.5, 0.5) pixel centers
     * for determining pixel ownership.
     *
@@ -121,10 +120,38 @@ struct pipe_rasterizer_state
     */
    unsigned gl_rasterization_rules:1;
 
+   /**
+    * When true, rasterization is disabled and no pixels are written.
+    * This only makes sense with the Stream Out functionality.
+    */
+   unsigned rasterizer_discard:1;
+
+   /**
+    * When false, depth clipping is disabled and the depth value will be
+    * clamped later at the per-pixel level before depth testing.
+    * This depends on PIPE_CAP_DEPTH_CLIP_DISABLE.
+    */
+   unsigned depth_clip:1;
+
+   /**
+    * Enable bits for clipping half-spaces.
+    * This applies to both user clip planes and shader clip distances.
+    * Note that if the bound shader exports any clip distances, these
+    * replace all user clip planes, and clip half-spaces enabled here
+    * but not written by the shader count as disabled.
+    */
+   unsigned clip_plane_enable:PIPE_MAX_CLIP_PLANES;
+
+   unsigned line_stipple_factor:8;  /**< [1..256] actually */
+   unsigned line_stipple_pattern:16;
+
+   unsigned sprite_coord_enable; /* bitfield referring to 32 GENERIC inputs */
+
    float line_width;
    float point_size;           /**< used when no per-vertex size */
    float offset_units;
    float offset_scale;
+   float offset_clamp;
 };
 
 
@@ -153,14 +180,36 @@ struct pipe_scissor_state
 struct pipe_clip_state
 {
    float ucp[PIPE_MAX_CLIP_PLANES][4];
-   unsigned nr;
-   unsigned depth_clamp:1;
+};
+
+
+/**
+ * Stream output for vertex transform feedback.
+ */
+struct pipe_stream_output_info
+{
+   unsigned num_outputs;
+   /** stride for an entire vertex for each buffer in dwords */
+   unsigned stride[PIPE_MAX_SO_BUFFERS];
+
+   /**
+    * Array of stream outputs, in the order they are to be written in.
+    * Selected components are tightly packed into the output buffer.
+    */
+   struct {
+      unsigned register_index:8;  /**< 0 to PIPE_MAX_SHADER_OUTPUTS */
+      unsigned start_component:2; /** 0 to 3 */
+      unsigned num_components:3;  /** 1 to 4 */
+      unsigned output_buffer:3;   /**< 0 to PIPE_MAX_SO_BUFFERS */
+      unsigned dst_offset:16;     /**< offset into the buffer in dwords */
+   } output[PIPE_MAX_SHADER_OUTPUTS];
 };
 
 
 struct pipe_shader_state
 {
    const struct tgsi_token *tokens;
+   struct pipe_stream_output_info stream_output;
 };
 
 
@@ -264,32 +313,42 @@ struct pipe_sampler_state
    unsigned compare_func:3;      /**< PIPE_FUNC_x */
    unsigned normalized_coords:1; /**< Are coords normalized to [0,1]? */
    unsigned max_anisotropy:6;
+   unsigned seamless_cube_map:1;
    float lod_bias;               /**< LOD/lambda bias */
    float min_lod, max_lod;       /**< LOD clamp range, after bias */
-   float border_color[4];
+   union pipe_color_union border_color;
 };
 
 
 /**
- * 2D surface.  This is basically a view into a memory buffer.
- * May be a renderbuffer, texture mipmap level, etc.
+ * A view into a texture that can be bound to a color render target /
+ * depth stencil attachment point.
  */
 struct pipe_surface
 {
    struct pipe_reference reference;
    struct pipe_resource *texture; /**< resource into which this is a view  */
+   struct pipe_context *context; /**< context this surface belongs to */
    enum pipe_format format;
 
+   /* XXX width/height should be removed */
    unsigned width;               /**< logical width in pixels */
    unsigned height;              /**< logical height in pixels */
 
-   unsigned layout;              /**< PIPE_SURFACE_LAYOUT_x */
-   unsigned offset;              /**< offset from start of buffer, in bytes */
    unsigned usage;               /**< bitmask of PIPE_BIND_x */
+   unsigned writable:1;          /**< writable shader resource */
 
-   unsigned zslice;
-   unsigned face;
-   unsigned level;
+   union {
+      struct {
+         unsigned level;
+         unsigned first_layer:16;
+         unsigned last_layer:16;
+      } tex;
+      struct {
+         unsigned first_element;
+         unsigned last_element;
+      } buf;
+   } u;
 };
 
 
@@ -302,8 +361,18 @@ struct pipe_sampler_view
    enum pipe_format format;      /**< typed PIPE_FORMAT_x */
    struct pipe_resource *texture; /**< texture into which this is a view  */
    struct pipe_context *context; /**< context this view belongs to */
-   unsigned first_level:8;       /**< first mipmap level */
-   unsigned last_level:8;        /**< last mipmap level */
+   union {
+      struct {
+         unsigned first_layer:16;     /**< first layer to use for array textures */
+         unsigned last_layer:16;      /**< last layer to use for array textures */
+         unsigned first_level:8;      /**< first mipmap level to use */
+         unsigned last_level:8;       /**< last mipmap level to use */
+      } tex;
+      struct {
+         unsigned first_element;
+         unsigned last_element;
+      } buf;
+   } u;
    unsigned swizzle_r:3;         /**< PIPE_SWIZZLE_x for red component */
    unsigned swizzle_g:3;         /**< PIPE_SWIZZLE_x for green component */
    unsigned swizzle_b:3;         /**< PIPE_SWIZZLE_x for blue component */
@@ -316,12 +385,12 @@ struct pipe_sampler_view
  */
 struct pipe_box
 {
-   unsigned x;
-   unsigned y;
-   unsigned z;
-   unsigned width;
-   unsigned height;
-   unsigned depth;
+   int x;
+   int y;
+   int z;
+   int width;
+   int height;
+   int depth;
 };
 
 
@@ -338,38 +407,14 @@ struct pipe_resource
    unsigned width0;
    unsigned height0;
    unsigned depth0;
+   unsigned array_size;
 
    unsigned last_level:8;    /**< Index of last mipmap level present/defined */
    unsigned nr_samples:8;    /**< for multisampled surfaces, nr of samples */
    unsigned usage:8;         /**< PIPE_USAGE_x (not a bitmask) */
 
-   unsigned bind;	     /**< bitmask of PIPE_BIND_x */
-   unsigned flags;	     /**< bitmask of PIPE_RESOURCE_FLAG_x */
-};
-
-struct pipe_stream_output_state
-{
-   /**< number of the output buffer to insert each element into */
-   int output_buffer[PIPE_MAX_SHADER_OUTPUTS];
-   /**< which register to grab each output from */
-   int register_index[PIPE_MAX_SHADER_OUTPUTS];
-   /**< TGSI_WRITEMASK signifying which components to output */
-   ubyte register_mask[PIPE_MAX_SHADER_OUTPUTS];
-   /**< number of outputs */
-   int num_outputs;
-
-   /**< stride for an entire vertex, only used if all output_buffers
-    * are 0 */
-   unsigned stride;
-};
-
-/**
- * Extra indexing info for (cube) texture resources.
- */
-struct pipe_subresource
-{
-   unsigned face:16;
-   unsigned level:16;
+   unsigned bind;            /**< bitmask of PIPE_BIND_x */
+   unsigned flags;           /**< bitmask of PIPE_RESOURCE_FLAG_x */
 };
 
 
@@ -379,11 +424,11 @@ struct pipe_subresource
 struct pipe_transfer
 {
    struct pipe_resource *resource; /**< resource to transfer to/from  */
-   struct pipe_subresource sr;
+   unsigned level;                 /**< texture mipmap level */
    enum pipe_transfer_usage usage;
-   struct pipe_box box;
-   unsigned stride;
-   unsigned slice_stride;
+   struct pipe_box box;            /**< region of the resource to access */
+   unsigned stride;                /**< row stride in bytes */
+   unsigned layer_stride;          /**< image/layer stride in bytes */
    void *data;
 };
 
@@ -397,9 +442,45 @@ struct pipe_transfer
 struct pipe_vertex_buffer
 {
    unsigned stride;    /**< stride to same attrib in next vertex, in bytes */
-   unsigned max_index;   /**< number of vertices in this buffer */
    unsigned buffer_offset;  /**< offset to start of data in buffer, in bytes */
    struct pipe_resource *buffer;  /**< the actual buffer */
+   const void *user_buffer;  /**< pointer to a user buffer if buffer == NULL */
+};
+
+
+/**
+ * A constant buffer.  A subrange of an existing buffer can be set
+ * as a constant buffer.
+ */
+struct pipe_constant_buffer {
+   struct pipe_resource *buffer; /**< the actual buffer */
+   unsigned buffer_offset; /**< offset to start of data in buffer, in bytes */
+   unsigned buffer_size;   /**< how much data can be read in shader */
+   const void *user_buffer;  /**< pointer to a user buffer if buffer == NULL */
+};
+
+
+/**
+ * A stream output target. The structure specifies the range vertices can
+ * be written to.
+ *
+ * In addition to that, the structure should internally maintain the offset
+ * into the buffer, which should be incremented everytime something is written
+ * (appended) to it. The internal offset is buffer_offset + how many bytes
+ * have been written. The internal offset can be stored on the device
+ * and the CPU actually doesn't have to query it.
+ *
+ * Use PIPE_QUERY_SO_STATISTICS to know how many primitives have
+ * actually been written.
+ */
+struct pipe_stream_output_target
+{
+   struct pipe_reference reference;
+   struct pipe_resource *buffer; /**< the output buffer */
+   struct pipe_context *context; /**< context this SO target belongs to */
+
+   unsigned buffer_offset;  /**< offset where data should be written, in bytes */
+   unsigned buffer_size;    /**< how much data is allowed to be written */
 };
 
 
@@ -434,6 +515,7 @@ struct pipe_index_buffer
    unsigned index_size;  /**< size of an index, in bytes */
    unsigned offset;  /**< offset to start of data in buffer, in bytes */
    struct pipe_resource *buffer; /**< the actual buffer */
+   const void *user_buffer;  /**< pointer to a user buffer if buffer == NULL */
 };
 
 
@@ -457,8 +539,73 @@ struct pipe_draw_info
    int index_bias; /**< a bias to be added to each index */
    unsigned min_index; /**< the min index */
    unsigned max_index; /**< the max index */
+
+   /**
+    * Primitive restart enable/index (only applies to indexed drawing)
+    */
+   boolean primitive_restart;
+   unsigned restart_index;
+
+   /**
+    * Stream output target. If not NULL, it's used to provide the 'count'
+    * parameter based on the number vertices captured by the stream output
+    * stage. (or generally, based on the number of bytes captured)
+    *
+    * Only 'mode', 'start_instance', and 'instance_count' are taken into
+    * account, all the other variables from pipe_draw_info are ignored.
+    *
+    * 'start' is implicitly 0 and 'count' is set as discussed above.
+    * The draw command is non-indexed.
+    *
+    * Note that this only provides the count. The vertex buffers must
+    * be set via set_vertex_buffers manually.
+    */
+   struct pipe_stream_output_target *count_from_stream_output;
 };
 
+
+/**
+ * Information to describe a resource_resolve call.
+ */
+struct pipe_resolve_info
+{
+   struct {
+      struct pipe_resource *res;
+      unsigned level;
+      unsigned layer;
+      int x0; /**< always left */
+      int y0; /**< always top */
+      int x1; /**< determines scale if PIPE_CAP_SCALED_RESOLVE is supported */
+      int y1; /**< determines scale if PIPE_CAP_SCALED_RESOLVE is supported */
+   } dst;
+
+   struct {
+      struct pipe_resource *res;
+      unsigned layer;
+      int x0;
+      int y0;
+      int x1; /**< may be < x0 only if PIPE_CAP_SCALED_RESOLVE is supported */
+      int y1; /**< may be < y1 even if PIPE_CAP_SCALED_RESOLVE not supported */
+   } src;
+
+   unsigned mask; /**< PIPE_MASK_RGBA, Z, S or ZS */
+};
+
+/**
+ * Structure used as a header for serialized LLVM programs.
+ */
+struct pipe_llvm_program_header
+{
+   uint32_t num_bytes; /**< Number of bytes in the LLVM bytecode program. */
+};
+
+struct pipe_compute_state
+{
+   const void *prog; /**< Compute program to be executed. */
+   unsigned req_local_mem; /**< Required size of the LOCAL resource. */
+   unsigned req_private_mem; /**< Required size of the PRIVATE resource. */
+   unsigned req_input_mem; /**< Required size of the INPUT resource. */
+};
 
 #ifdef __cplusplus
 }

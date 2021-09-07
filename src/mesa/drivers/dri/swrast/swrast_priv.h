@@ -30,7 +30,8 @@
 #include <GL/gl.h>
 #include <GL/internal/dri_interface.h>
 #include "main/mtypes.h"
-#include "drisw_util.h"
+#include "dri_util.h"
+#include "swrast/s_context.h"
 
 
 /**
@@ -58,7 +59,7 @@
 struct dri_context
 {
     /* mesa, base class, must be first */
-    GLcontext Base;
+    struct gl_context Base;
 
     /* dri */
     __DRIcontext *cPriv;
@@ -71,7 +72,7 @@ dri_context(__DRIcontext * driContextPriv)
 }
 
 static INLINE struct dri_context *
-swrast_context(GLcontext *ctx)
+swrast_context(struct gl_context *ctx)
 {
     return (struct dri_context *) ctx;
 }
@@ -79,7 +80,7 @@ swrast_context(GLcontext *ctx)
 struct dri_drawable
 {
     /* mesa, base class, must be first */
-    GLframebuffer Base;
+    struct gl_framebuffer Base;
 
     /* dri */
     __DRIdrawable *dPriv;
@@ -95,13 +96,18 @@ dri_drawable(__DRIdrawable * driDrawPriv)
 }
 
 static INLINE struct dri_drawable *
-swrast_drawable(GLframebuffer *fb)
+swrast_drawable(struct gl_framebuffer *fb)
 {
     return (struct dri_drawable *) fb;
 }
 
-struct swrast_renderbuffer {
-    struct gl_renderbuffer Base;
+struct dri_swrast_renderbuffer {
+    struct swrast_renderbuffer Base;
+    __DRIdrawable *dPriv;
+
+    /* GL_MAP_*_BIT, used for mapping of front buffer. */
+    GLbitfield map_mode;
+   int map_x, map_y, map_w, map_h;
 
     /* renderbuffer pitch (in bytes) */
     GLuint pitch;
@@ -109,10 +115,10 @@ struct swrast_renderbuffer {
     GLuint bpp;
 };
 
-static INLINE struct swrast_renderbuffer *
-swrast_renderbuffer(struct gl_renderbuffer *rb)
+static INLINE struct dri_swrast_renderbuffer *
+dri_swrast_renderbuffer(struct gl_renderbuffer *rb)
 {
-    return (struct swrast_renderbuffer *) rb;
+    return (struct dri_swrast_renderbuffer *) rb;
 }
 
 
@@ -124,15 +130,5 @@ swrast_renderbuffer(struct gl_renderbuffer *rb)
 #define PF_R3G3B2     3		/**<  8bpp TrueColor:  3-R, 3-G, 2-B bits */
 #define PF_X8R8G8B8   4		/**< 32bpp TrueColor:  8-R, 8-G, 8-B bits */
 
-
-/* swrast_span.c */
-
-extern void
-swrast_set_span_funcs_back(struct swrast_renderbuffer *xrb,
-			   GLuint pixel_format);
-
-extern void
-swrast_set_span_funcs_front(struct swrast_renderbuffer *xrb,
-			    GLuint pixel_format);
 
 #endif /* _SWRAST_PRIV_H_ */

@@ -130,7 +130,7 @@ static INLINE ushort
 emit_vertex( struct vbuf_stage *vbuf,
              struct vertex_header *vertex )
 {
-   if(vertex->vertex_id == UNDEFINED_VERTEX_ID) {      
+   if (vertex->vertex_id == UNDEFINED_VERTEX_ID && vbuf->vertex_ptr) {
       /* Hmm - vertices are emitted one at a time - better make sure
        * set_buffer is efficient.  Consider a special one-shot mode for
        * translate.
@@ -341,14 +341,26 @@ vbuf_flush_vertices( struct vbuf_stage *vbuf )
       vbuf->max_vertices = vbuf->nr_vertices = 0;
       vbuf->vertex_ptr = vbuf->vertices = NULL;
    }
+
+   /* Reset point/line/tri function pointers.
+    * If (for example) we transition from points to tris and back to points
+    * again, we need to call the vbuf_first_point() function again to flush
+    * the triangles before drawing more points.  This can happen when drawing
+    * with front polygon mode = filled and back polygon mode = line or point.
+    */
+   vbuf->stage.point = vbuf_first_point;
+   vbuf->stage.line = vbuf_first_line;
+   vbuf->stage.tri = vbuf_first_tri;
 }
    
 
 static void 
 vbuf_alloc_vertices( struct vbuf_stage *vbuf )
 {
-   assert(!vbuf->nr_indices);
-   assert(!vbuf->vertices);
+   if (vbuf->vertex_ptr) {
+      assert(!vbuf->nr_indices);
+      assert(!vbuf->vertices);
+   }
    
    /* Allocate a new vertex buffer */
    vbuf->max_vertices = vbuf->render->max_vertex_buffer_bytes / vbuf->vertex_size;
@@ -378,10 +390,6 @@ vbuf_flush( struct draw_stage *stage, unsigned flags )
    struct vbuf_stage *vbuf = vbuf_stage( stage );
 
    vbuf_flush_vertices( vbuf );
-
-   stage->point = vbuf_first_point;
-   stage->line = vbuf_first_line;
-   stage->tri = vbuf_first_tri;
 }
 
 
@@ -431,7 +439,7 @@ struct draw_stage *draw_vbuf_stage( struct draw_context *draw,
    vbuf->stage.destroy = vbuf_destroy;
    
    vbuf->render = render;
-   vbuf->max_indices = MAX2(render->max_indices, UNDEFINED_VERTEX_ID-1);
+   vbuf->max_indices = MIN2(render->max_indices, UNDEFINED_VERTEX_ID-1);
 
    vbuf->indices = (ushort *) align_malloc( vbuf->max_indices * 
 					    sizeof(vbuf->indices[0]), 

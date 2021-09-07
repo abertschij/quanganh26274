@@ -31,20 +31,17 @@
 
 
 #include "main/glheader.h"
-#include "main/mtypes.h"
 
 struct dd_function_table;
+struct gl_context;
+struct gl_texture_object;
 struct pipe_context;
 struct st_context;
 
 extern GLboolean
-st_finalize_texture(GLcontext *ctx,
+st_finalize_texture(struct gl_context *ctx,
 		    struct pipe_context *pipe, 
 		    struct gl_texture_object *tObj);
-
-
-extern struct gl_texture_object *
-st_get_default_texture(struct st_context *st);
 
 
 extern void

@@ -19,12 +19,11 @@ create_screen(int fd)
    if (!screen)
       return NULL;
 
-   if (debug_get_bool_option("I915_SOFTWARE", FALSE))
-      screen = sw_screen_wrap(screen);
+   screen = sw_screen_wrap(screen);
 
    screen = debug_screen_wrap(screen);
 
    return screen;
 }
 
-DRM_DRIVER_DESCRIPTOR("i915", "i915", create_screen)
+DRM_DRIVER_DESCRIPTOR("i915", "i915", create_screen, NULL)

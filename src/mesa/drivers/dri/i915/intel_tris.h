@@ -34,17 +34,15 @@
 /** 3 dwords of state_immediate and 2 of 3dprim, in intel_flush_prim */
 #define INTEL_PRIM_EMIT_SIZE	(5 * 4)
 
-#define _INTEL_NEW_RENDERSTATE (_DD_NEW_LINE_STIPPLE |		\
-			       _DD_NEW_TRI_UNFILLED |		\
-			       _DD_NEW_TRI_LIGHT_TWOSIDE |	\
-			       _DD_NEW_TRI_OFFSET |		\
-			       _DD_NEW_TRI_STIPPLE |		\
-			       _NEW_PROGRAM |		\
-			       _NEW_POLYGONSTIPPLE)
+#define _INTEL_NEW_RENDERSTATE (_NEW_LINE | \
+                                _NEW_POLYGON | \
+                                _NEW_LIGHT | \
+                                _NEW_PROGRAM | \
+                                _NEW_POLYGONSTIPPLE)
 
-extern void intelInitTriFuncs(GLcontext * ctx);
+extern void intelInitTriFuncs(struct gl_context * ctx);
 
-extern void intelChooseRenderState(GLcontext * ctx);
+extern void intelChooseRenderState(struct gl_context * ctx);
 
 void intel_set_prim(struct intel_context *intel, uint32_t prim);
 GLuint *intel_get_prim_space(struct intel_context *intel, unsigned int count);

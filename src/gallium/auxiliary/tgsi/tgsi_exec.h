@@ -31,14 +31,32 @@
 
 #include "pipe/p_compiler.h"
 #include "pipe/p_state.h"
+#include "pipe/p_shader_tokens.h"
 
 #if defined __cplusplus
 extern "C" {
 #endif
 
+#define TGSI_CHAN_X 0
+#define TGSI_CHAN_Y 1
+#define TGSI_CHAN_Z 2
+#define TGSI_CHAN_W 3
 
-#define NUM_CHANNELS 4  /* R,G,B,A */
-#define QUAD_SIZE    4  /* 4 pixel/quad */
+#define TGSI_NUM_CHANNELS 4  /* R,G,B,A */
+#define TGSI_QUAD_SIZE    4  /* 4 pixel/quad */
+
+#define TGSI_FOR_EACH_CHANNEL( CHAN )\
+   for (CHAN = 0; CHAN < TGSI_NUM_CHANNELS; CHAN++)
+
+#define TGSI_IS_DST0_CHANNEL_ENABLED( INST, CHAN )\
+   ((INST)->Dst[0].Register.WriteMask & (1 << (CHAN)))
+
+#define TGSI_IF_IS_DST0_CHANNEL_ENABLED( INST, CHAN )\
+   if (TGSI_IS_DST0_CHANNEL_ENABLED( INST, CHAN ))
+
+#define TGSI_FOR_EACH_DST0_ENABLED_CHANNEL( INST, CHAN )\
+   TGSI_FOR_EACH_CHANNEL( CHAN )\
+      TGSI_IF_IS_DST0_CHANNEL_ENABLED( INST, CHAN )
 
 
 /**
@@ -46,9 +64,9 @@ extern "C" {
   */
 union tgsi_exec_channel
 {
-   float    f[QUAD_SIZE];
-   int      i[QUAD_SIZE];
-   unsigned u[QUAD_SIZE];
+   float    f[TGSI_QUAD_SIZE];
+   int      i[TGSI_QUAD_SIZE];
+   unsigned u[TGSI_QUAD_SIZE];
 };
 
 /**
@@ -56,7 +74,7 @@ union tgsi_exec_channel
   */
 struct tgsi_exec_vector
 {
-   union tgsi_exec_channel xyzw[NUM_CHANNELS];
+   union tgsi_exec_channel xyzw[TGSI_NUM_CHANNELS];
 };
 
 /**
@@ -65,9 +83,9 @@ struct tgsi_exec_vector
  */
 struct tgsi_interp_coef
 {
-   float a0[NUM_CHANNELS];	/* in an xyzw layout */
-   float dadx[NUM_CHANNELS];
-   float dady[NUM_CHANNELS];
+   float a0[TGSI_NUM_CHANNELS];	/* in an xyzw layout */
+   float dadx[TGSI_NUM_CHANNELS];
+   float dady[TGSI_NUM_CHANNELS];
 };
 
 enum tgsi_sampler_control {
@@ -83,12 +101,18 @@ struct tgsi_sampler
 {
    /** Get samples for four fragments in a quad */
    void (*get_samples)(struct tgsi_sampler *sampler,
-                       const float s[QUAD_SIZE],
-                       const float t[QUAD_SIZE],
-                       const float p[QUAD_SIZE],
-                       const float c0[QUAD_SIZE],
+                       const float s[TGSI_QUAD_SIZE],
+                       const float t[TGSI_QUAD_SIZE],
+                       const float p[TGSI_QUAD_SIZE],
+                       const float c0[TGSI_QUAD_SIZE],
                        enum tgsi_sampler_control control,
-                       float rgba[NUM_CHANNELS][QUAD_SIZE]);
+                       float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE]);
+   void (*get_dims)(struct tgsi_sampler *sampler, int level,
+		    int dims[4]);
+   void (*get_texel)(struct tgsi_sampler *sampler, const int i[TGSI_QUAD_SIZE],
+		     const int j[TGSI_QUAD_SIZE], const int k[TGSI_QUAD_SIZE],
+		     const int lod[TGSI_QUAD_SIZE], const int8_t offset[3],
+		     float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE]);
 };
 
 #define TGSI_EXEC_NUM_TEMPS       128
@@ -131,34 +155,15 @@ struct tgsi_sampler
 #define TGSI_EXEC_TEMP_PRIMITIVE_I  (TGSI_EXEC_NUM_TEMPS + 2)
 #define TGSI_EXEC_TEMP_PRIMITIVE_C  2
 
-/* NVIDIA condition code (CC) vector
- */
-#define TGSI_EXEC_CC_GT       0x01
-#define TGSI_EXEC_CC_EQ       0x02
-#define TGSI_EXEC_CC_LT       0x04
-#define TGSI_EXEC_CC_UN       0x08
-
-#define TGSI_EXEC_CC_X_MASK   0x000000ff
-#define TGSI_EXEC_CC_X_SHIFT  0
-#define TGSI_EXEC_CC_Y_MASK   0x0000ff00
-#define TGSI_EXEC_CC_Y_SHIFT  8
-#define TGSI_EXEC_CC_Z_MASK   0x00ff0000
-#define TGSI_EXEC_CC_Z_SHIFT  16
-#define TGSI_EXEC_CC_W_MASK   0xff000000
-#define TGSI_EXEC_CC_W_SHIFT  24
-
-#define TGSI_EXEC_TEMP_CC_I         (TGSI_EXEC_NUM_TEMPS + 2)
-#define TGSI_EXEC_TEMP_CC_C         3
-
-#define TGSI_EXEC_TEMP_THREE_I      (TGSI_EXEC_NUM_TEMPS + 3)
-#define TGSI_EXEC_TEMP_THREE_C      0
+#define TGSI_EXEC_TEMP_THREE_I      (TGSI_EXEC_NUM_TEMPS + 2)
+#define TGSI_EXEC_TEMP_THREE_C      3
 
 #define TGSI_EXEC_TEMP_HALF_I       (TGSI_EXEC_NUM_TEMPS + 3)
-#define TGSI_EXEC_TEMP_HALF_C       1
+#define TGSI_EXEC_TEMP_HALF_C       0
 
 /* execution mask, each value is either 0 or ~0 */
 #define TGSI_EXEC_MASK_I            (TGSI_EXEC_NUM_TEMPS + 3)
-#define TGSI_EXEC_MASK_C            2
+#define TGSI_EXEC_MASK_C            1
 
 /* 4 register buffer for various purposes */
 #define TGSI_EXEC_TEMP_R0           (TGSI_EXEC_NUM_TEMPS + 4)
@@ -199,6 +204,8 @@ struct tgsi_sampler
 
 /* The maximum total number of vertices */
 #define TGSI_MAX_TOTAL_VERTICES (TGSI_MAX_PRIM_VERTICES * TGSI_MAX_PRIMITIVES * PIPE_MAX_ATTRIBS)
+
+#define TGSI_MAX_MISC_INPUTS 8
 
 /** function call/activation record */
 struct tgsi_call_record
@@ -244,8 +251,12 @@ struct tgsi_exec_machine
 
    float                         ImmArray[TGSI_EXEC_NUM_IMMEDIATES][4];
 
-   struct tgsi_exec_vector       Inputs[TGSI_MAX_PRIM_VERTICES * PIPE_MAX_ATTRIBS];
-   struct tgsi_exec_vector       Outputs[TGSI_MAX_TOTAL_VERTICES];
+   struct tgsi_exec_vector       *Inputs;
+   struct tgsi_exec_vector       *Outputs;
+
+   /* System values */
+   unsigned                      SysSemanticToIndex[TGSI_SEMANTIC_COUNT];
+   union tgsi_exec_channel       SystemValue[TGSI_MAX_MISC_INPUTS];
 
    struct tgsi_exec_vector       *Addrs;
    struct tgsi_exec_vector       *Predicates;
@@ -269,7 +280,7 @@ struct tgsi_exec_machine
    const struct tgsi_interp_coef *InterpCoefs;
    struct tgsi_exec_vector       QuadPos;
    float                         Face;    /**< +1 if front facing, -1 if back facing */
-
+   bool                          flatshade_color;
    /* Conditional execution masks */
    uint CondMask;  /**< For IF/ELSE/ENDIF */
    uint LoopMask;  /**< For BGNLOOP/ENDLOOP */
@@ -320,6 +331,10 @@ struct tgsi_exec_machine
    struct tgsi_full_declaration *Declarations;
    uint NumDeclarations;
 
+   struct tgsi_declaration_sampler_view
+      SamplerViews[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+
+   boolean UsedGeometryShader;
 };
 
 struct tgsi_exec_machine *
@@ -402,6 +417,17 @@ tgsi_exec_get_shader_param(enum pipe_shader_cap param)
       return TGSI_EXEC_NUM_PREDS;
    case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
       return 1;
+   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+   case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
+   case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
+   case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
+      return 1;
+   case PIPE_SHADER_CAP_SUBROUTINES:
+      return 1;
+   case PIPE_SHADER_CAP_INTEGERS:
+      return 1;
+   case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+      return PIPE_MAX_SAMPLERS;
    default:
       return 0;
    }

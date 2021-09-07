@@ -3,17 +3,6 @@
 
 Import('*')
 
-if env['platform'] != 'linux':
-    Return()
-
-if 'mesa' not in env['statetrackers']:
-    print 'warning: Mesa state tracker disabled: skipping build of xlib libGL.so'
-    Return()
-
-if env['dri']:
-    print 'warning: DRI enabled: skipping build of xlib libGL.so'
-    Return()
-
 env = env.Clone()
 
 env.Append(CPPPATH = [
@@ -25,48 +14,49 @@ env.Append(CPPPATH = [
 
 env.Append(CPPDEFINES = ['USE_XSHM'])
 
+env.Prepend(LIBS = env['X11_LIBS'])
+
+# when GLES is enabled, gl* and _glapi_* belong to bridge_glapi and
+# shared_glapi respectively
+if env['gles']:
+    env.Prepend(LIBPATH = [shared_glapi.dir])
+    glapi = [bridge_glapi, 'glapi']
+
 env.Prepend(LIBS = [
     st_xlib,
     ws_xlib,
-    trace,
-    rbug,
-    identity,
     glapi,
     mesa,
     glsl,
     gallium,
-    'talloc'
 ])
 
 sources = [
     'xlib.c',
 ]
 
-env.Tool('x11')
+# The sources depend on the python-generated GL API files/headers.
+env.Depends(sources, glapi_headers)
 
 if True:
-    env.Append(CPPDEFINES = 'GALLIUM_SOFTPIPE')
-    env.Prepend(LIBS = [softpipe])
-
-if True:
-    env.Append(CPPDEFINES = 'GALLIUM_GALAHAD')
-    env.Prepend(LIBS = [galahad])
+    env.Append(CPPDEFINES = ['GALLIUM_TRACE', 'GALLIUM_RBUG', 'GALLIUM_GALAHAD', 'GALLIUM_SOFTPIPE'])
+    env.Prepend(LIBS = [trace, rbug, galahad, softpipe])
 
 if env['llvm']:
-    env.Append(CPPDEFINES = 'GALLIUM_LLVMPIPE')
-    env.Tool('udis86')
+    env.Append(CPPDEFINES = ['GALLIUM_LLVMPIPE'])
     env.Prepend(LIBS = [llvmpipe])
-    
-if 'cell' in env['drivers']:
-    env.Append(CPPDEFINES = 'GALLIUM_CELL')
-    env.Prepend(LIBS = [cell])
 
-# TODO: write a wrapper function http://www.scons.org/wiki/WrapperFunctions
-libgl = env.SharedLibrary(
+# libGL.so.1.5
+libgl_1_5 = env.SharedLibrary(
     target ='GL',
     source = sources,
+    SHLIBSUFFIX = env['SHLIBSUFFIX'] + '.1.5',
 )
 
-if not env['dri']:
-    # Only install this libGL.so if DRI not enabled
-    env.InstallSharedLibrary(libgl, version=(1, 5))
+# libGL.so.1
+libgl = env.subst('${SHLIBPREFIX}GL${SHLIBSUFFIX}')
+libgl_1 = libgl + '.1'
+env.Command(libgl_1, libgl_1_5, "ln -sf ${SOURCE.file} ${TARGET}")
+env.Command(libgl, libgl_1, "ln -sf ${SOURCE.file} ${TARGET}")
+
+env.Alias('libgl-xlib', libgl)

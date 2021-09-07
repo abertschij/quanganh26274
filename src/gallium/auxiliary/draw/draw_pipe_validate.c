@@ -29,6 +29,7 @@
  */
 
 #include "util/u_memory.h"
+#include "util/u_math.h"
 #include "pipe/p_defines.h"
 #include "draw_private.h"
 #include "draw_pipe.h"
@@ -86,7 +87,7 @@ draw_need_pipeline(const struct draw_context *draw,
          return TRUE;
 
       /* wide lines */
-      if (rasterizer->line_width > draw->pipeline.wide_line_threshold)
+      if (roundf(rasterizer->line_width) > draw->pipeline.wide_line_threshold)
          return TRUE;
 
       /* AA lines */
@@ -169,10 +170,10 @@ static struct draw_stage *validate_pipeline( struct draw_stage *stage )
    stage->next = next;
 
    /* drawing wide lines? */
-   wide_lines = (rast->line_width > draw->pipeline.wide_line_threshold
+   wide_lines = (roundf(rast->line_width) > draw->pipeline.wide_line_threshold
                  && !rast->line_smooth);
 
-   /* drawing large points? */
+   /* drawing large/sprite points (but not AA points)? */
    if (rast->sprite_coord_enable && draw->pipeline.point_sprite)
       wide_points = TRUE;
    else if (rast->point_smooth && draw->pipeline.aapoint)
@@ -194,6 +195,7 @@ static struct draw_stage *validate_pipeline( struct draw_stage *stage )
    if (rast->line_smooth && draw->pipeline.aaline) {
       draw->pipeline.aaline->next = next;
       next = draw->pipeline.aaline;
+      precalc_flat = TRUE;
    }
 
    if (rast->point_smooth && draw->pipeline.aapoint) {
@@ -207,7 +209,7 @@ static struct draw_stage *validate_pipeline( struct draw_stage *stage )
       precalc_flat = TRUE;
    }
 
-   if (wide_points || rast->sprite_coord_enable) {
+   if (wide_points) {
       draw->pipeline.wide_point->next = next;
       next = draw->pipeline.wide_point;
    }

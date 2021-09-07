@@ -35,12 +35,14 @@
 #include "util/u_memory.h"
 #include "util/u_math.h"
 #include "util/u_cpu_detect.h"
+#include "util/u_inlines.h"
 #include "draw_context.h"
 #include "draw_vs.h"
 #include "draw_gs.h"
 
 #if HAVE_LLVM
 #include "gallivm/lp_bld_init.h"
+#include "gallivm/lp_bld_limits.h"
 #include "draw_llvm.h"
 
 static boolean
@@ -63,33 +65,58 @@ draw_get_option_use_llvm(void)
 }
 #endif
 
-struct draw_context *draw_create( struct pipe_context *pipe )
+
+/**
+ * Create new draw module context with gallivm state for LLVM JIT.
+ */
+static struct draw_context *
+draw_create_context(struct pipe_context *pipe, boolean try_llvm)
 {
    struct draw_context *draw = CALLOC_STRUCT( draw_context );
    if (draw == NULL)
-      goto fail;
+      goto err_out;
 
 #if HAVE_LLVM
-   if(draw_get_option_use_llvm())
-   {
-      lp_build_init();
-      assert(lp_build_engine);
-      draw->engine = lp_build_engine;
+   if (try_llvm && draw_get_option_use_llvm()) {
       draw->llvm = draw_llvm_create(draw);
+      if (!draw->llvm)
+         goto err_destroy;
    }
 #endif
 
-   if (!draw_init(draw))
-      goto fail;
-
    draw->pipe = pipe;
+
+   if (!draw_init(draw))
+      goto err_destroy;
 
    return draw;
 
-fail:
+err_destroy:
    draw_destroy( draw );
+err_out:
    return NULL;
 }
+
+
+/**
+ * Create new draw module context, with LLVM JIT.
+ */
+struct draw_context *
+draw_create(struct pipe_context *pipe)
+{
+   return draw_create_context(pipe, TRUE);
+}
+
+
+/**
+ * Create a new draw context, without LLVM JIT.
+ */
+struct draw_context *
+draw_create_no_llvm(struct pipe_context *pipe)
+{
+   return draw_create_context(pipe, FALSE);
+}
+
 
 boolean draw_init(struct draw_context *draw)
 {
@@ -105,13 +132,10 @@ boolean draw_init(struct draw_context *draw)
    ASSIGN_4V( draw->plane[3],  0,  1,  0, 1 );
    ASSIGN_4V( draw->plane[4],  0,  0,  1, 1 ); /* yes these are correct */
    ASSIGN_4V( draw->plane[5],  0,  0, -1, 1 ); /* mesa's a bit wonky */
-   draw->nr_planes = 6;
-   draw->clip_xy = 1;
-   draw->clip_z = 1;
+   draw->clip_xy = TRUE;
+   draw->clip_z = TRUE;
 
-
-   draw->reduced_prim = ~0; /* != any of PIPE_PRIM_x */
-
+   draw->pt.user.planes = (float (*) [DRAW_TOTAL_CLIP_PLANES][4]) &(draw->plane[0]);
 
    if (!draw_pipeline_init( draw ))
       return FALSE;
@@ -124,6 +148,9 @@ boolean draw_init(struct draw_context *draw)
 
    if (!draw_gs_init( draw ))
       return FALSE;
+
+   draw->quads_always_flatshade_last = !draw->pipe->screen->get_param(
+      draw->pipe->screen, PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION);
 
    return TRUE;
 }
@@ -149,6 +176,10 @@ void draw_destroy( struct draw_context *draw )
       }
    }
 
+   for (i = 0; i < draw->pt.nr_vertex_buffers; i++) {
+      pipe_resource_reference(&draw->pt.vertex_buffer[i].buffer, NULL);
+   }
+
    /* Not so fast -- we're just borrowing this at the moment.
     * 
    if (draw->render)
@@ -160,7 +191,7 @@ void draw_destroy( struct draw_context *draw )
    draw_vs_destroy( draw );
    draw_gs_destroy( draw );
 #ifdef HAVE_LLVM
-   if(draw->llvm)
+   if (draw->llvm)
       draw_llvm_destroy( draw->llvm );
 #endif
 
@@ -191,9 +222,12 @@ void draw_set_mrd(struct draw_context *draw, double mrd)
 static void update_clip_flags( struct draw_context *draw )
 {
    draw->clip_xy = !draw->driver.bypass_clip_xy;
+   draw->guard_band_xy = (!draw->driver.bypass_clip_xy &&
+                          draw->driver.guard_band_xy);
    draw->clip_z = (!draw->driver.bypass_clip_z &&
-                   !draw->depth_clamp);
-   draw->clip_user = (draw->nr_planes > 6);
+                   draw->rasterizer && draw->rasterizer->depth_clip);
+   draw->clip_user = draw->rasterizer &&
+                     draw->rasterizer->clip_plane_enable != 0;
 }
 
 /**
@@ -209,8 +243,8 @@ void draw_set_rasterizer_state( struct draw_context *draw,
 
       draw->rasterizer = raster;
       draw->rast_handle = rast_handle;
-
-  }
+      update_clip_flags(draw);
+   }
 }
 
 /* With a little more work, llvmpipe will be able to turn this off and
@@ -222,12 +256,14 @@ void draw_set_rasterizer_state( struct draw_context *draw,
  */
 void draw_set_driver_clipping( struct draw_context *draw,
                                boolean bypass_clip_xy,
-                               boolean bypass_clip_z )
+                               boolean bypass_clip_z,
+                               boolean guard_band_xy)
 {
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 
    draw->driver.bypass_clip_xy = bypass_clip_xy;
    draw->driver.bypass_clip_z = bypass_clip_z;
+   draw->driver.guard_band_xy = guard_band_xy;
    update_clip_flags(draw);
 }
 
@@ -254,12 +290,7 @@ void draw_set_clip_state( struct draw_context *draw,
 {
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 
-   assert(clip->nr <= PIPE_MAX_CLIP_PLANES);
-   memcpy(&draw->plane[6], clip->ucp, clip->nr * sizeof(clip->ucp[0]));
-   draw->nr_planes = 6 + clip->nr;
-   draw->depth_clamp = clip->depth_clamp;
-
-   update_clip_flags(draw);
+   memcpy(&draw->plane[6], clip->ucp, sizeof(clip->ucp));
 }
 
 
@@ -292,8 +323,9 @@ draw_set_vertex_buffers(struct draw_context *draw,
 {
    assert(count <= PIPE_MAX_ATTRIBS);
 
-   memcpy(draw->pt.vertex_buffer, buffers, count * sizeof(buffers[0]));
-   draw->pt.nr_vertex_buffers = count;
+   util_copy_vertex_buffers(draw->pt.vertex_buffer,
+                            &draw->pt.nr_vertex_buffers,
+                            buffers, count);
 }
 
 
@@ -303,6 +335,10 @@ draw_set_vertex_elements(struct draw_context *draw,
                          const struct pipe_vertex_element *elements)
 {
    assert(count <= PIPE_MAX_ATTRIBS);
+
+   /* We could improve this by only flushing the frontend and the fetch part
+    * of the middle. This would avoid recalculating the emit keys.*/
+   draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 
    memcpy(draw->pt.vertex_element, elements, count * sizeof(elements[0]));
    draw->pt.nr_vertex_elements = count;
@@ -379,7 +415,7 @@ void
 draw_wide_line_threshold(struct draw_context *draw, float threshold)
 {
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
-   draw->pipeline.wide_line_threshold = threshold;
+   draw->pipeline.wide_line_threshold = roundf(threshold);
 }
 
 
@@ -413,6 +449,69 @@ draw_set_force_passthrough( struct draw_context *draw, boolean enable )
 }
 
 
+
+/**
+ * Allocate an extra vertex/geometry shader vertex attribute, if it doesn't
+ * exist already.
+ *
+ * This is used by some of the optional draw module stages such
+ * as wide_point which may need to allocate additional generic/texcoord
+ * attributes.
+ */
+int
+draw_alloc_extra_vertex_attrib(struct draw_context *draw,
+                               uint semantic_name, uint semantic_index)
+{
+   int slot;
+   uint num_outputs;
+   uint n;
+
+   slot = draw_find_shader_output(draw, semantic_name, semantic_index);
+   if (slot > 0) {
+      return slot;
+   }
+
+   num_outputs = draw_current_shader_outputs(draw);
+   n = draw->extra_shader_outputs.num;
+
+   assert(n < Elements(draw->extra_shader_outputs.semantic_name));
+
+   draw->extra_shader_outputs.semantic_name[n] = semantic_name;
+   draw->extra_shader_outputs.semantic_index[n] = semantic_index;
+   draw->extra_shader_outputs.slot[n] = num_outputs + n;
+   draw->extra_shader_outputs.num++;
+
+   return draw->extra_shader_outputs.slot[n];
+}
+
+
+/**
+ * Remove all extra vertex attributes that were allocated with
+ * draw_alloc_extra_vertex_attrib().
+ */
+void
+draw_remove_extra_vertex_attribs(struct draw_context *draw)
+{
+   draw->extra_shader_outputs.num = 0;
+}
+
+
+/**
+ * If a geometry shader is present, return its info, else the vertex shader's
+ * info.
+ */
+struct tgsi_shader_info *
+draw_get_shader_info(const struct draw_context *draw)
+{
+
+   if (draw->gs.geometry_shader) {
+      return &draw->gs.geometry_shader->info;
+   } else {
+      return &draw->vs.vertex_shader->info;
+   }
+}
+
+
 /**
  * Ask the draw module for the location/slot of the given vertex attribute in
  * a post-transformed vertex.
@@ -432,13 +531,8 @@ int
 draw_find_shader_output(const struct draw_context *draw,
                         uint semantic_name, uint semantic_index)
 {
-   const struct draw_vertex_shader *vs = draw->vs.vertex_shader;
-   const struct draw_geometry_shader *gs = draw->gs.geometry_shader;
+   const struct tgsi_shader_info *info = draw_get_shader_info(draw);
    uint i;
-   const struct tgsi_shader_info *info = &vs->info;
-
-   if (gs)
-      info = &gs->info;
 
    for (i = 0; i < info->num_outputs; i++) {
       if (info->output_semantic_name[i] == semantic_name &&
@@ -446,12 +540,12 @@ draw_find_shader_output(const struct draw_context *draw,
          return i;
    }
 
-   /* XXX there may be more than one extra vertex attrib.
-    * For example, simulated gl_FragCoord and gl_PointCoord.
-    */
-   if (draw->extra_shader_outputs.semantic_name == semantic_name &&
-       draw->extra_shader_outputs.semantic_index == semantic_index) {
-      return draw->extra_shader_outputs.slot;
+   /* Search the extra vertex attributes */
+   for (i = 0; i < draw->extra_shader_outputs.num; i++) {
+      if (draw->extra_shader_outputs.semantic_name[i] == semantic_name &&
+          draw->extra_shader_outputs.semantic_index[i] == semantic_index) {
+         return draw->extra_shader_outputs.slot[i];
+      }
    }
 
    return 0;
@@ -470,23 +564,19 @@ draw_find_shader_output(const struct draw_context *draw,
 uint
 draw_num_shader_outputs(const struct draw_context *draw)
 {
-   uint count = draw->vs.vertex_shader->info.num_outputs;
+   const struct tgsi_shader_info *info = draw_get_shader_info(draw);
+   uint count;
 
-   /* If a geometry shader is present, its outputs go to the
-    * driver, else the vertex shader's outputs.
-    */
-   if (draw->gs.geometry_shader)
-      count = draw->gs.geometry_shader->info.num_outputs;
+   count = info->num_outputs;
+   count += draw->extra_shader_outputs.num;
 
-   if (draw->extra_shader_outputs.slot > 0)
-      count++;
    return count;
 }
 
 
 /**
  * Provide TGSI sampler objects for vertex/geometry shaders that use
- * texture fetches.
+ * texture fetches.  This state only needs to be set once per context.
  * This might only be used by software drivers for the time being.
  */
 void
@@ -496,12 +586,12 @@ draw_texture_samplers(struct draw_context *draw,
                       struct tgsi_sampler **samplers)
 {
    if (shader == PIPE_SHADER_VERTEX) {
-      draw->vs.num_samplers = num_samplers;
-      draw->vs.samplers = samplers;
+      draw->vs.tgsi.num_samplers = num_samplers;
+      draw->vs.tgsi.samplers = samplers;
    } else {
       debug_assert(shader == PIPE_SHADER_GEOMETRY);
-      draw->gs.num_samplers = num_samplers;
-      draw->gs.samplers = samplers;
+      draw->gs.tgsi.num_samplers = num_samplers;
+      draw->gs.tgsi.samplers = samplers;
    }
 }
 
@@ -515,25 +605,23 @@ void draw_set_render( struct draw_context *draw,
 }
 
 
-void
-draw_set_index_buffer(struct draw_context *draw,
-                      const struct pipe_index_buffer *ib)
-{
-   if (ib)
-      memcpy(&draw->pt.index_buffer, ib, sizeof(draw->pt.index_buffer));
-   else
-      memset(&draw->pt.index_buffer, 0, sizeof(draw->pt.index_buffer));
-}
-
-
 /**
- * Tell drawing context where to find mapped index/element buffer.
+ * Tell the draw module where vertex indexes/elements are located, and
+ * their size (in bytes).
+ *
+ * Note: the caller must apply the pipe_index_buffer::offset value to
+ * the address.  The draw module doesn't do that.
  */
 void
-draw_set_mapped_index_buffer(struct draw_context *draw,
-                             const void *elements)
+draw_set_indexes(struct draw_context *draw,
+                 const void *elements, unsigned elem_size)
 {
-    draw->pt.user.elts = elements;
+   assert(elem_size == 0 ||
+          elem_size == 1 ||
+          elem_size == 2 ||
+          elem_size == 4);
+   draw->pt.user.elts = elements;
+   draw->pt.user.eltSizeIB = elem_size;
 }
 
 
@@ -549,8 +637,8 @@ void draw_do_flush( struct draw_context *draw, unsigned flags )
 
       draw_pipeline_flush( draw, flags );
 
-      draw->reduced_prim = ~0; /* is reduced_prim needed any more? */
-      
+      draw_pt_flush( draw, flags );
+
       draw->flushing = FALSE;
    }
 }
@@ -583,6 +671,22 @@ draw_current_shader_position_output(const struct draw_context *draw)
    return draw->vs.position_output;
 }
 
+
+/**
+ * Return the index of the shader output which will contain the
+ * vertex position.
+ */
+uint
+draw_current_shader_clipvertex_output(const struct draw_context *draw)
+{
+   return draw->vs.clipvertex_output;
+}
+
+uint
+draw_current_shader_clipdistance_output(const struct draw_context *draw, int index)
+{
+   return draw->vs.clipdistance_output[index];
+}
 
 /**
  * Return a pointer/handle for a driver/CSO rasterizer object which
@@ -618,75 +722,136 @@ draw_get_rasterizer_no_cull( struct draw_context *draw,
 }
 
 void
+draw_set_mapped_so_targets(struct draw_context *draw,
+                           int num_targets,
+                           struct draw_so_target *targets[PIPE_MAX_SO_BUFFERS])
+{
+   int i;
+
+   for (i = 0; i < num_targets; i++)
+      draw->so.targets[i] = targets[i];
+   for (i = num_targets; i < PIPE_MAX_SO_BUFFERS; i++)
+      draw->so.targets[i] = NULL;
+
+   draw->so.num_targets = num_targets;
+}
+
+void
 draw_set_mapped_so_buffers(struct draw_context *draw,
                            void *buffers[PIPE_MAX_SO_BUFFERS],
                            unsigned num_buffers)
 {
-   int i;
-
-   for (i = 0; i < num_buffers; ++i) {
-      draw->so.buffers[i] = buffers[i];
-   }
-   draw->so.num_buffers = num_buffers;
 }
 
 void
 draw_set_so_state(struct draw_context *draw,
-                  struct pipe_stream_output_state *state)
+                  struct pipe_stream_output_info *state)
 {
    memcpy(&draw->so.state,
           state,
-          sizeof(struct pipe_stream_output_state));
+          sizeof(struct pipe_stream_output_info));
 }
 
 void
 draw_set_sampler_views(struct draw_context *draw,
+                       unsigned shader_stage,
                        struct pipe_sampler_view **views,
                        unsigned num)
 {
    unsigned i;
 
-   debug_assert(num <= PIPE_MAX_VERTEX_SAMPLERS);
+   debug_assert(shader_stage < PIPE_SHADER_TYPES);
+   debug_assert(num <= PIPE_MAX_SAMPLERS);
 
    for (i = 0; i < num; ++i)
-      draw->sampler_views[i] = views[i];
-   for (i = num; i < PIPE_MAX_VERTEX_SAMPLERS; ++i)
-      draw->sampler_views[i] = NULL;
+      draw->sampler_views[shader_stage][i] = views[i];
+   for (i = num; i < PIPE_MAX_SAMPLERS; ++i)
+      draw->sampler_views[shader_stage][i] = NULL;
 
-   draw->num_sampler_views = num;
+   draw->num_sampler_views[shader_stage] = num;
 }
 
 void
 draw_set_samplers(struct draw_context *draw,
+                  unsigned shader_stage,
                   struct pipe_sampler_state **samplers,
                   unsigned num)
 {
    unsigned i;
 
-   debug_assert(num <= PIPE_MAX_VERTEX_SAMPLERS);
+   debug_assert(shader_stage < PIPE_SHADER_TYPES);
+   debug_assert(num <= PIPE_MAX_SAMPLERS);
 
    for (i = 0; i < num; ++i)
-      draw->samplers[i] = samplers[i];
-   for (i = num; i < PIPE_MAX_VERTEX_SAMPLERS; ++i)
-      draw->samplers[i] = NULL;
+      draw->samplers[shader_stage][i] = samplers[i];
+   for (i = num; i < PIPE_MAX_SAMPLERS; ++i)
+      draw->samplers[shader_stage][i] = NULL;
 
-   draw->num_samplers = num;
+   draw->num_samplers[shader_stage] = num;
+
+#ifdef HAVE_LLVM
+   if (draw->llvm && shader_stage == PIPE_SHADER_VERTEX)
+      draw_llvm_set_sampler_state(draw);
+#endif
 }
 
 void
 draw_set_mapped_texture(struct draw_context *draw,
+                        unsigned shader_stage,
                         unsigned sampler_idx,
                         uint32_t width, uint32_t height, uint32_t depth,
-                        uint32_t last_level,
-                        uint32_t row_stride[DRAW_MAX_TEXTURE_LEVELS],
-                        uint32_t img_stride[DRAW_MAX_TEXTURE_LEVELS],
-                        const void *data[DRAW_MAX_TEXTURE_LEVELS])
+                        uint32_t first_level, uint32_t last_level,
+                        uint32_t row_stride[PIPE_MAX_TEXTURE_LEVELS],
+                        uint32_t img_stride[PIPE_MAX_TEXTURE_LEVELS],
+                        const void *data[PIPE_MAX_TEXTURE_LEVELS])
 {
+   if (shader_stage == PIPE_SHADER_VERTEX) {
 #ifdef HAVE_LLVM
-   if(draw->llvm)
-      draw_llvm_set_mapped_texture(draw,
-                                sampler_idx,
-                                width, height, depth, last_level,
-                                row_stride, img_stride, data);
+      if (draw->llvm)
+         draw_llvm_set_mapped_texture(draw,
+                                      sampler_idx,
+                                      width, height, depth, first_level, last_level,
+                                      row_stride, img_stride, data);
 #endif
+   }
 }
+
+/**
+ * XXX: Results for PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS because there are two
+ * different ways of setting textures, and drivers typically only support one.
+ */
+int
+draw_get_shader_param_no_llvm(unsigned shader, enum pipe_shader_cap param)
+{
+   switch(shader) {
+   case PIPE_SHADER_VERTEX:
+   case PIPE_SHADER_GEOMETRY:
+      return tgsi_exec_get_shader_param(param);
+   default:
+      return 0;
+   }
+}
+
+/**
+ * XXX: Results for PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS because there are two
+ * different ways of setting textures, and drivers typically only support one.
+ */
+int
+draw_get_shader_param(unsigned shader, enum pipe_shader_cap param)
+{
+
+#ifdef HAVE_LLVM
+   if (draw_get_option_use_llvm()) {
+      switch(shader) {
+      case PIPE_SHADER_VERTEX:
+      case PIPE_SHADER_GEOMETRY:
+         return gallivm_get_shader_param(param);
+      default:
+         return 0;
+      }
+   }
+#endif
+
+   return draw_get_shader_param_no_llvm(shader, param);
+}
+

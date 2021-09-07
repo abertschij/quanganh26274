@@ -1,18 +1,15 @@
 Import('*')
 
-if not 'r600' in env['drivers']:
-    print 'warning: r600 pipe driver not built skipping r600_dri.so'
-    Return()
-
 env = drienv.Clone()
 
-env.ParseConfig('pkg-config --cflags --libs libdrm_radeon')
+env.PkgUseModules('DRM')
+env.PkgUseModules('DRM_RADEON')
 
 env.Append(CPPDEFINES = ['GALLIUM_RBUG', 'GALLIUM_TRACE'])
 
 env.Prepend(LIBS = [
     st_dri,
-    r600winsys,
+    radeonwinsys,
     r600,
     trace,
     rbug,
@@ -22,8 +19,10 @@ env.Prepend(LIBS = [
     COMMON_DRI_DRM_OBJECTS
 ])
 
-env.SharedLibrary(
+module = env.SharedLibrary(
     target ='r600_dri.so',
     source = 'target.c',
     SHLIBPREFIX = '',
 )
+
+env.Alias('dri-r600', module)

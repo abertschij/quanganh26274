@@ -30,6 +30,7 @@
 #include "xm_st.h"
 
 #include "util/u_inlines.h"
+#include "util/u_atomic.h"
 
 struct xmesa_st_framebuffer {
    XMesaDisplay display;
@@ -42,7 +43,7 @@ struct xmesa_st_framebuffer {
    unsigned texture_width, texture_height, texture_mask;
    struct pipe_resource *textures[ST_ATTACHMENT_COUNT];
 
-   struct pipe_surface *display_surface;
+   struct pipe_resource *display_resource;
 };
 
 static INLINE struct xmesa_st_framebuffer *
@@ -60,25 +61,19 @@ xmesa_st_framebuffer_display(struct st_framebuffer_iface *stfbi,
 {
    struct xmesa_st_framebuffer *xstfb = xmesa_st_framebuffer(stfbi);
    struct pipe_resource *ptex = xstfb->textures[statt];
-   struct pipe_surface *psurf;
+   struct pipe_resource *pres;
 
    if (!ptex)
       return TRUE;
 
-   psurf = xstfb->display_surface;
+   pres = xstfb->display_resource;
    /* (re)allocate the surface for the texture to be displayed */
-   if (!psurf || psurf->texture != ptex) {
-      pipe_surface_reference(&xstfb->display_surface, NULL);
-
-      psurf = xstfb->screen->get_tex_surface(xstfb->screen,
-            ptex, 0, 0, 0, PIPE_BIND_DISPLAY_TARGET);
-      if (!psurf)
-         return FALSE;
-
-      xstfb->display_surface = psurf;
+   if (!pres || pres != ptex) {
+      pipe_resource_reference(&xstfb->display_resource, ptex);
+      pres = xstfb->display_resource;
    }
 
-   xstfb->screen->flush_frontbuffer(xstfb->screen, psurf, &xstfb->buffer->ws);
+   xstfb->screen->flush_frontbuffer(xstfb->screen, pres, 0, 0, &xstfb->buffer->ws);
 
    return TRUE;
 }
@@ -96,35 +91,26 @@ xmesa_st_framebuffer_copy_textures(struct st_framebuffer_iface *stfbi,
    struct xmesa_st_framebuffer *xstfb = xmesa_st_framebuffer(stfbi);
    struct pipe_resource *src_ptex = xstfb->textures[src_statt];
    struct pipe_resource *dst_ptex = xstfb->textures[dst_statt];
-   struct pipe_subresource subsrc, subdst;
+   struct pipe_box src_box;
    struct pipe_context *pipe;
 
    if (!src_ptex || !dst_ptex)
       return;
 
-   pipe = xstfb->display->pipe;
-   if (!pipe) {
-      pipe = xstfb->screen->context_create(xstfb->screen, NULL);
-      if (!pipe)
-         return;
-      xstfb->display->pipe = pipe;
-   }
+   pipe = xmesa_get_context(stfbi);
 
-   subsrc.face = 0;
-   subsrc.level = 0;
-   subdst.face = 0;
-   subdst.level = 0;
+   u_box_2d(x, y, width, height, &src_box);
 
    if (src_ptex && dst_ptex)
-      pipe->resource_copy_region(pipe, dst_ptex, subdst, x, y, 0,
-                                 src_ptex, subsrc, x, y, 0, width, height);
+      pipe->resource_copy_region(pipe, dst_ptex, 0, x, y, 0,
+                                 src_ptex, 0, &src_box);
 }
 
 /**
  * Remove outdated textures and create the requested ones.
  * This is a helper used during framebuffer validation.
  */
-static boolean
+boolean
 xmesa_st_framebuffer_validate_textures(struct st_framebuffer_iface *stfbi,
                                        unsigned width, unsigned height,
                                        unsigned mask)
@@ -144,6 +130,7 @@ xmesa_st_framebuffer_validate_textures(struct st_framebuffer_iface *stfbi,
    templ.width0 = width;
    templ.height0 = height;
    templ.depth0 = 1;
+   templ.array_size = 1;
    templ.last_level = 0;
 
    for (i = 0; i < ST_ATTACHMENT_COUNT; i++) {
@@ -196,7 +183,13 @@ xmesa_st_framebuffer_validate_textures(struct st_framebuffer_iface *stfbi,
 
 
 /**
+ * Check that a framebuffer's attachments match the window's size.
+ *
  * Called via st_framebuffer_iface::validate()
+ *
+ * \param statts  array of framebuffer attachments
+ * \param count  number of framebuffer attachments in statts[]
+ * \param out  returns resources for each of the attachments
  */
 static boolean 
 xmesa_st_framebuffer_validate(struct st_framebuffer_iface *stfbi,
@@ -209,9 +202,11 @@ xmesa_st_framebuffer_validate(struct st_framebuffer_iface *stfbi,
    boolean resized;
    boolean ret;
 
+   /* build mask of ST_ATTACHMENT bits */
    statt_mask = 0x0;
    for (i = 0; i < count; i++)
       statt_mask |= 1 << statts[i];
+
    /* record newly allocated textures */
    new_mask = statt_mask & ~xstfb->texture_mask;
 
@@ -302,6 +297,7 @@ xmesa_create_st_framebuffer(XMesaDisplay xmdpy, XMesaBuffer b)
    stfbi->visual = &xstfb->stvis;
    stfbi->flush_front = xmesa_st_framebuffer_flush_front;
    stfbi->validate = xmesa_st_framebuffer_validate;
+   p_atomic_set(&stfbi->stamp, 1);
    stfbi->st_manager_private = (void *) xstfb;
 
    return stfbi;
@@ -313,7 +309,7 @@ xmesa_destroy_st_framebuffer(struct st_framebuffer_iface *stfbi)
    struct xmesa_st_framebuffer *xstfb = xmesa_st_framebuffer(stfbi);
    int i;
 
-   pipe_surface_reference(&xstfb->display_surface, NULL);
+   pipe_resource_reference(&xstfb->display_resource, NULL);
 
    for (i = 0; i < ST_ATTACHMENT_COUNT; i++)
       pipe_resource_reference(&xstfb->textures[i], NULL);
@@ -360,3 +356,31 @@ xmesa_copy_st_framebuffer(struct st_framebuffer_iface *stfbi,
    if (dst == ST_ATTACHMENT_FRONT_LEFT)
       xmesa_st_framebuffer_display(stfbi, dst);
 }
+
+struct pipe_resource*
+xmesa_get_attachment(struct st_framebuffer_iface *stfbi,
+                     enum st_attachment_type st_attachment)
+{
+   struct xmesa_st_framebuffer *xstfb = xmesa_st_framebuffer(stfbi);
+   struct pipe_resource* res;
+
+   res = xstfb->textures[st_attachment];
+   return res;
+}
+
+struct pipe_context*
+xmesa_get_context(struct st_framebuffer_iface* stfbi)
+{
+   struct pipe_context *pipe;
+   struct xmesa_st_framebuffer *xstfb = xmesa_st_framebuffer(stfbi);
+
+   pipe = xstfb->display->pipe;
+   if (!pipe) {
+      pipe = xstfb->screen->context_create(xstfb->screen, NULL);
+      if (!pipe)
+         return NULL;
+      xstfb->display->pipe = pipe;
+   }
+   return pipe;
+}
+

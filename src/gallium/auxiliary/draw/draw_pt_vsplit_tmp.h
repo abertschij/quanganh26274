@@ -38,8 +38,7 @@ CONCAT(vsplit_primitive_, ELT_TYPE)(struct vsplit_frontend *vsplit,
                                     unsigned istart, unsigned icount)
 {
    struct draw_context *draw = vsplit->draw;
-   const ELT_TYPE *ib = (const ELT_TYPE *)
-      ((const char *) draw->pt.user.elts + draw->pt.index_buffer.offset);
+   const ELT_TYPE *ib = (const ELT_TYPE *) draw->pt.user.elts;
    const unsigned min_index = draw->pt.user.min_index;
    const unsigned max_index = draw->pt.user.max_index;
    const int elt_bias = draw->pt.user.eltBias;
@@ -47,14 +46,18 @@ CONCAT(vsplit_primitive_, ELT_TYPE)(struct vsplit_frontend *vsplit,
    const ushort *draw_elts = NULL;
    unsigned i;
 
+   ib += istart;
+
    /* use the ib directly */
    if (min_index == 0 && sizeof(ib[0]) == sizeof(draw_elts[0])) {
       if (icount > vsplit->max_vertices)
          return FALSE;
 
       for (i = 0; i < icount; i++) {
-         ELT_TYPE idx = ib[istart + i];
-         assert(idx >= min_index && idx <= max_index);
+         ELT_TYPE idx = ib[i];
+            if (idx < min_index || idx > max_index) {
+            debug_printf("warning: index out of range\n");
+         }
       }
       draw_elts = (const ushort *) ib;
    }
@@ -83,17 +86,21 @@ CONCAT(vsplit_primitive_, ELT_TYPE)(struct vsplit_frontend *vsplit,
    if (!draw_elts) {
       if (min_index == 0) {
          for (i = 0; i < icount; i++) {
-            ELT_TYPE idx = ib[istart + i];
+            ELT_TYPE idx = ib[i];
 
-            assert(idx >= min_index && idx <= max_index);
+            if (idx < min_index || idx > max_index) {
+               debug_printf("warning: index out of range\n");
+	    }
             vsplit->draw_elts[i] = (ushort) idx;
          }
       }
       else {
          for (i = 0; i < icount; i++) {
-            ELT_TYPE idx = ib[istart + i];
+            ELT_TYPE idx = ib[i];
 
-            assert(idx >= min_index && idx <= max_index);
+            if (idx < min_index || idx > max_index) {
+               debug_printf("warning: index out of range\n");
+	    }
             vsplit->draw_elts[i] = (ushort) (idx - min_index);
          }
       }
@@ -120,8 +127,7 @@ CONCAT(vsplit_segment_cache_, ELT_TYPE)(struct vsplit_frontend *vsplit,
                                         boolean close, unsigned iclose)
 {
    struct draw_context *draw = vsplit->draw;
-   const ELT_TYPE *ib = (const ELT_TYPE *)
-      ((const char *) draw->pt.user.elts + draw->pt.index_buffer.offset);
+   const ELT_TYPE *ib = (const ELT_TYPE *) draw->pt.user.elts;
    const int ibias = draw->pt.user.eltBias;
    unsigned i;
 
@@ -258,9 +264,10 @@ vsplit_segment_fan_linear(struct vsplit_frontend *vsplit, unsigned flags,
    boolean use_spoken = ((flags & DRAW_SPLIT_BEFORE) != 0);
    unsigned nr = 0, i;
 
-   assert(icount + !!use_spoken <= vsplit->segment_size);
+   assert(icount <= vsplit->segment_size);
 
    if (use_spoken) {
+      /* replace istart by i0 */
       vsplit->fetch_elts[nr++] = i0;
       for (i = 1 ; i < icount; i++)
          vsplit->fetch_elts[nr++] = istart + i;

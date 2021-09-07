@@ -43,9 +43,6 @@ static struct _glapi_table *IndirectAPI = NULL;
 static void
 indirect_destroy_context(struct glx_context *gc)
 {
-   if (!gc->imported && gc->xid)
-      glx_send_destroy_context(gc->psc->dpy, gc->xid);
-
    __glXFreeVertexArrayState(gc);
 
    if (gc->vendor)
@@ -335,6 +332,7 @@ static const struct glx_context_vtable indirect_context_vtable = {
    indirect_use_x_font,
    indirect_bind_tex_image,
    indirect_release_tex_image,
+   NULL, /* get_proc_address */
 };
 
 /**
@@ -404,10 +402,7 @@ indirect_create_context(struct glx_screen *psc,
 
    /*
     ** PERFORMANCE NOTE: A mode dependent fill image can speed things up.
-    ** Other code uses the fastImageUnpack bit, but it is never set
-    ** to GL_TRUE.
     */
-   gc->fastImageUnpack = GL_FALSE;
    gc->fillImage = __glFillImage;
    gc->pc = gc->buf;
    gc->bufEnd = gc->buf + bufSize;
@@ -441,8 +436,31 @@ indirect_create_context(struct glx_screen *psc,
    return gc;
 }
 
+static struct glx_context *
+indirect_create_context_attribs(struct glx_screen *base,
+				struct glx_config *config_base,
+				struct glx_context *shareList,
+				unsigned num_attribs,
+				const uint32_t *attribs,
+				unsigned *error)
+{
+   /* All of the attribute validation for indirect contexts is handled on the
+    * server, so there's not much to do here.
+    */
+   (void) num_attribs;
+   (void) attribs;
+
+   /* The error parameter is only used on the server so that correct GLX
+    * protocol errors can be generated.  On the client, it can be ignored.
+    */
+   (void) error;
+
+   return indirect_create_context(base, config_base, shareList, 0);
+}
+
 struct glx_screen_vtable indirect_screen_vtable = {
-   indirect_create_context
+   indirect_create_context,
+   indirect_create_context_attribs
 };
 
 _X_HIDDEN struct glx_screen *

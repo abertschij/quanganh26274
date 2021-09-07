@@ -1,6 +1,6 @@
 /**************************************************************************
  * 
- * Copyright 2009 VMware, Inc.
+ * Copyright 2009-2010 VMware, Inc.
  * All Rights Reserved.
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -36,6 +36,7 @@
 #include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
+#include "util/u_bitmask.h"
 
 union tgsi_any_token {
    struct tgsi_header header;
@@ -46,13 +47,16 @@ union tgsi_any_token {
    struct tgsi_declaration decl;
    struct tgsi_declaration_range decl_range;
    struct tgsi_declaration_dimension decl_dim;
+   struct tgsi_declaration_interp decl_interp;
    struct tgsi_declaration_semantic decl_semantic;
+   struct tgsi_declaration_sampler_view decl_sampler_view;
    struct tgsi_immediate imm;
    union  tgsi_immediate_data imm_data;
    struct tgsi_instruction insn;
    struct tgsi_instruction_predicate insn_predicate;
    struct tgsi_instruction_label insn_label;
    struct tgsi_instruction_texture insn_texture;
+   struct tgsi_texture_offset insn_texture_offset;
    struct tgsi_src_register src;
    struct tgsi_dimension dim;
    struct tgsi_dst_register dst;
@@ -69,10 +73,9 @@ struct ureg_tokens {
 
 #define UREG_MAX_INPUT PIPE_MAX_ATTRIBS
 #define UREG_MAX_SYSTEM_VALUE PIPE_MAX_ATTRIBS
-#define UREG_MAX_OUTPUT PIPE_MAX_ATTRIBS
+#define UREG_MAX_OUTPUT PIPE_MAX_SHADER_OUTPUTS
 #define UREG_MAX_CONSTANT_RANGE 32
-#define UREG_MAX_IMMEDIATE 32
-#define UREG_MAX_TEMP 256
+#define UREG_MAX_IMMEDIATE 256
 #define UREG_MAX_ADDR 2
 #define UREG_MAX_PRED 1
 
@@ -96,7 +99,8 @@ struct ureg_program
       unsigned semantic_name;
       unsigned semantic_index;
       unsigned interp;
-      unsigned cylindrical_wrap;
+      unsigned char cylindrical_wrap;
+      unsigned char centroid;
    } fs_input[UREG_MAX_INPUT];
    unsigned nr_fs_inputs;
 
@@ -119,6 +123,7 @@ struct ureg_program
    struct {
       unsigned semantic_name;
       unsigned semantic_index;
+      unsigned usage_mask; /* = TGSI_WRITEMASK_* */
    } output[UREG_MAX_OUTPUT];
    unsigned nr_outputs;
 
@@ -136,7 +141,18 @@ struct ureg_program
    struct ureg_src sampler[PIPE_MAX_SAMPLERS];
    unsigned nr_samplers;
 
-   unsigned temps_active[UREG_MAX_TEMP / 32];
+   struct {
+      unsigned index;
+      unsigned target;
+      unsigned return_type_x;
+      unsigned return_type_y;
+      unsigned return_type_z;
+      unsigned return_type_w;
+   } sampler_view[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   unsigned nr_sampler_views;
+
+   struct util_bitmask *free_temps;
+   struct util_bitmask *local_temps;
    unsigned nr_temps;
 
    struct const_decl const_decls;
@@ -147,6 +163,8 @@ struct ureg_program
    unsigned property_gs_max_vertices;
    unsigned char property_fs_coord_origin; /* = TGSI_FS_COORD_ORIGIN_* */
    unsigned char property_fs_coord_pixel_center; /* = TGSI_FS_COORD_PIXEL_CENTER_* */
+   unsigned char property_fs_color0_writes_all_cbufs; /* = TGSI_FS_COLOR0_WRITES_ALL_CBUFS * */
+   unsigned char property_fs_depth_layout; /* TGSI_FS_DEPTH_LAYOUT */
 
    unsigned nr_addrs;
    unsigned nr_preds;
@@ -283,14 +301,27 @@ ureg_property_fs_coord_pixel_center(struct ureg_program *ureg,
    ureg->property_fs_coord_pixel_center = fs_coord_pixel_center;
 }
 
+void
+ureg_property_fs_color0_writes_all_cbufs(struct ureg_program *ureg,
+                            unsigned fs_color0_writes_all_cbufs)
+{
+   ureg->property_fs_color0_writes_all_cbufs = fs_color0_writes_all_cbufs;
+}
 
+void
+ureg_property_fs_depth_layout(struct ureg_program *ureg,
+                              unsigned fs_depth_layout)
+{
+   ureg->property_fs_depth_layout = fs_depth_layout;
+}
 
 struct ureg_src
-ureg_DECL_fs_input_cyl(struct ureg_program *ureg,
+ureg_DECL_fs_input_cyl_centroid(struct ureg_program *ureg,
                        unsigned semantic_name,
                        unsigned semantic_index,
                        unsigned interp_mode,
-                       unsigned cylindrical_wrap)
+                       unsigned cylindrical_wrap,
+                       unsigned centroid)
 {
    unsigned i;
 
@@ -306,6 +337,7 @@ ureg_DECL_fs_input_cyl(struct ureg_program *ureg,
       ureg->fs_input[i].semantic_index = semantic_index;
       ureg->fs_input[i].interp = interp_mode;
       ureg->fs_input[i].cylindrical_wrap = cylindrical_wrap;
+      ureg->fs_input[i].centroid = centroid;
       ureg->nr_fs_inputs++;
    } else {
       set_bad(ureg);
@@ -367,21 +399,27 @@ ureg_DECL_system_value(struct ureg_program *ureg,
 
 
 struct ureg_dst 
-ureg_DECL_output( struct ureg_program *ureg,
-                  unsigned name,
-                  unsigned index )
+ureg_DECL_output_masked( struct ureg_program *ureg,
+                         unsigned name,
+                         unsigned index,
+                         unsigned usage_mask )
 {
    unsigned i;
 
+   assert(usage_mask != 0);
+
    for (i = 0; i < ureg->nr_outputs; i++) {
       if (ureg->output[i].semantic_name == name &&
-          ureg->output[i].semantic_index == index) 
+          ureg->output[i].semantic_index == index) { 
+         ureg->output[i].usage_mask |= usage_mask;
          goto out;
+      }
    }
 
    if (ureg->nr_outputs < UREG_MAX_OUTPUT) {
       ureg->output[i].semantic_name = name;
       ureg->output[i].semantic_index = index;
+      ureg->output[i].usage_mask = usage_mask;
       ureg->nr_outputs++;
    }
    else {
@@ -390,6 +428,15 @@ ureg_DECL_output( struct ureg_program *ureg,
 
 out:
    return ureg_dst_register( TGSI_FILE_OUTPUT, i );
+}
+
+
+struct ureg_dst 
+ureg_DECL_output( struct ureg_program *ureg,
+                  unsigned name,
+                  unsigned index )
+{
+   return ureg_DECL_output_masked(ureg, name, index, TGSI_WRITEMASK_XYZW);
 }
 
 
@@ -484,43 +531,48 @@ out:
    return ureg_src_register(TGSI_FILE_CONSTANT, index);
 }
 
-
-/* Allocate a new temporary.  Temporaries greater than UREG_MAX_TEMP
- * are legal, but will not be released.
- */
-struct ureg_dst ureg_DECL_temporary( struct ureg_program *ureg )
+static struct ureg_dst alloc_temporary( struct ureg_program *ureg,
+                                        boolean local )
 {
    unsigned i;
 
-   for (i = 0; i < UREG_MAX_TEMP; i += 32) {
-      int bit = ffs(~ureg->temps_active[i/32]);
-      if (bit != 0) {
-         i += bit - 1;
-         goto out;
-      }
+   /* Look for a released temporary.
+    */
+   for (i = util_bitmask_get_first_index(ureg->free_temps);
+        i != UTIL_BITMASK_INVALID_INDEX;
+        i = util_bitmask_get_next_index(ureg->free_temps, i + 1)) {
+      if (util_bitmask_get(ureg->local_temps, i) == local)
+         break;
    }
 
-   /* No reusable temps, so allocate a new one:
+   /* Or allocate a new one.
     */
-   i = ureg->nr_temps++;
+   if (i == UTIL_BITMASK_INVALID_INDEX)
+      i = ureg->nr_temps++;
 
-out:
-   if (i < UREG_MAX_TEMP)
-      ureg->temps_active[i/32] |= 1 << (i % 32);
+   util_bitmask_clear(ureg->free_temps, i);
 
-   if (i >= ureg->nr_temps)
-      ureg->nr_temps = i + 1;
+   if (local)
+      util_bitmask_set(ureg->local_temps, i);
 
    return ureg_dst_register( TGSI_FILE_TEMPORARY, i );
 }
 
+struct ureg_dst ureg_DECL_temporary( struct ureg_program *ureg )
+{
+   return alloc_temporary(ureg, FALSE);
+}
+
+struct ureg_dst ureg_DECL_local_temporary( struct ureg_program *ureg )
+{
+   return alloc_temporary(ureg, TRUE);
+}
 
 void ureg_release_temporary( struct ureg_program *ureg,
                              struct ureg_dst tmp )
 {
    if(tmp.File == TGSI_FILE_TEMPORARY)
-      if (tmp.Index < UREG_MAX_TEMP)
-         ureg->temps_active[tmp.Index/32] &= ~(1 << (tmp.Index % 32));
+      util_bitmask_set(ureg->free_temps, tmp.Index);
 }
 
 
@@ -569,6 +621,41 @@ struct ureg_src ureg_DECL_sampler( struct ureg_program *ureg,
    return ureg->sampler[0];
 }
 
+/*
+ * Allocate a new shader sampler view.
+ */
+struct ureg_src
+ureg_DECL_sampler_view(struct ureg_program *ureg,
+                       unsigned index,
+                       unsigned target,
+                       unsigned return_type_x,
+                       unsigned return_type_y,
+                       unsigned return_type_z,
+                       unsigned return_type_w)
+{
+   struct ureg_src reg = ureg_src_register(TGSI_FILE_SAMPLER_VIEW, index);
+   uint i;
+
+   for (i = 0; i < ureg->nr_sampler_views; i++) {
+      if (ureg->sampler_view[i].index == index) {
+         return reg;
+      }
+   }
+
+   if (i < PIPE_MAX_SHADER_SAMPLER_VIEWS) {
+      ureg->sampler_view[i].index = index;
+      ureg->sampler_view[i].target = target;
+      ureg->sampler_view[i].return_type_x = return_type_x;
+      ureg->sampler_view[i].return_type_y = return_type_y;
+      ureg->sampler_view[i].return_type_z = return_type_z;
+      ureg->sampler_view[i].return_type_w = return_type_w;
+      ureg->nr_sampler_views++;
+      return reg;
+   }
+
+   assert(0);
+   return reg;
+}
 
 static int
 match_or_expand_immediate( const unsigned *v,
@@ -743,7 +830,6 @@ ureg_emit_src( struct ureg_program *ureg,
    unsigned n = 0;
 
    assert(src.File != TGSI_FILE_NULL);
-   assert(src.File != TGSI_FILE_OUTPUT);
    assert(src.File < TGSI_FILE_COUNT);
    
    out[n].value = 0;
@@ -812,9 +898,10 @@ ureg_emit_dst( struct ureg_program *ureg,
    assert(dst.File != TGSI_FILE_CONSTANT);
    assert(dst.File != TGSI_FILE_INPUT);
    assert(dst.File != TGSI_FILE_SAMPLER);
+   assert(dst.File != TGSI_FILE_SAMPLER_VIEW);
    assert(dst.File != TGSI_FILE_IMMEDIATE);
    assert(dst.File < TGSI_FILE_COUNT);
-   
+
    out[n].value = 0;
    out[n].dst.File = dst.File;
    out[n].dst.WriteMask = dst.WriteMask;
@@ -941,7 +1028,7 @@ ureg_fixup_label(struct ureg_program *ureg,
 void
 ureg_emit_texture(struct ureg_program *ureg,
                   unsigned extended_token,
-                  unsigned target )
+                  unsigned target, unsigned num_offsets)
 {
    union tgsi_any_token *out, *insn;
 
@@ -952,6 +1039,20 @@ ureg_emit_texture(struct ureg_program *ureg,
 
    out[0].value = 0;
    out[0].insn_texture.Texture = target;
+   out[0].insn_texture.NumOffsets = num_offsets;
+}
+
+void
+ureg_emit_texture_offset(struct ureg_program *ureg,
+                         const struct tgsi_texture_offset *offset)
+{
+   union tgsi_any_token *out;
+
+   out = get_tokens( ureg, DOMAIN_INSN, 1);
+
+   out[0].value = 0;
+   out[0].insn_texture_offset = *offset;
+   
 }
 
 
@@ -1018,6 +1119,8 @@ ureg_tex_insn(struct ureg_program *ureg,
               const struct ureg_dst *dst,
               unsigned nr_dst,
               unsigned target,
+              const struct tgsi_texture_offset *texoffsets,
+              unsigned nr_offset,
               const struct ureg_src *src,
               unsigned nr_src )
 {
@@ -1050,7 +1153,10 @@ ureg_tex_insn(struct ureg_program *ureg,
                          nr_dst,
                          nr_src);
 
-   ureg_emit_texture( ureg, insn.extended_token, target );
+   ureg_emit_texture( ureg, insn.extended_token, target, nr_offset );
+
+   for (i = 0; i < nr_offset; i++)
+      ureg_emit_texture_offset( ureg, &texoffsets[i]);
 
    for (i = 0; i < nr_dst; i++)
       ureg_emit_dst( ureg, dst[i] );
@@ -1098,7 +1204,8 @@ emit_decl_semantic(struct ureg_program *ureg,
                    unsigned file,
                    unsigned index,
                    unsigned semantic_name,
-                   unsigned semantic_index)
+                   unsigned semantic_index,
+                   unsigned usage_mask)
 {
    union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 3);
 
@@ -1106,7 +1213,7 @@ emit_decl_semantic(struct ureg_program *ureg,
    out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
    out[0].decl.NrTokens = 3;
    out[0].decl.File = file;
-   out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW; /* FIXME! */
+   out[0].decl.UsageMask = usage_mask;
    out[0].decl.Semantic = 1;
 
    out[1].value = 0;
@@ -1126,28 +1233,52 @@ emit_decl_fs(struct ureg_program *ureg,
              unsigned semantic_name,
              unsigned semantic_index,
              unsigned interpolate,
-             unsigned cylindrical_wrap)
+             unsigned cylindrical_wrap,
+             unsigned centroid)
 {
-   union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 3);
+   union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 4);
 
    out[0].value = 0;
    out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
-   out[0].decl.NrTokens = 3;
+   out[0].decl.NrTokens = 4;
    out[0].decl.File = file;
    out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW; /* FIXME! */
-   out[0].decl.Interpolate = interpolate;
+   out[0].decl.Interpolate = 1;
    out[0].decl.Semantic = 1;
-   out[0].decl.CylindricalWrap = cylindrical_wrap;
 
    out[1].value = 0;
    out[1].decl_range.First = index;
    out[1].decl_range.Last = index;
 
    out[2].value = 0;
-   out[2].decl_semantic.Name = semantic_name;
-   out[2].decl_semantic.Index = semantic_index;
+   out[2].decl_interp.Interpolate = interpolate;
+   out[2].decl_interp.CylindricalWrap = cylindrical_wrap;
+   out[2].decl_interp.Centroid = centroid;
+
+   out[3].value = 0;
+   out[3].decl_semantic.Name = semantic_name;
+   out[3].decl_semantic.Index = semantic_index;
 }
 
+
+static void emit_decl( struct ureg_program *ureg,
+                       unsigned file,
+                       unsigned index,
+                       boolean local )
+{
+   union tgsi_any_token *out = get_tokens( ureg, DOMAIN_DECL, 2 );
+
+   out[0].value = 0;
+   out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
+   out[0].decl.NrTokens = 2;
+   out[0].decl.File = file;
+   out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW;
+   out[0].decl.Local = local;
+
+   out[1].value = 0;
+   out[1].decl_range.First = index;
+   out[1].decl_range.Last = index;
+}
 
 static void emit_decl_range( struct ureg_program *ureg,
                              unsigned file,
@@ -1161,7 +1292,6 @@ static void emit_decl_range( struct ureg_program *ureg,
    out[0].decl.NrTokens = 2;
    out[0].decl.File = file;
    out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW;
-   out[0].decl.Interpolate = TGSI_INTERPOLATE_CONSTANT;
    out[0].decl.Semantic = 0;
 
    out[1].value = 0;
@@ -1183,7 +1313,6 @@ emit_decl_range2D(struct ureg_program *ureg,
    out[0].decl.NrTokens = 3;
    out[0].decl.File = file;
    out[0].decl.UsageMask = TGSI_WRITEMASK_XYZW;
-   out[0].decl.Interpolate = TGSI_INTERPOLATE_CONSTANT;
    out[0].decl.Dimension = 1;
 
    out[1].value = 0;
@@ -1192,6 +1321,35 @@ emit_decl_range2D(struct ureg_program *ureg,
 
    out[2].value = 0;
    out[2].decl_dim.Index2D = index2D;
+}
+
+static void
+emit_decl_sampler_view(struct ureg_program *ureg,
+                       unsigned index,
+                       unsigned target,
+                       unsigned return_type_x,
+                       unsigned return_type_y,
+                       unsigned return_type_z,
+                       unsigned return_type_w )
+{
+   union tgsi_any_token *out = get_tokens(ureg, DOMAIN_DECL, 3);
+
+   out[0].value = 0;
+   out[0].decl.Type = TGSI_TOKEN_TYPE_DECLARATION;
+   out[0].decl.NrTokens = 3;
+   out[0].decl.File = TGSI_FILE_SAMPLER_VIEW;
+   out[0].decl.UsageMask = 0xf;
+
+   out[1].value = 0;
+   out[1].decl_range.First = index;
+   out[1].decl_range.Last = index;
+
+   out[2].value = 0;
+   out[2].decl_sampler_view.Resource    = target;
+   out[2].decl_sampler_view.ReturnTypeX = return_type_x;
+   out[2].decl_sampler_view.ReturnTypeY = return_type_y;
+   out[2].decl_sampler_view.ReturnTypeZ = return_type_z;
+   out[2].decl_sampler_view.ReturnTypeW = return_type_w;
 }
 
 static void
@@ -1273,6 +1431,22 @@ static void emit_decls( struct ureg_program *ureg )
                     ureg->property_fs_coord_pixel_center);
    }
 
+   if (ureg->property_fs_color0_writes_all_cbufs) {
+      assert(ureg->processor == TGSI_PROCESSOR_FRAGMENT);
+
+      emit_property(ureg,
+                    TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS,
+                    ureg->property_fs_color0_writes_all_cbufs);
+   }
+
+   if (ureg->property_fs_depth_layout) {
+      assert(ureg->processor == TGSI_PROCESSOR_FRAGMENT);
+
+      emit_property(ureg,
+                    TGSI_PROPERTY_FS_DEPTH_LAYOUT,
+                    ureg->property_fs_depth_layout);
+   }
+
    if (ureg->processor == TGSI_PROCESSOR_VERTEX) {
       for (i = 0; i < UREG_MAX_INPUT; i++) {
          if (ureg->vs_inputs[i/32] & (1 << (i%32))) {
@@ -1287,7 +1461,8 @@ static void emit_decls( struct ureg_program *ureg )
                       ureg->fs_input[i].semantic_name,
                       ureg->fs_input[i].semantic_index,
                       ureg->fs_input[i].interp,
-                      ureg->fs_input[i].cylindrical_wrap);
+                      ureg->fs_input[i].cylindrical_wrap,
+                      ureg->fs_input[i].centroid);
       }
    } else {
       for (i = 0; i < ureg->nr_gs_inputs; i++) {
@@ -1295,7 +1470,8 @@ static void emit_decls( struct ureg_program *ureg )
                             TGSI_FILE_INPUT,
                             ureg->gs_input[i].index,
                             ureg->gs_input[i].semantic_name,
-                            ureg->gs_input[i].semantic_index);
+                            ureg->gs_input[i].semantic_index,
+                            TGSI_WRITEMASK_XYZW);
       }
    }
 
@@ -1304,7 +1480,8 @@ static void emit_decls( struct ureg_program *ureg )
                          TGSI_FILE_SYSTEM_VALUE,
                          ureg->system_value[i].index,
                          ureg->system_value[i].semantic_name,
-                         ureg->system_value[i].semantic_index);
+                         ureg->system_value[i].semantic_index,
+                         TGSI_WRITEMASK_XYZW);
    }
 
    for (i = 0; i < ureg->nr_outputs; i++) {
@@ -1312,13 +1489,24 @@ static void emit_decls( struct ureg_program *ureg )
                          TGSI_FILE_OUTPUT,
                          i,
                          ureg->output[i].semantic_name,
-                         ureg->output[i].semantic_index);
+                         ureg->output[i].semantic_index,
+                         ureg->output[i].usage_mask);
    }
 
    for (i = 0; i < ureg->nr_samplers; i++) {
       emit_decl_range( ureg, 
                        TGSI_FILE_SAMPLER,
                        ureg->sampler[i].Index, 1 );
+   }
+
+   for (i = 0; i < ureg->nr_sampler_views; i++) {
+      emit_decl_sampler_view(ureg,
+                             ureg->sampler_view[i].index,
+                             ureg->sampler_view[i].target,
+                             ureg->sampler_view[i].return_type_x,
+                             ureg->sampler_view[i].return_type_y,
+                             ureg->sampler_view[i].return_type_z,
+                             ureg->sampler_view[i].return_type_w);
    }
 
    if (ureg->const_decls.nr_constant_ranges) {
@@ -1347,9 +1535,17 @@ static void emit_decls( struct ureg_program *ureg )
    }
 
    if (ureg->nr_temps) {
-      emit_decl_range( ureg,
-                       TGSI_FILE_TEMPORARY,
-                       0, ureg->nr_temps );
+      if (util_bitmask_get_first_index(ureg->local_temps) ==  UTIL_BITMASK_INVALID_INDEX) {
+         emit_decl_range( ureg,
+                          TGSI_FILE_TEMPORARY,
+                          0, ureg->nr_temps );
+
+      } else {
+         for (i = 0; i < ureg->nr_temps; i++) {
+            emit_decl( ureg, TGSI_FILE_TEMPORARY, i,
+                       util_bitmask_get(ureg->local_temps, i) );
+         }
+      }
    }
 
    if (ureg->nr_addrs) {
@@ -1448,13 +1644,19 @@ const struct tgsi_token *ureg_finalize( struct ureg_program *ureg )
 
 
 void *ureg_create_shader( struct ureg_program *ureg,
-                          struct pipe_context *pipe )
+                          struct pipe_context *pipe,
+                          const struct pipe_stream_output_info *so )
 {
    struct pipe_shader_state state;
 
    state.tokens = ureg_finalize(ureg);
    if(!state.tokens)
       return NULL;
+
+   if (so)
+      state.stream_output = *so;
+   else
+      memset(&state.stream_output, 0, sizeof(state.stream_output));
 
    if (ureg->processor == TGSI_PROCESSOR_VERTEX)
       return pipe->create_vs_state( pipe, &state );
@@ -1494,13 +1696,29 @@ struct ureg_program *ureg_create( unsigned processor )
 {
    struct ureg_program *ureg = CALLOC_STRUCT( ureg_program );
    if (ureg == NULL)
-      return NULL;
+      goto no_ureg;
 
    ureg->processor = processor;
    ureg->property_gs_input_prim = ~0;
    ureg->property_gs_output_prim = ~0;
    ureg->property_gs_max_vertices = ~0;
+
+   ureg->free_temps = util_bitmask_create();
+   if (ureg->free_temps == NULL)
+      goto no_free_temps;
+
+   ureg->local_temps = util_bitmask_create();
+   if (ureg->local_temps == NULL)
+      goto no_local_temps;
+
    return ureg;
+
+no_local_temps:
+   util_bitmask_destroy(ureg->free_temps);
+no_free_temps:
+   FREE(ureg);
+no_ureg:
+   return NULL;
 }
 
 
@@ -1513,6 +1731,9 @@ void ureg_destroy( struct ureg_program *ureg )
           ureg->domain[i].tokens != error_tokens)
          FREE(ureg->domain[i].tokens);
    }
-   
+
+   util_bitmask_destroy(ureg->free_temps);
+   util_bitmask_destroy(ureg->local_temps);
+
    FREE(ureg);
 }

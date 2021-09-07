@@ -56,14 +56,15 @@ struct svga_surface
 
 
 extern void
-svga_propagate_surface(struct pipe_context *pipe, struct pipe_surface *surf);
+svga_propagate_surface(struct svga_context *svga, struct pipe_surface *surf);
 
 extern boolean
-svga_surface_needs_propagation(struct pipe_surface *surf);
+svga_surface_needs_propagation(const struct pipe_surface *surf);
 
 struct svga_winsys_surface *
-svga_texture_view_surface(struct pipe_context *pipe,
+svga_texture_view_surface(struct svga_context *svga,
                           struct svga_texture *tex,
+                          SVGA3dSurfaceFlags flags,
                           SVGA3dSurfaceFormat format,
                           unsigned start_mip,
                           unsigned num_mip,
@@ -90,7 +91,12 @@ svga_surface(struct pipe_surface *surface)
    return (struct svga_surface *)surface;
 }
 
-void
-svga_screen_init_surface_functions(struct pipe_screen *screen);
+
+static INLINE const struct svga_surface *
+svga_surface_const(const struct pipe_surface *surface)
+{
+   assert(surface);
+   return (const struct svga_surface *)surface;
+}
 
 #endif

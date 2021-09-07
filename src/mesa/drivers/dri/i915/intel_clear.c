@@ -1,9 +1,9 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2003 Tungsten Graphics, Inc., Cedar Park, Texas.
  * Copyright 2009 Intel Corporation.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -11,11 +11,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -23,11 +23,12 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 #include "main/glheader.h"
 #include "main/mtypes.h"
+#include "main/condrender.h"
 #include "swrast/swrast.h"
 #include "drivers/common/meta.h"
 
@@ -58,11 +59,26 @@ static const char *buffer_names[] = {
    [BUFFER_COLOR7] = "color7",
 };
 
+static void
+debug_mask(const char *name, GLbitfield mask)
+{
+   GLuint i;
+
+   if (unlikely(INTEL_DEBUG & DEBUG_BLIT)) {
+      DBG("%s clear:", name);
+      for (i = 0; i < BUFFER_COUNT; i++) {
+	 if (mask & (1 << i))
+	    DBG(" %s", buffer_names[i]);
+      }
+      DBG("\n");
+   }
+}
+
 /**
  * Called by ctx->Driver.Clear.
  */
 static void
-intelClear(GLcontext *ctx, GLbitfield mask)
+intelClear(struct gl_context *ctx, GLbitfield mask)
 {
    struct intel_context *intel = intel_context(ctx);
    const GLuint colorMask = *((GLuint *) & ctx->Color.ColorMask[0]);
@@ -70,24 +86,40 @@ intelClear(GLcontext *ctx, GLbitfield mask)
    GLbitfield blit_mask = 0;
    GLbitfield swrast_mask = 0;
    struct gl_framebuffer *fb = ctx->DrawBuffer;
-   GLuint i;
+   struct intel_renderbuffer *irb;
+   int i;
 
    if (mask & (BUFFER_BIT_FRONT_LEFT | BUFFER_BIT_FRONT_RIGHT)) {
-      intel->front_buffer_dirty = GL_TRUE;
+      intel->front_buffer_dirty = true;
    }
 
    if (0)
       fprintf(stderr, "%s\n", __FUNCTION__);
 
+   /* Get SW clears out of the way: Anything without an intel_renderbuffer */
+   for (i = 0; i < BUFFER_COUNT; i++) {
+      if (!(mask & (1 << i)))
+	 continue;
+
+      irb = intel_get_renderbuffer(fb, i);
+      if (unlikely(!irb)) {
+	 swrast_mask |= (1 << i);
+	 mask &= ~(1 << i);
+      }
+   }
+   if (unlikely(swrast_mask)) {
+      debug_mask("swrast", swrast_mask);
+      _swrast_Clear(ctx, swrast_mask);
+   }
+
    /* HW color buffers (front, back, aux, generic FBO, etc) */
    if (colorMask == ~0) {
       /* clear all R,G,B,A */
-      /* XXX FBO: need to check if colorbuffers are software RBOs! */
       blit_mask |= (mask & BUFFER_BITS_COLOR);
    }
    else {
       /* glColorMask in effect */
-      tri_mask |= (mask & (BUFFER_BIT_FRONT_LEFT | BUFFER_BIT_BACK_LEFT));
+      tri_mask |= (mask & BUFFER_BITS_COLOR);
    }
 
    /* Make sure we have up to date buffers before we start looking at
@@ -130,72 +162,27 @@ intelClear(GLcontext *ctx, GLbitfield mask)
     * buffer with it.
     */
    if (mask & (BUFFER_BIT_DEPTH | BUFFER_BIT_STENCIL)) {
-      int color_bit = _mesa_ffs(mask & BUFFER_BITS_COLOR);
+      int color_bit = ffs(mask & BUFFER_BITS_COLOR);
       if (color_bit != 0) {
 	 tri_mask |= blit_mask & (1 << (color_bit - 1));
 	 blit_mask &= ~(1 << (color_bit - 1));
       }
    }
 
-   if (intel->gen >= 6) {
-      /* Blits are in a different ringbuffer so we don't use them. */
-      tri_mask |= blit_mask;
-      blit_mask = 0;
-   }
-
-   /* SW fallback clearing */
-   swrast_mask = mask & ~tri_mask & ~blit_mask;
-
-   {
-      /* look for non-Intel renderbuffers (clear them with swrast) */
-      GLbitfield blit_or_tri = blit_mask | tri_mask;
-      while (blit_or_tri) {
-         GLuint i = _mesa_ffs(blit_or_tri) - 1;
-         GLbitfield bufBit = 1 << i;
-         if (!fb->Attachment[i].Renderbuffer->ClassID) {
-            blit_mask &= ~bufBit;
-            tri_mask &= ~bufBit;
-            swrast_mask |= bufBit;
-         }
-         blit_or_tri ^= bufBit;
-      }
-   }
+   /* Anything left, just use tris */
+   tri_mask |= mask & ~blit_mask;
 
    if (blit_mask) {
-      if (INTEL_DEBUG & DEBUG_BLIT) {
-	 DBG("blit clear:");
-	 for (i = 0; i < BUFFER_COUNT; i++) {
-	    if (blit_mask & (1 << i))
-	       DBG(" %s", buffer_names[i]);
-	 }
-	 DBG("\n");
-      }
-      intelClearWithBlit(ctx, blit_mask);
+      debug_mask("blit", blit_mask);
+      tri_mask |= intelClearWithBlit(ctx, blit_mask);
    }
 
    if (tri_mask) {
-      if (INTEL_DEBUG & DEBUG_BLIT) {
-	 DBG("tri clear:");
-	 for (i = 0; i < BUFFER_COUNT; i++) {
-	    if (tri_mask & (1 << i))
-	       DBG(" %s", buffer_names[i]);
-	 }
-	 DBG("\n");
-      }
-
-      _mesa_meta_Clear(&intel->ctx, tri_mask);
-   }
-
-   if (swrast_mask) {
-      if (INTEL_DEBUG & DEBUG_BLIT) {
-	 DBG("swrast clear:");
-	 for (i = 0; i < BUFFER_COUNT; i++) {
-	    if (swrast_mask & (1 << i))
-	       DBG(" %s", buffer_names[i]);
-	 }
-	 DBG("\n");
-      }
-      _swrast_Clear(ctx, swrast_mask);
+      debug_mask("tri", tri_mask);
+      if (ctx->API == API_OPENGLES)
+	 _mesa_meta_Clear(&intel->ctx, tri_mask);
+      else
+	 _mesa_meta_glsl_Clear(&intel->ctx, tri_mask);
    }
 }
 

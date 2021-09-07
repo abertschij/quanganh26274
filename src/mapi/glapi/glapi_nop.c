@@ -51,7 +51,11 @@ _glapi_set_warning_func(_glapi_proc func)
 {
 }
 
-#ifdef DEBUG
+/*
+ * When GLAPIENTRY is __stdcall (i.e. Windows), the stack is popped by the
+ * callee making the number/type of arguments significant.
+ */
+#if defined(_WIN32) || defined(DEBUG)
 
 /**
  * Called by each of the no-op GL entrypoints.
@@ -59,7 +63,7 @@ _glapi_set_warning_func(_glapi_proc func)
 static int
 Warn(const char *func)
 {
-#if !defined(_WIN32_WCE)
+#if defined(DEBUG) && !defined(_WIN32_WCE)
    if (getenv("MESA_DEBUG") || getenv("LIBGL_DEBUG")) {
       fprintf(stderr, "GL User Error: gl%s called without a rendering context\n",
               func);
@@ -86,7 +90,7 @@ NoOpUnused(void)
 #define KEYWORD2 GLAPIENTRY
 #define NAME(func)  NoOp##func
 #define DISPATCH(func, args, msg)  Warn(#func);
-#define RETURN_DISPATCH(type, func, args, msg)  Warn(#func); return (type)0
+#define RETURN_DISPATCH(func, args, msg)  Warn(#func); return 0
 
 
 /*
@@ -96,7 +100,7 @@ NoOpUnused(void)
 
 #else
 
-void
+static int
 NoOpGeneric(void)
 {
 #if !defined(_WIN32_WCE)
@@ -104,35 +108,10 @@ NoOpGeneric(void)
       fprintf(stderr, "GL User Error: calling GL function without a rendering context\n");
    }
 #endif
-}
-
-/**
- * This is called if the user somehow calls an unassigned GL dispatch function.
- */
-static GLint
-NoOpUnused(void)
-{
-   NoOpGeneric();
    return 0;
 }
 
-/*
- * It is necessary to generate custom no-op entry points at least on
- * Windows, where the __stdcall calling convention is used (callee
- * cleans the stack). This calling convention can not tolerate a
- * mismatch between the numbers of arguments in caller and callee.
- */
-#define KEYWORD1 static
-#define KEYWORD1_ALT static
-#define KEYWORD2 GLAPIENTRY
-#define NAME(func)  NoOp##func
-#define DISPATCH(func, args, msg)  NoOpGeneric();
-#define RETURN_DISPATCH(type, func, args, msg)  NoOpGeneric(); return (type)0
-
-/*
- * Defines for the table of no-op entry points.
- */
-#define TABLE_ENTRY(name) (_glapi_proc) NoOp##name
+#define TABLE_ENTRY(name) (_glapi_proc) NoOpGeneric
 
 #endif
 

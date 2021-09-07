@@ -55,9 +55,16 @@
 
 
 /**
- * Max texture level for the alpha texture used for antialiasing
+ * Size for the alpha texture used for antialiasing
  */
-#define MAX_TEXTURE_LEVEL  5   /* 32 x 32 */
+#define TEXTURE_SIZE_LOG2  5   /* 32 x 32 */
+
+/**
+ * Max texture level for the alpha texture used for antialiasing
+ *
+ * Don't use the 1x1 and 2x2 mipmap levels.
+ */
+#define MAX_TEXTURE_LEVEL  (TEXTURE_SIZE_LOG2 - 2)
 
 
 /**
@@ -230,12 +237,13 @@ aa_transform_inst(struct tgsi_transform_context *ctx,
       decl = tgsi_default_full_declaration();
       decl.Declaration.File = TGSI_FILE_INPUT;
       /* XXX this could be linear... */
-      decl.Declaration.Interpolate = TGSI_INTERPOLATE_PERSPECTIVE;
+      decl.Declaration.Interpolate = 1;
       decl.Declaration.Semantic = 1;
       decl.Semantic.Name = TGSI_SEMANTIC_GENERIC;
       decl.Semantic.Index = aactx->maxGeneric + 1;
       decl.Range.First = 
       decl.Range.Last = aactx->maxInput + 1;
+      decl.Interp.Interpolate = TGSI_INTERPOLATE_PERSPECTIVE;
       ctx->emit_declaration(ctx, &decl);
 
       /* declare new sampler */
@@ -367,7 +375,9 @@ generate_aaline_fs(struct aaline_stage *aaline)
                          newLen, &transform.base);
 
 #if 0 /* DEBUG */
+   debug_printf("draw_aaline, orig shader:\n");
    tgsi_dump(orig_fs->tokens, 0);
+   debug_printf("draw_aaline, new shader:\n");
    tgsi_dump(aaline_fs.tokens, 0);
 #endif
 
@@ -403,9 +413,10 @@ aaline_create_texture(struct aaline_stage *aaline)
    texTemp.target = PIPE_TEXTURE_2D;
    texTemp.format = PIPE_FORMAT_A8_UNORM; /* XXX verify supported by driver! */
    texTemp.last_level = MAX_TEXTURE_LEVEL;
-   texTemp.width0 = 1 << MAX_TEXTURE_LEVEL;
-   texTemp.height0 = 1 << MAX_TEXTURE_LEVEL;
+   texTemp.width0 = 1 << TEXTURE_SIZE_LOG2;
+   texTemp.height0 = 1 << TEXTURE_SIZE_LOG2;
    texTemp.depth0 = 1;
+   texTemp.array_size = 1;
    texTemp.bind = PIPE_BIND_SAMPLER_VIEW;
 
    aaline->texture = screen->resource_create(screen, &texTemp);
@@ -441,10 +452,10 @@ aaline_create_texture(struct aaline_stage *aaline)
       /* This texture is new, no need to flush. 
        */
       transfer = pipe->get_transfer(pipe,
-				    aaline->texture,
-				    u_subresource(0, level), 
-				    PIPE_TRANSFER_WRITE,
-				    &box);
+                                    aaline->texture,
+                                    level,
+                                    PIPE_TRANSFER_WRITE,
+                                    &box);
 
       data = pipe->transfer_map(pipe, transfer);
       if (data == NULL)
@@ -460,7 +471,7 @@ aaline_create_texture(struct aaline_stage *aaline)
                d = 200; /* tuneable */
             }
             else if (i == 0 || j == 0 || i == size - 1 || j == size - 1) {
-               d = 0;
+               d = 35;  /* edge texel */
             }
             else {
                d = 255;
@@ -497,8 +508,7 @@ aaline_create_sampler(struct aaline_stage *aaline)
    sampler.mag_img_filter = PIPE_TEX_FILTER_LINEAR;
    sampler.normalized_coords = 1;
    sampler.min_lod = 0.0f;
-   /* avoid using the 1x1 and 2x2 mipmap levels */
-   sampler.max_lod = MAX_TEXTURE_LEVEL - 2;
+   sampler.max_lod = MAX_TEXTURE_LEVEL;
 
    aaline->sampler_cso = pipe->create_sampler_state(pipe, &sampler);
    if (aaline->sampler_cso == NULL)
@@ -685,13 +695,12 @@ aaline_first_line(struct draw_stage *stage, struct prim_header *header)
    }
 
    /* update vertex attrib info */
-   aaline->tex_slot = draw_current_shader_outputs(draw);
    aaline->pos_slot = draw_current_shader_position_output(draw);;
 
-   /* advertise the extra post-transformed vertex attribute */
-   draw->extra_shader_outputs.semantic_name = TGSI_SEMANTIC_GENERIC;
-   draw->extra_shader_outputs.semantic_index = aaline->fs->generic_attrib;
-   draw->extra_shader_outputs.slot = aaline->tex_slot;
+   /* allocate the extra post-transformed vertex attribute */
+   aaline->tex_slot = draw_alloc_extra_vertex_attrib(draw,
+                                                     TGSI_SEMANTIC_GENERIC,
+                                                     aaline->fs->generic_attrib);
 
    /* how many samplers? */
    /* we'll use sampler/texture[pstip->sampler_unit] for the stipple */
@@ -730,7 +739,7 @@ aaline_flush(struct draw_stage *stage, unsigned flags)
 
    /* restore original frag shader, texture, sampler state */
    draw->suspend_flushing = TRUE;
-   aaline->driver_bind_fs_state(pipe, aaline->fs->driver_fs);
+   aaline->driver_bind_fs_state(pipe, aaline->fs ? aaline->fs->driver_fs : NULL);
    aaline->driver_bind_sampler_states(pipe, aaline->num_samplers,
                                       aaline->state.sampler);
    aaline->driver_set_sampler_views(pipe,
@@ -744,7 +753,7 @@ aaline_flush(struct draw_stage *stage, unsigned flags)
 
    draw->suspend_flushing = FALSE;
 
-   draw->extra_shader_outputs.slot = 0;
+   draw_remove_extra_vertex_attribs(draw);
 }
 
 
@@ -777,6 +786,14 @@ aaline_destroy(struct draw_stage *stage)
    }
 
    draw_free_temp_verts( stage );
+
+   /* restore the old entry points */
+   pipe->create_fs_state = aaline->driver_create_fs_state;
+   pipe->bind_fs_state = aaline->driver_bind_fs_state;
+   pipe->delete_fs_state = aaline->driver_delete_fs_state;
+
+   pipe->bind_fragment_sampler_states = aaline->driver_bind_sampler_states;
+   pipe->set_fragment_sampler_views = aaline->driver_set_sampler_views;
 
    FREE( stage );
 }
@@ -834,7 +851,7 @@ aaline_create_fs_state(struct pipe_context *pipe,
    if (aafs == NULL)
       return NULL;
 
-   aafs->state = *fs;
+   aafs->state.tokens = tgsi_dup_tokens(fs->tokens);
 
    /* pass-through */
    aafs->driver_fs = aaline->driver_create_fs_state(pipe, fs);
@@ -867,6 +884,8 @@ aaline_delete_fs_state(struct pipe_context *pipe, void *fs)
 
    if (aafs->aaline_fs)
       aaline->driver_delete_fs_state(pipe, aafs->aaline_fs);
+
+   FREE((void*)aafs->state.tokens);
 
    FREE(aafs);
 }

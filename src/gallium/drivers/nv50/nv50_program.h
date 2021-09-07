@@ -1,75 +1,106 @@
-#ifndef __NV50_PROGRAM_H__
-#define __NV50_PROGRAM_H__
+/*
+ * Copyright 2010 Ben Skeggs
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+ * OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+#ifndef __NV50_PROG_H__
+#define __NV50_PROG_H__
+
+struct nv50_context;
 
 #include "pipe/p_state.h"
-#include "tgsi/tgsi_scan.h"
+#include "pipe/p_shader_tokens.h"
 
-struct nv50_program_exec {
-	struct nv50_program_exec *next;
+struct nv50_varying {
+   uint8_t id; /* tgsi index */
+   uint8_t hw; /* hw index, nv50 wants flat FP inputs last */
 
-	unsigned inst[2];
-	struct {
-		int index;
-		unsigned mask;
-		unsigned shift;
-	} param;
+   unsigned mask   : 4;
+   unsigned linear : 1;
+   unsigned pad    : 3;
+
+   ubyte sn; /* semantic name */
+   ubyte si; /* semantic index */
 };
 
-struct nv50_sreg4 {
-	uint8_t hw; /* hw index, nv50 wants flat FP inputs last */
-	uint8_t id; /* tgsi index */
-
-	uint8_t mask;
-	boolean linear;
-
-	ubyte sn, si; /* semantic name & index */
+struct nv50_stream_output_state
+{
+   uint32_t ctrl;
+   uint16_t stride[4];
+   uint8_t num_attribs[4];
+   uint8_t map_size;
+   uint8_t map[128];
 };
 
 struct nv50_program {
-	struct pipe_shader_state pipe;
-	struct tgsi_shader_info info;
-	boolean translated;
+   struct pipe_shader_state pipe;
 
-	unsigned type;
-	struct nv50_program_exec *exec_head;
-	struct nv50_program_exec *exec_tail;
-	unsigned exec_size;
-	struct nouveau_resource *data[1];
-	unsigned data_start[1];
+   ubyte type;
+   boolean translated;
 
-	struct nouveau_bo *bo;
+   uint32_t *code;
+   unsigned code_size;
+   unsigned code_base;
+   uint32_t *immd;
+   unsigned immd_size;
+   unsigned parm_size; /* size limit of uniform buffer */
+   uint32_t tls_space; /* required local memory per thread */
 
-	uint32_t *immd;
-	unsigned immd_nr;
-	unsigned param_nr;
+   ubyte max_gpr; /* REG_ALLOC_TEMP */
+   ubyte max_out; /* REG_ALLOC_RESULT or FP_RESULT_COUNT */
 
-	struct {
-		unsigned high_temp;
-		unsigned high_result;
+   ubyte in_nr;
+   ubyte out_nr;
+   struct nv50_varying in[16];
+   struct nv50_varying out[16];
 
-		uint32_t attr[2];
-		uint32_t regs[4];
+   struct {
+      uint32_t attrs[3]; /* VP_ATTR_EN_0,1 and VP_GP_BUILTIN_ATTR_EN */
+      ubyte psiz;        /* output slot of point size */
+      ubyte bfc[2];      /* indices into varying for FFC (FP) or BFC (VP) */
+      ubyte edgeflag;
+      ubyte clpd[2];     /* output slot of clip distance[i]'s 1st component */
+      ubyte clpd_nr;
+   } vp;
 
-		/* for VPs, io_nr doesn't count 'private' results (PSIZ etc.) */
-		unsigned in_nr, out_nr;
-		struct nv50_sreg4 in[PIPE_MAX_SHADER_INPUTS];
-		struct nv50_sreg4 out[PIPE_MAX_SHADER_OUTPUTS];
+   struct {
+      uint32_t flags[2]; /* 0x19a8, 196c */
+      uint32_t interp; /* 0x1988 */
+      uint32_t colors; /* 0x1904 */
+   } fp;
 
-		/* FP colour inputs, VP/GP back colour outputs */
-		struct nv50_sreg4 two_side[2];
+   struct {
+      ubyte primid; /* primitive id output register */
+      uint8_t vert_count;
+      uint8_t prim_type; /* point, line strip or tri strip */
+   } gp;
 
-		/* GP only */
-		unsigned vert_count;
-		uint8_t prim_type;
+   void *fixups; /* relocation records */
 
-		/* VP & GP only */
-		uint8_t clpd, clpd_nr;
-		uint8_t psiz;
-		uint8_t edgeflag_in;
+   struct nouveau_heap *mem;
 
-		/* FP & GP only */
-		uint8_t prim_id;
-	} cfg;
+   struct nv50_stream_output_state *so;
 };
 
-#endif
+boolean nv50_program_translate(struct nv50_program *, uint16_t chipset);
+boolean nv50_program_upload_code(struct nv50_context *, struct nv50_program *);
+void nv50_program_destroy(struct nv50_context *, struct nv50_program *);
+
+#endif /* __NV50_PROG_H__ */

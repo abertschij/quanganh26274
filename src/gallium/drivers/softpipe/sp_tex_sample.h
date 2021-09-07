@@ -32,30 +32,39 @@
 
 #include "tgsi/tgsi_exec.h"
 
-struct sp_sampler_varient;
+struct sp_sampler_variant;
 
-typedef void (*wrap_nearest_func)(const float s[4],
+typedef void (*wrap_nearest_func)(float s,
                                   unsigned size,
-                                  int icoord[4]);
+                                  int *icoord);
 
-typedef void (*wrap_linear_func)(const float s[4], 
+typedef void (*wrap_linear_func)(float s, 
                                  unsigned size,
-                                 int icoord0[4],
-                                 int icoord1[4],
-                                 float w[4]);
+                                 int *icoord0,
+                                 int *icoord1,
+                                 float *w);
 
-typedef float (*compute_lambda_func)(const struct sp_sampler_varient *sampler,
-                                     const float s[QUAD_SIZE],
-                                     const float t[QUAD_SIZE],
-                                     const float p[QUAD_SIZE]);
+typedef float (*compute_lambda_func)(const struct sp_sampler_variant *sampler,
+                                     const float s[TGSI_QUAD_SIZE],
+                                     const float t[TGSI_QUAD_SIZE],
+                                     const float p[TGSI_QUAD_SIZE]);
+
+typedef void (*img_filter_func)(struct tgsi_sampler *tgsi_sampler,
+                                float s,
+                                float t,
+                                float p,
+                                unsigned level,
+                                unsigned face_id,
+                                enum tgsi_sampler_control control,
+                                float *rgba);
 
 typedef void (*filter_func)(struct tgsi_sampler *tgsi_sampler,
-                            const float s[QUAD_SIZE],
-                            const float t[QUAD_SIZE],
-                            const float p[QUAD_SIZE],
-                            const float c0[QUAD_SIZE],
+                            const float s[TGSI_QUAD_SIZE],
+                            const float t[TGSI_QUAD_SIZE],
+                            const float p[TGSI_QUAD_SIZE],
+                            const float c0[TGSI_QUAD_SIZE],
                             enum tgsi_sampler_control control,
-                            float rgba[NUM_CHANNELS][QUAD_SIZE]);
+                            float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE]);
 
 
 union sp_sampler_key {
@@ -64,7 +73,11 @@ union sp_sampler_key {
       unsigned is_pot:1;
       unsigned processor:2;
       unsigned unit:4;
-      unsigned pad:22;
+      unsigned swizzle_r:3;
+      unsigned swizzle_g:3;
+      unsigned swizzle_b:3;
+      unsigned swizzle_a:3;
+      unsigned pad:10;
    } bits;
    unsigned value;
 };
@@ -72,7 +85,7 @@ union sp_sampler_key {
 /**
  * Subclass of tgsi_sampler
  */
-struct sp_sampler_varient
+struct sp_sampler_variant
 {
    struct tgsi_sampler base;  /**< base class */
 
@@ -85,7 +98,7 @@ struct sp_sampler_varient
 
    /* Currently bound texture:
     */
-   const struct pipe_resource *texture;
+   const struct pipe_sampler_view *view;
    struct softpipe_tex_tile_cache *cache;
 
    unsigned processor;
@@ -94,9 +107,8 @@ struct sp_sampler_varient
     */
    unsigned xpot;
    unsigned ypot;
-   unsigned level;
 
-   unsigned faces[4];
+   unsigned faces[TGSI_QUAD_SIZE];
    
    wrap_nearest_func nearest_texcoord_s;
    wrap_nearest_func nearest_texcoord_t;
@@ -106,48 +118,49 @@ struct sp_sampler_varient
    wrap_linear_func linear_texcoord_t;
    wrap_linear_func linear_texcoord_p;
 
-   filter_func min_img_filter;
-   filter_func mag_img_filter;
+   img_filter_func min_img_filter;
+   img_filter_func mag_img_filter;
 
    compute_lambda_func compute_lambda;
 
    filter_func mip_filter;
    filter_func compare;
+   filter_func sample_target;
    
    /* Linked list:
     */
-   struct sp_sampler_varient *next;
+   struct sp_sampler_variant *next;
 };
 
 struct sp_sampler;
 
-/* Create a sampler varient for a given set of non-orthogonal state.  Currently the 
+/* Create a sampler variant for a given set of non-orthogonal state.  Currently the 
  */
-struct sp_sampler_varient *
-sp_create_sampler_varient( const struct pipe_sampler_state *sampler,
+struct sp_sampler_variant *
+sp_create_sampler_variant( const struct pipe_sampler_state *sampler,
                            const union sp_sampler_key key );
 
-void sp_sampler_varient_bind_texture( struct sp_sampler_varient *varient,
-                                      struct softpipe_tex_tile_cache *tex_cache,
-                                      const struct pipe_resource *tex );
+void sp_sampler_variant_bind_view( struct sp_sampler_variant *variant,
+                                   struct softpipe_tex_tile_cache *tex_cache,
+                                   const struct pipe_sampler_view *view );
 
-void sp_sampler_varient_destroy( struct sp_sampler_varient * );
+void sp_sampler_variant_destroy( struct sp_sampler_variant * );
 
 
 
-static INLINE struct sp_sampler_varient *
-sp_sampler_varient(const struct tgsi_sampler *sampler)
+static INLINE struct sp_sampler_variant *
+sp_sampler_variant(const struct tgsi_sampler *sampler)
 {
-   return (struct sp_sampler_varient *) sampler;
+   return (struct sp_sampler_variant *) sampler;
 }
 
 extern void
 sp_get_samples(struct tgsi_sampler *tgsi_sampler,
-               const float s[QUAD_SIZE],
-               const float t[QUAD_SIZE],
-               const float p[QUAD_SIZE],
+               const float s[TGSI_QUAD_SIZE],
+               const float t[TGSI_QUAD_SIZE],
+               const float p[TGSI_QUAD_SIZE],
                float lodbias,
-               float rgba[NUM_CHANNELS][QUAD_SIZE]);
+               float rgba[TGSI_NUM_CHANNELS][TGSI_QUAD_SIZE]);
 
 
 #endif /* SP_TEX_SAMPLE_H */

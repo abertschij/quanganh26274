@@ -45,8 +45,6 @@ vmw_winsys_create( int fd, boolean use_old_scanout_flag )
 
    vws->ioctl.drm_fd = fd;
    vws->use_old_scanout_flag = use_old_scanout_flag;
-   debug_printf("%s: use_old_scanout_flag == %s\n", __FUNCTION__,
-		use_old_scanout_flag ? "true" : "false");
 
    if (!vmw_ioctl_init(vws))
       goto out_no_ioctl;
@@ -74,14 +72,4 @@ vmw_winsys_destroy(struct vmw_winsys_screen *vws)
    vmw_pools_cleanup(vws);
    vmw_ioctl_cleanup(vws);
    FREE(vws);
-}
-
-void
-vmw_winsys_screen_set_throttling(struct pipe_screen *screen,
-				 uint32_t throttle_us)
-{
-   struct vmw_winsys_screen  *vws =
-      vmw_winsys_screen(svga_winsys_screen(screen));
-
-   vws->default_throttle_us = throttle_us;
 }

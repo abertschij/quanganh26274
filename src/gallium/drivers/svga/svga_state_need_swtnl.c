@@ -35,6 +35,11 @@
 /***********************************************************************
  */
 
+
+/**
+ * Given a gallium vertex element format, return the corresponding SVGA3D
+ * format.  Return SVGA3D_DECLTYPE_MAX for unsupported gallium formats.
+ */
 static INLINE SVGA3dDeclType 
 svga_translate_vertex_format(enum pipe_format format)
 {
@@ -66,8 +71,9 @@ svga_translate_vertex_format(enum pipe_format format)
 }
 
 
-static int update_need_swvfetch( struct svga_context *svga,
-                                 unsigned dirty )
+static enum pipe_error
+update_need_swvfetch( struct svga_context *svga,
+                      unsigned dirty )
 {
    unsigned i;
    boolean need_swvfetch = FALSE;
@@ -80,6 +86,7 @@ static int update_need_swvfetch( struct svga_context *svga,
    for (i = 0; i < svga->curr.velems->count; i++) {
       svga->state.sw.ve_format[i] = svga_translate_vertex_format(svga->curr.velems->velem[i].src_format);
       if (svga->state.sw.ve_format[i] == SVGA3D_DECLTYPE_MAX) {
+         /* Unsupported format - use software fetch */
          need_swvfetch = TRUE;
          break;
       }
@@ -90,7 +97,7 @@ static int update_need_swvfetch( struct svga_context *svga,
       svga->dirty |= SVGA_NEW_NEED_SWVFETCH;
    }
    
-   return 0;
+   return PIPE_OK;
 }
 
 struct svga_tracked_state svga_update_need_swvfetch = 
@@ -104,8 +111,9 @@ struct svga_tracked_state svga_update_need_swvfetch =
 /*********************************************************************** 
  */
 
-static int update_need_pipeline( struct svga_context *svga,
-                                 unsigned dirty )
+static enum pipe_error
+update_need_pipeline( struct svga_context *svga,
+                      unsigned dirty )
 {
    
    boolean need_pipeline = FALSE;
@@ -114,25 +122,45 @@ static int update_need_pipeline( struct svga_context *svga,
    /* SVGA_NEW_RAST, SVGA_NEW_REDUCED_PRIMITIVE
     */
    if (svga->curr.rast->need_pipeline & (1 << svga->curr.reduced_prim)) {
-      SVGA_DBG(DEBUG_SWTNL, "%s: rast need_pipeline (%d) & prim (%x)\n", 
+      SVGA_DBG(DEBUG_SWTNL, "%s: rast need_pipeline (0x%x) & prim (0x%x)\n",
                  __FUNCTION__,
                  svga->curr.rast->need_pipeline,
                  (1 << svga->curr.reduced_prim) );
+      SVGA_DBG(DEBUG_SWTNL, "%s: rast need_pipeline tris (%s), lines (%s), points (%s)\n",
+                 __FUNCTION__,
+                 svga->curr.rast->need_pipeline_tris_str,
+                 svga->curr.rast->need_pipeline_lines_str,
+                 svga->curr.rast->need_pipeline_points_str);
       need_pipeline = TRUE;
    }
 
    /* EDGEFLAGS
     */
-    if (vs->base.info.writes_edgeflag) {
+    if (vs && vs->base.info.writes_edgeflag) {
       SVGA_DBG(DEBUG_SWTNL, "%s: edgeflags\n", __FUNCTION__);
       need_pipeline = TRUE;
    }
 
-   /* SVGA_NEW_CLIP 
+   /* SVGA_NEW_FS, SVGA_NEW_RAST, SVGA_NEW_REDUCED_PRIMITIVE
     */
-   if (svga->curr.clip.nr) {
-      SVGA_DBG(DEBUG_SWTNL, "%s: userclip\n", __FUNCTION__);
-      need_pipeline = TRUE;
+   if (svga->curr.reduced_prim == PIPE_PRIM_POINTS) {
+      unsigned sprite_coord_gen = svga->curr.rast->templ.sprite_coord_enable;
+      unsigned generic_inputs =
+         svga->curr.fs ? svga->curr.fs->generic_inputs : 0;
+
+      if (sprite_coord_gen &&
+          (generic_inputs & ~sprite_coord_gen)) {
+         /* The fragment shader is using some generic inputs that are
+          * not being replaced by auto-generated point/sprite coords (and
+          * auto sprite coord generation is turned on).
+          * The SVGA3D interface does not support that: if we enable
+          * SVGA3D_RS_POINTSPRITEENABLE it gets enabled for _all_
+          * texture coordinate sets.
+          * To solve this, we have to use the draw-module's wide/sprite
+          * point stage.
+          */
+         need_pipeline = TRUE;
+      }
    }
 
    if (need_pipeline != svga->state.sw.need_pipeline) {
@@ -140,7 +168,11 @@ static int update_need_pipeline( struct svga_context *svga,
       svga->dirty |= SVGA_NEW_NEED_PIPELINE;
    }
 
-   return 0;
+   /* DEBUG */
+   if (0 && svga->state.sw.need_pipeline)
+      debug_printf("sw.need_pipeline = %d\n", svga->state.sw.need_pipeline);
+
+   return PIPE_OK;
 }
 
 
@@ -148,7 +180,7 @@ struct svga_tracked_state svga_update_need_pipeline =
 {
    "need pipeline",
    (SVGA_NEW_RAST |
-    SVGA_NEW_CLIP |
+    SVGA_NEW_FS |
     SVGA_NEW_VS |
     SVGA_NEW_REDUCED_PRIMITIVE),
    update_need_pipeline
@@ -158,26 +190,35 @@ struct svga_tracked_state svga_update_need_pipeline =
 /*********************************************************************** 
  */
 
-static int update_need_swtnl( struct svga_context *svga,
-                              unsigned dirty )
+static enum pipe_error
+update_need_swtnl( struct svga_context *svga,
+                   unsigned dirty )
 {
    boolean need_swtnl;
 
    if (svga->debug.no_swtnl) {
-      svga->state.sw.need_swvfetch = 0;
-      svga->state.sw.need_pipeline = 0;
+      svga->state.sw.need_swvfetch = FALSE;
+      svga->state.sw.need_pipeline = FALSE;
    }
 
    need_swtnl = (svga->state.sw.need_swvfetch ||
                  svga->state.sw.need_pipeline);
 
    if (svga->debug.force_swtnl) {
-      need_swtnl = 1;
+      need_swtnl = TRUE;
    }
+
+   /*
+    * Some state changes the draw module does makes us believe we
+    * we don't need swtnl. This causes the vdecl code to pickup
+    * the wrong buffers and vertex formats. Try trivial/line-wide.
+    */
+   if (svga->state.sw.in_swtnl_draw)
+      need_swtnl = TRUE;
 
    if (need_swtnl != svga->state.sw.need_swtnl) {
       SVGA_DBG(DEBUG_SWTNL|DEBUG_PERF,
-               "%s need_swvfetch: %s, need_pipeline %s\n",
+               "%s: need_swvfetch %s, need_pipeline %s\n",
                __FUNCTION__,
                svga->state.sw.need_swvfetch ? "true" : "false",
                svga->state.sw.need_pipeline ? "true" : "false");
@@ -187,7 +228,7 @@ static int update_need_swtnl( struct svga_context *svga,
       svga->swtnl.new_vdecl = TRUE;
    }
   
-   return 0;
+   return PIPE_OK;
 }
 
 

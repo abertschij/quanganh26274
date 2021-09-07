@@ -1,4 +1,3 @@
-
 #include "target-helpers/inline_debug_helper.h"
 #include "state_tracker/drm_driver.h"
 #include "radeon/drm/radeon_drm_public.h"
@@ -7,10 +6,10 @@
 static struct pipe_screen *
 create_screen(int fd)
 {
-   struct r300_winsys_screen *sws;
+   struct radeon_winsys *sws;
    struct pipe_screen *screen;
 
-   sws = r300_drm_winsys_screen_create(fd);
+   sws = radeon_drm_winsys_create(fd);
    if (!sws)
       return NULL;
 
@@ -23,4 +22,4 @@ create_screen(int fd)
    return screen;
 }
 
-DRM_DRIVER_DESCRIPTOR("r300", "radeon", create_screen)
+DRM_DRIVER_DESCRIPTOR("r300", "radeon", create_screen, NULL)

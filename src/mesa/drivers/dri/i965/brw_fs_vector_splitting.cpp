@@ -41,11 +41,11 @@ extern "C" {
 #include "main/core.h"
 #include "intel_context.h"
 }
-#include "../glsl/ir.h"
-#include "../glsl/ir_visitor.h"
-#include "../glsl/ir_print_visitor.h"
-#include "../glsl/ir_rvalue_visitor.h"
-#include "../glsl/glsl_types.h"
+#include "glsl/ir.h"
+#include "glsl/ir_visitor.h"
+#include "glsl/ir_print_visitor.h"
+#include "glsl/ir_rvalue_visitor.h"
+#include "glsl/glsl_types.h"
 
 static bool debug = false;
 
@@ -69,7 +69,7 @@ public:
 
    ir_variable *components[4];
 
-   /** talloc_parent(this->var) -- the shader's talloc context. */
+   /** ralloc_parent(this->var) -- the shader's ralloc context. */
    void *mem_ctx;
 };
 
@@ -77,13 +77,13 @@ class ir_vector_reference_visitor : public ir_hierarchical_visitor {
 public:
    ir_vector_reference_visitor(void)
    {
-      this->mem_ctx = talloc_new(NULL);
+      this->mem_ctx = ralloc_context(NULL);
       this->variable_list.make_empty();
    }
 
    ~ir_vector_reference_visitor(void)
    {
-      talloc_free(mem_ctx);
+      ralloc_free(mem_ctx);
    }
 
    virtual ir_visitor_status visit(ir_variable *);
@@ -122,8 +122,8 @@ ir_vector_reference_visitor::get_variable_entry(ir_variable *var)
       break;
    }
 
-   foreach_iter(exec_list_iterator, iter, this->variable_list) {
-      variable_entry *entry = (variable_entry *)iter.get();
+   foreach_list(node, &this->variable_list) {
+      variable_entry *entry = (variable_entry *)node;
       if (entry->var == var)
 	 return entry;
    }
@@ -209,13 +209,12 @@ public:
    virtual ir_visitor_status visit_leave(ir_assignment *);
 
    void handle_rvalue(ir_rvalue **rvalue);
-   struct variable_entry *get_splitting_entry(ir_variable *var);
+   variable_entry *get_splitting_entry(ir_variable *var);
 
    exec_list *variable_list;
-   void *mem_ctx;
 };
 
-struct variable_entry *
+variable_entry *
 ir_vector_splitting_visitor::get_splitting_entry(ir_variable *var)
 {
    assert(var);
@@ -223,8 +222,8 @@ ir_vector_splitting_visitor::get_splitting_entry(ir_variable *var)
    if (!var->type->is_vector())
       return NULL;
 
-   foreach_iter(exec_list_iterator, iter, *this->variable_list) {
-      variable_entry *entry = (variable_entry *)iter.get();
+   foreach_list(node, &*this->variable_list) {
+      variable_entry *entry = (variable_entry *)node;
       if (entry->var == var) {
 	 return entry;
       }
@@ -264,37 +263,43 @@ ir_vector_splitting_visitor::visit_leave(ir_assignment *ir)
    variable_entry *rhs = rhs_deref ? get_splitting_entry(rhs_deref->var) : NULL;
 
    if (lhs_deref && rhs_deref && (lhs || rhs) && !ir->condition) {
+      unsigned int rhs_chan = 0;
+
       /* Straight assignment of vector variables. */
-      for (unsigned int i = 0; i < ir->rhs->type->vector_elements; i++) {
+      for (unsigned int i = 0; i < ir->lhs->type->vector_elements; i++) {
 	 ir_dereference *new_lhs;
 	 ir_rvalue *new_rhs;
 	 void *mem_ctx = lhs ? lhs->mem_ctx : rhs->mem_ctx;
 	 unsigned int writemask;
 
+	 if (!(ir->write_mask & (1 << i)))
+	    continue;
+
 	 if (lhs) {
 	    new_lhs = new(mem_ctx) ir_dereference_variable(lhs->components[i]);
-	    writemask = (ir->write_mask >> i) & 1;
+	    writemask = 1;
 	 } else {
 	    new_lhs = ir->lhs->clone(mem_ctx, NULL);
-	    writemask = ir->write_mask & (1 << i);
+	    writemask = 1 << i;
 	 }
 
 	 if (rhs) {
-	    new_rhs = new(mem_ctx) ir_dereference_variable(rhs->components[i]);
-	    /* If we're writing into a writemask, smear it out to that channel. */
-	    if (!lhs)
-	       new_rhs = new(mem_ctx) ir_swizzle(new_rhs, i, i, i, i, i + 1);
+	    new_rhs =
+	       new(mem_ctx) ir_dereference_variable(rhs->components[rhs_chan]);
 	 } else {
 	    new_rhs = new(mem_ctx) ir_swizzle(ir->rhs->clone(mem_ctx, NULL),
-					      i, i, i, i, 1);
+					      rhs_chan, 0, 0, 0, 1);
 	 }
 
 	 ir->insert_before(new(mem_ctx) ir_assignment(new_lhs,
 						      new_rhs,
 						      NULL, writemask));
+
+	 rhs_chan++;
       }
       ir->remove();
    } else if (lhs) {
+      void *mem_ctx = lhs->mem_ctx;
       int elem = -1;
 
       switch (ir->write_mask) {
@@ -319,8 +324,6 @@ ir_vector_splitting_visitor::visit_leave(ir_assignment *ir)
       ir->write_mask = (1 << 0);
 
       handle_rvalue(&ir->rhs);
-      ir->rhs = new(mem_ctx) ir_swizzle(ir->rhs,
-					elem, elem, elem, elem, 1);
    } else {
       handle_rvalue(&ir->rhs);
    }
@@ -330,7 +333,6 @@ ir_vector_splitting_visitor::visit_leave(ir_assignment *ir)
    return visit_continue;
 }
 
-extern "C" {
 bool
 brw_do_vector_splitting(exec_list *instructions)
 {
@@ -339,8 +341,8 @@ brw_do_vector_splitting(exec_list *instructions)
    visit_list_elements(&refs, instructions);
 
    /* Trim out variables we can't split. */
-   foreach_iter(exec_list_iterator, iter, refs.variable_list) {
-      variable_entry *entry = (variable_entry *)iter.get();
+   foreach_list_safe(node, &refs.variable_list) {
+      variable_entry *entry = (variable_entry *)node;
 
       if (debug) {
 	 printf("vector %s@%p: decl %d, whole_access %d\n",
@@ -356,20 +358,20 @@ brw_do_vector_splitting(exec_list *instructions)
    if (refs.variable_list.is_empty())
       return false;
 
-   void *mem_ctx = talloc_new(NULL);
+   void *mem_ctx = ralloc_context(NULL);
 
    /* Replace the decls of the vectors to be split with their split
     * components.
     */
-   foreach_iter(exec_list_iterator, iter, refs.variable_list) {
-      variable_entry *entry = (variable_entry *)iter.get();
+   foreach_list(node, &refs.variable_list) {
+      variable_entry *entry = (variable_entry *)node;
       const struct glsl_type *type;
       type = glsl_type::get_instance(entry->var->type->base_type, 1, 1);
 
-      entry->mem_ctx = talloc_parent(entry->var);
+      entry->mem_ctx = ralloc_parent(entry->var);
 
       for (unsigned int i = 0; i < entry->var->type->vector_elements; i++) {
-	 const char *name = talloc_asprintf(mem_ctx, "%s_%c",
+	 const char *name = ralloc_asprintf(mem_ctx, "%s_%c",
 					    entry->var->name,
 					    "xyzw"[i]);
 
@@ -384,8 +386,7 @@ brw_do_vector_splitting(exec_list *instructions)
    ir_vector_splitting_visitor split(&refs.variable_list);
    visit_list_elements(&split, instructions);
 
-   talloc_free(mem_ctx);
+   ralloc_free(mem_ctx);
 
    return true;
-}
 }

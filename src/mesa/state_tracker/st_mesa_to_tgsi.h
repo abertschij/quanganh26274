@@ -29,22 +29,24 @@
 #ifndef ST_MESA_TO_TGSI_H
 #define ST_MESA_TO_TGSI_H
 
-#include "main/mtypes.h"
-
-#include "pipe/p_compiler.h"
-
-struct ureg_program;
-
 #if defined __cplusplus
 extern "C" {
 #endif
 
-struct tgsi_token;
+#include "main/glheader.h"
+
+#include "pipe/p_compiler.h"
+#include "pipe/p_defines.h"
+
+struct gl_context;
 struct gl_program;
+struct tgsi_token;
+struct ureg_program;
+
 
 enum pipe_error
 st_translate_mesa_program(
-   GLcontext *ctx,
+   struct gl_context *ctx,
    uint procType,
    struct ureg_program *ureg,
    const struct gl_program *program,
@@ -57,10 +59,14 @@ st_translate_mesa_program(
    const GLuint outputMapping[],
    const ubyte outputSemanticName[],
    const ubyte outputSemanticIndex[],
-   boolean passthrough_edgeflags );
+   boolean passthrough_edgeflags,
+   boolean clamp_color);
 
 void
 st_free_tokens(const struct tgsi_token *tokens);
+
+unsigned
+st_translate_texture_target(GLuint textarget, GLboolean shadow);
 
 
 #if defined __cplusplus

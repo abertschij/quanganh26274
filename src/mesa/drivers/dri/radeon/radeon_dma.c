@@ -32,6 +32,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include <errno.h>
 #include "radeon_common.h"
+#include "radeon_fog.h"
 #include "main/simple_list.h"
 
 #if defined(USE_X86_ASM)
@@ -133,7 +134,7 @@ void radeonEmitVec16(uint32_t *out, const GLvoid * data, int stride, int count)
 		}
 }
 
-void rcommon_emit_vector(GLcontext * ctx, struct radeon_aos *aos,
+void rcommon_emit_vector(struct gl_context * ctx, struct radeon_aos *aos,
 			 const GLvoid * data, int size, int stride, int count)
 {
 	radeonContextPtr rmesa = RADEON_CONTEXT(ctx);
@@ -161,6 +162,41 @@ void rcommon_emit_vector(GLcontext * ctx, struct radeon_aos *aos,
 	default:
 		assert(0);
 		break;
+	}
+	radeon_bo_unmap(aos->bo);
+}
+
+void rcommon_emit_vecfog(struct gl_context *ctx, struct radeon_aos *aos,
+			 GLvoid *data, int stride, int count)
+{
+	int i;
+	float *out;
+	int size = 1;
+	radeonContextPtr rmesa = RADEON_CONTEXT(ctx);
+
+	if (RADEON_DEBUG & RADEON_VERTS)
+		fprintf(stderr, "%s count %d stride %d\n",
+			__FUNCTION__, count, stride);
+
+	if (stride == 0) {
+		radeonAllocDmaRegion( rmesa, &aos->bo, &aos->offset, size * 4, 32 );
+		count = 1;
+		aos->stride = 0;
+	} else {
+		radeonAllocDmaRegion(rmesa, &aos->bo, &aos->offset, size * count * 4, 32);
+		aos->stride = size;
+	}
+
+	aos->components = size;
+	aos->count = count;
+
+	/* Emit the data */
+	radeon_bo_map(aos->bo, 1);
+	out = (float*)((char*)aos->bo->ptr + aos->offset);
+	for (i = 0; i < count; i++) {
+		out[0] = radeonComputeFogBlendFactor( ctx, *(GLfloat *)data );
+		out++;
+		data += stride;
 	}
 	radeon_bo_unmap(aos->bo);
 }
@@ -328,11 +364,6 @@ void radeonReleaseDmaRegions(radeonContextPtr rmesa)
 		      __FUNCTION__, free, wait, reserved, rmesa->dma.minimum_size);
 	}
 
-	if (!rmesa->radeonScreen->driScreen->dri2.enabled) {
-		/* request updated cs processing information from kernel */
-		legacy_track_pending(rmesa->radeonScreen->bom, 0);
-	}
-
 	/* move waiting bos to free list.
 	   wait list provides gpu time to handle data before reuse */
 	foreach_s(dma_bo, temp, &rmesa->dma.wait) {
@@ -351,9 +382,7 @@ void radeonReleaseDmaRegions(radeonContextPtr rmesa)
 		   continue;
 		}
 		if (!radeon_bo_is_idle(dma_bo->bo)) {
-			if (rmesa->radeonScreen->driScreen->dri2.enabled)
-				break;
-			continue;
+			break;
 		}
 		remove_from_list(dma_bo);
 		dma_bo->expire_counter = expire_at;
@@ -389,7 +418,7 @@ void radeonReleaseDmaRegions(radeonContextPtr rmesa)
 
 /* Flush vertices in the current dma region.
  */
-void rcommon_flush_last_swtcl_prim( GLcontext *ctx  )
+void rcommon_flush_last_swtcl_prim( struct gl_context *ctx  )
 {
 	radeonContextPtr rmesa = RADEON_CONTEXT(ctx);
 	struct radeon_dma *dma = &rmesa->dma;
@@ -462,7 +491,7 @@ rcommonAllocDmaLowVerts( radeonContextPtr rmesa, int nverts, int vsize )
 	return head;
 }
 
-void radeonReleaseArrays( GLcontext *ctx, GLuint newinputs )
+void radeonReleaseArrays( struct gl_context *ctx, GLuint newinputs )
 {
    radeonContextPtr radeon = RADEON_CONTEXT( ctx );
    int i;

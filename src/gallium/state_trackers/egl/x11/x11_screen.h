@@ -30,7 +30,7 @@
 #include <X11/Xutil.h>
 #include <X11/extensions/dri2tokens.h>
 #include "GL/gl.h" /* for GL types needed by __GLcontextModes */
-#include "GL/internal/glcore.h"  /* for __GLcontextModes */
+#include "glcore.h"  /* for __GLcontextModes */
 #include "pipe/p_compiler.h"
 #include "common/native.h"
 
@@ -97,14 +97,32 @@ x11_screen_enable_dri2(struct x11_screen *xscr,
                        x11_drawable_invalidate_buffers invalidate_buffers,
                        void *user_data);
 
+char *
+x11_screen_get_device_name(struct x11_screen *xscr);
+
+int
+x11_screen_authenticate(struct x11_screen *xscr, uint32_t id);
+
 void
 x11_drawable_enable_dri2(struct x11_screen *xscr,
                          Drawable drawable, boolean on);
 
 void
+x11_drawable_copy_buffers_region(struct x11_screen *xscr, Drawable drawable,
+                                 int num_rects, const int *rects,
+                                 int src_buf, int dst_buf);
+
+/**
+ * Copy between buffers of the DRI2 drawable.
+ */
+static INLINE void
 x11_drawable_copy_buffers(struct x11_screen *xscr, Drawable drawable,
                           int x, int y, int width, int height,
-                          int src_buf, int dst_buf);
+                          int src_buf, int dst_buf)
+{
+    int rect[4] = { x, y, width, height };
+    x11_drawable_copy_buffers_region(xscr, drawable, 1, rect, src_buf, dst_buf);
+}
 
 struct x11_drawable_buffer *
 x11_drawable_get_buffers(struct x11_screen *xscr, Drawable drawable,

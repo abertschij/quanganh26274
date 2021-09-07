@@ -113,6 +113,10 @@ tgsi_parse_token(
          next_token(ctx, &decl->Dim);
       }
 
+      if( decl->Declaration.Interpolate ) {
+         next_token( ctx, &decl->Interp );
+      }
+
       if( decl->Declaration.Semantic ) {
          next_token( ctx, &decl->Semantic );
       }
@@ -126,6 +130,14 @@ tgsi_parse_token(
                ctx->Position++;
             }
          }
+      }
+
+      if (decl->Declaration.File == TGSI_FILE_RESOURCE) {
+         next_token(ctx, &decl->Resource);
+      }
+
+      if (decl->Declaration.File == TGSI_FILE_SAMPLER_VIEW) {
+         next_token(ctx, &decl->SamplerView);
       }
 
       break;
@@ -184,6 +196,9 @@ tgsi_parse_token(
 
       if (inst->Instruction.Texture) {
          next_token( ctx, &inst->Texture);
+         for( i = 0; i < inst->Texture.NumOffsets; i++ ) {
+            next_token( ctx, &inst->TexOffsets[i] );
+         }
       }
 
       assert( inst->Instruction.NumDstRegs <= TGSI_FULL_MAX_DST_REGISTERS );

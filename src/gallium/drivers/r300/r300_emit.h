@@ -24,14 +24,14 @@
 #define R300_EMIT_H
 
 #include "r300_context.h"
-#include "radeon_code.h"
 
 struct rX00_fragment_program_code;
 struct r300_vertex_program_code;
 
 uint32_t pack_float24(float f);
 
-void r300_emit_aos(struct r300_context* r300, int offset, boolean indexed);
+void r300_emit_vertex_arrays(struct r300_context* r300, int offset,
+                             boolean indexed, int instance_id);
 
 void r300_emit_blend_state(struct r300_context* r300,
                            unsigned size, void* state);
@@ -86,7 +86,7 @@ void r300_emit_scissor_state(struct r300_context* r300,
 void r300_emit_textures_state(struct r300_context *r300,
                               unsigned size, void *state);
 
-void r300_emit_aos_swtcl(struct r300_context *r300, boolean indexed);
+void r300_emit_vertex_arrays_swtcl(struct r300_context *r300, boolean indexed);
 
 void r300_emit_vap_invariant_state(struct r300_context *r300,
                                    unsigned size, void *state);

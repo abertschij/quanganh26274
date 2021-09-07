@@ -37,6 +37,9 @@
 
 #include "tgsi/tgsi_scan.h"
 
+#include "util/u_slab.h"
+#include "util/u_blitter.h"
+
 
 struct i915_winsys;
 struct i915_winsys_buffer;
@@ -47,18 +50,18 @@ struct i915_winsys_batchbuffer;
 
 #define I915_DYNAMIC_MODES4       0
 #define I915_DYNAMIC_DEPTHSCALE_0 1 /* just the header */
-#define I915_DYNAMIC_DEPTHSCALE_1 2 
+#define I915_DYNAMIC_DEPTHSCALE_1 2
 #define I915_DYNAMIC_IAB          3
 #define I915_DYNAMIC_BC_0         4 /* just the header */
 #define I915_DYNAMIC_BC_1         5
-#define I915_DYNAMIC_BFO_0        6 
+#define I915_DYNAMIC_BFO_0        6
 #define I915_DYNAMIC_BFO_1        7
-#define I915_DYNAMIC_STP_0        8 
-#define I915_DYNAMIC_STP_1        9 
-#define I915_DYNAMIC_SC_ENA_0     10 
-#define I915_DYNAMIC_SC_RECT_0    11 
-#define I915_DYNAMIC_SC_RECT_1    12 
-#define I915_DYNAMIC_SC_RECT_2    13 
+#define I915_DYNAMIC_STP_0        8
+#define I915_DYNAMIC_STP_1        9
+#define I915_DYNAMIC_SC_ENA_0     10
+#define I915_DYNAMIC_SC_RECT_0    11
+#define I915_DYNAMIC_SC_RECT_1    12
+#define I915_DYNAMIC_SC_RECT_2    13
 #define I915_MAX_DYNAMIC          14
 
 
@@ -75,7 +78,7 @@ struct i915_winsys_batchbuffer;
 /* These must mach the order of LI0_STATE_* bits, as they will be used
  * to generate hardware packets:
  */
-#define I915_CACHE_STATIC         0 
+#define I915_CACHE_STATIC         0
 #define I915_CACHE_DYNAMIC        1 /* handled specially */
 #define I915_CACHE_SAMPLER        2
 #define I915_CACHE_MAP            3
@@ -99,6 +102,11 @@ struct i915_fragment_shader
 
    struct tgsi_shader_info info;
 
+   struct draw_fragment_shader *draw_data;
+
+   uint *decl;
+   uint decl_len;
+
    uint *program;
    uint program_len;
 
@@ -121,6 +129,12 @@ struct i915_fragment_shader
     * Else, the bitmask indicates which components are occupied by immediates.
     */
    ubyte constant_flags[I915_MAX_CONSTANT];
+
+   /**
+    * The mapping between generics and hw texture coords.
+    * We need to share this between the vertex and fragment stages.
+    **/
+   int generic_mapping[I915_TEX_UNITS];
 };
 
 
@@ -129,12 +143,11 @@ struct i915_cache_context;
 /* Use to calculate differences between state emitted to hardware and
  * current driver-calculated state.  
  */
-struct i915_state 
+struct i915_state
 {
    unsigned immediate[I915_MAX_IMMEDIATE];
    unsigned dynamic[I915_MAX_DYNAMIC];
 
-   float constants[PIPE_SHADER_TYPES][I915_MAX_CONSTANT][4];
    /** number of constants passed in through a constant buffer */
    uint num_user_constants[PIPE_SHADER_TYPES];
 
@@ -142,12 +155,25 @@ struct i915_state
    unsigned sampler[I915_TEX_UNITS][3];
    unsigned sampler_enable_flags;
    unsigned sampler_enable_nr;
+   boolean sampler_srgb[I915_TEX_UNITS];
+   int srgb_const_offset;
 
    /* texture image buffers */
    unsigned texbuffer[I915_TEX_UNITS][2];
 
    /** Describes the current hardware vertex layout */
    struct vertex_info vertex_info;
+
+   /* static state (dst/depth buffer state) */
+   struct i915_winsys_buffer *cbuf_bo;
+   unsigned cbuf_flags;
+   struct i915_winsys_buffer *depth_bo;
+   unsigned depth_flags;
+   unsigned dst_buf_vars;
+   uint32_t draw_offset;
+   uint32_t draw_size;
+   uint32_t target_fixup_format;
+   uint32_t fixup_swizzle;
 
    unsigned id;			/* track lost context events */
 };
@@ -167,6 +193,8 @@ struct i915_depth_stencil_state {
 };
 
 struct i915_rasterizer_state {
+   struct pipe_rasterizer_state templ;
+
    unsigned light_twoside : 1;
    unsigned st;
    enum interp_mode color_interp;
@@ -175,14 +203,12 @@ struct i915_rasterizer_state {
    unsigned LIS7;
    unsigned sc[1];
 
-   const struct pipe_rasterizer_state *templ;
-
    union { float f; unsigned u; } ds[2];
 };
 
 struct i915_sampler_state {
+   struct pipe_sampler_state templ;
    unsigned state[3];
-   const struct pipe_sampler_state *templ;
    unsigned minlod;
    unsigned maxlod;
 };
@@ -193,8 +219,7 @@ struct i915_velems_state {
 };
 
 
-struct i915_context
-{
+struct i915_context {
    struct pipe_context base;
 
    struct i915_winsys *iws;
@@ -205,6 +230,7 @@ struct i915_context
     */
    const struct i915_blend_state           *blend;
    const struct i915_sampler_state         *sampler[PIPE_MAX_SAMPLERS];
+   struct pipe_sampler_state *vertex_samplers[PIPE_MAX_SAMPLERS];
    const struct i915_depth_stencil_state   *depth_stencil;
    const struct i915_rasterizer_state      *rasterizer;
 
@@ -213,21 +239,24 @@ struct i915_context
    struct pipe_blend_color blend_color;
    struct pipe_stencil_ref stencil_ref;
    struct pipe_clip_state clip;
-   /* XXX unneded */
    struct pipe_resource *constants[PIPE_SHADER_TYPES];
    struct pipe_framebuffer_state framebuffer;
    struct pipe_poly_stipple poly_stipple;
    struct pipe_scissor_state scissor;
    struct pipe_sampler_view *fragment_sampler_views[PIPE_MAX_SAMPLERS];
+   struct pipe_sampler_view *vertex_sampler_views[PIPE_MAX_SAMPLERS];
    struct pipe_viewport_state viewport;
-   struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
    struct pipe_index_buffer index_buffer;
 
    unsigned dirty;
 
+   struct pipe_resource *mapped_vs_tex[PIPE_MAX_SAMPLERS];
+   struct i915_winsys_buffer* mapped_vs_tex_buffer[PIPE_MAX_SAMPLERS];
+
    unsigned num_samplers;
    unsigned num_fragment_sampler_views;
-   unsigned num_vertex_buffers;
+   unsigned num_vertex_samplers;
+   unsigned num_vertex_sampler_views;
 
    struct i915_winsys_batchbuffer *batch;
 
@@ -238,6 +267,41 @@ struct i915_context
 
    struct i915_state current;
    unsigned hardware_dirty;
+   unsigned immediate_dirty : I915_MAX_IMMEDIATE;
+   unsigned dynamic_dirty : I915_MAX_DYNAMIC;
+   unsigned static_dirty : 4;
+   unsigned flush_dirty : 2;
+
+   struct i915_winsys_buffer *validation_buffers[2 + 1 + I915_TEX_UNITS];
+   int num_validation_buffers;
+
+   struct util_slab_mempool transfer_pool;
+   struct util_slab_mempool texture_transfer_pool;
+
+   /* state for tracking flushes */
+   int last_fired_vertices;
+   int fired_vertices;
+   int queued_vertices;
+
+   /** blitter/hw-clear */
+   struct blitter_context* blitter;
+
+   /** State tracking needed by u_blitter for save/restore. */
+   void *saved_fs;
+   void (*saved_bind_fs_state)(struct pipe_context *pipe, void *shader);
+   void *saved_vs;
+   struct pipe_clip_state saved_clip;
+   struct i915_velems_state *saved_velems;
+   unsigned saved_nr_vertex_buffers;
+   struct pipe_vertex_buffer saved_vertex_buffers[PIPE_MAX_ATTRIBS];
+   unsigned saved_nr_samplers;
+   void *saved_samplers[PIPE_MAX_SAMPLERS];
+   void (*saved_bind_sampler_states)(struct pipe_context *pipe,
+                                     unsigned num, void **sampler);
+   unsigned saved_nr_sampler_views;
+   struct pipe_sampler_view *saved_sampler_views[PIPE_MAX_SAMPLERS];
+   void (*saved_set_sampler_views)(struct pipe_context *pipe,
+                                   unsigned num, struct pipe_sampler_view **views);
 };
 
 /* A flag for each state_tracker state object:
@@ -254,9 +318,11 @@ struct i915_context
 #define I915_NEW_DEPTH_STENCIL 0x200
 #define I915_NEW_SAMPLER       0x400
 #define I915_NEW_SAMPLER_VIEW  0x800
-#define I915_NEW_CONSTANTS     0x1000
-#define I915_NEW_VBO           0x2000
-#define I915_NEW_VS            0x4000
+#define I915_NEW_VS_CONSTANTS  0x1000
+#define I915_NEW_FS_CONSTANTS  0x2000
+#define I915_NEW_GS_CONSTANTS  0x4000
+#define I915_NEW_VBO           0x8000
+#define I915_NEW_VS            0x10000
 
 
 /* Driver's internally generated state flags:
@@ -273,7 +339,25 @@ struct i915_context
 #define I915_HW_PROGRAM           (1<<I915_CACHE_PROGRAM)
 #define I915_HW_CONSTANTS         (1<<I915_CACHE_CONSTANTS)
 #define I915_HW_IMMEDIATE         (1<<(I915_MAX_CACHE+0))
-#define I915_HW_INVARIENT         (1<<(I915_MAX_CACHE+1))
+#define I915_HW_INVARIANT         (1<<(I915_MAX_CACHE+1))
+#define I915_HW_FLUSH             (1<<(I915_MAX_CACHE+1))
+
+/* hw flush handling */
+#define I915_FLUSH_CACHE		1
+#define I915_PIPELINE_FLUSH		2
+
+/* split up static state */
+#define I915_DST_BUF_COLOR              1
+#define I915_DST_BUF_DEPTH              2
+#define I915_DST_VARS                   4
+#define I915_DST_RECT                   8
+
+static INLINE
+void i915_set_flush_dirty(struct i915_context *i915, unsigned flush)
+{
+   i915->hardware_dirty |= I915_HW_FLUSH;
+   i915->flush_dirty |= flush;
+}
 
 
 /***********************************************************************
@@ -289,6 +373,14 @@ struct draw_stage *i915_draw_vbuf_stage( struct i915_context *i915 );
 
 
 /***********************************************************************
+ * i915_state.c:
+ */
+void i915_prepare_vertex_sampling(struct i915_context *i915);
+void i915_cleanup_vertex_sampling(struct i915_context *i915);
+
+
+
+/***********************************************************************
  * i915_state_emit.c: 
  */
 void i915_emit_hardware_state(struct i915_context *i915 );
@@ -298,14 +390,23 @@ void i915_emit_hardware_state(struct i915_context *i915 );
 /***********************************************************************
  * i915_clear.c: 
  */
-void i915_clear( struct pipe_context *pipe, unsigned buffers, const float *rgba,
-                 double depth, unsigned stencil);
+void i915_clear_blitter(struct pipe_context *pipe, unsigned buffers,
+                        const union pipe_color_union *color,
+                        double depth, unsigned stencil);
+void i915_clear_render(struct pipe_context *pipe, unsigned buffers,
+                       const union pipe_color_union *color,
+                       double depth, unsigned stencil);
+void i915_clear_emit(struct pipe_context *pipe, unsigned buffers,
+                     const union pipe_color_union *color,
+                     double depth, unsigned stencil,
+                     unsigned destx, unsigned desty, unsigned width, unsigned height);
 
 
 /***********************************************************************
  * 
  */
 void i915_init_state_functions( struct i915_context *i915 );
+void i915_init_fixup_state_functions( struct i915_context *i915 );
 void i915_init_flush_functions( struct i915_context *i915 );
 void i915_init_string_functions( struct i915_context *i915 );
 

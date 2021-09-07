@@ -64,6 +64,8 @@ class PrintGlOffsets(gl_XML.gl_print_base):
 
 		n = f.static_name(name)
 
+		silence = ''
+		space = ''
 		for p in f.parameterIterator():
 			if p.is_padding:
 				continue
@@ -78,6 +80,14 @@ class PrintGlOffsets(gl_XML.gl_print_base):
 			o_string = o_string + comma + cast + p.name
 			comma = ", "
 
+			silence += "%s(void) %s;" % (space, p.name);
+			space = ' '
+
+
+		if f.return_type != 'void':
+			dispatch = "RETURN_DISPATCH"
+		else:
+			dispatch = "DISPATCH"
 
 		need_proto = False
 		if not f.is_static_entry_point(name):
@@ -92,22 +102,14 @@ class PrintGlOffsets(gl_XML.gl_print_base):
 
 		print '%s %s KEYWORD2 NAME(%s)(%s)' % (keyword, f.return_type, n, f.get_parameter_string(name))
 		print '{'
-		if f.return_type != 'void':
-			dispatch = "RETURN_DISPATCH"
-			if p_string == "":
-				print '   %s(%s, %s, (), (F, "gl%s();\\n"));' \
-					% (dispatch, f.return_type, f.name, name)
-			else:
-				print '   %s(%s, %s, (%s), (F, "gl%s(%s);\\n", %s));' \
-					% (dispatch, f.return_type, f.name, p_string, name, t_string, o_string)
+		if silence:
+			print '    %s' % (silence)
+		if p_string == "":
+			print '   %s(%s, (), (F, "gl%s();\\n"));' \
+				% (dispatch, f.name, name)
 		else:
-			dispatch = "DISPATCH"
-			if p_string == "":
-				print '   %s(%s, (), (F, "gl%s();\\n"));' \
-					% (dispatch, f.name, name)
-			else:
-				print '   %s(%s, (%s), (F, "gl%s(%s);\\n", %s));' \
-					% (dispatch, f.name, p_string, name, t_string, o_string)
+			print '   %s(%s, (%s), (F, "gl%s(%s);\\n", %s));' \
+				% (dispatch, f.name, p_string, name, t_string, o_string)
 		print '}'
 		print ''
 		return
@@ -125,8 +127,7 @@ class PrintGlOffsets(gl_XML.gl_print_base):
  *   NAME(n)  - builds the final function name (usually add "gl" prefix)
  *   DISPATCH(func, args, msg) - code to do dispatch of named function.
  *                               msg is a printf-style debug message.
- *   RETURN_DISPATCH(type, func, args, msg) - code to do dispatch with a
- *                                            return value of type.
+ *   RETURN_DISPATCH(func, args, msg) - code to do dispatch with a return value
  *
  * Here is an example which generates the usual OpenGL functions:
  *   #define KEYWORD1

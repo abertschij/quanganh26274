@@ -81,7 +81,7 @@ static void svga_set_framebuffer_state(struct pipe_context *pipe,
    dst->height = fb->height;
    dst->nr_cbufs = fb->nr_cbufs;
 
-   /* check if we need to propaget any of the target surfaces */
+   /* check if we need to propagate any of the target surfaces */
    for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
       if (dst->cbufs[i] && dst->cbufs[i] != fb->cbufs[i])
          if (svga_surface_needs_propagation(dst->cbufs[i]))
@@ -94,7 +94,7 @@ static void svga_set_framebuffer_state(struct pipe_context *pipe,
    
       for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++)
          if (dst->cbufs[i] && dst->cbufs[i] != fb->cbufs[i])
-            svga_propagate_surface(pipe, dst->cbufs[i]);
+            svga_propagate_surface(svga, dst->cbufs[i]);
    }
 
    /* XXX: Actually the virtual hardware may support rendertargets with
@@ -107,8 +107,10 @@ static void svga_set_framebuffer_state(struct pipe_context *pipe,
       }
    }
 
-   for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++)
-      pipe_surface_reference(&dst->cbufs[i], fb->cbufs[i]);
+   for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
+      pipe_surface_reference(&dst->cbufs[i],
+                             (i < fb->nr_cbufs) ? fb->cbufs[i] : NULL);
+   }
    pipe_surface_reference(&dst->zsbuf, fb->zsbuf);
 
 
@@ -118,9 +120,9 @@ static void svga_set_framebuffer_state(struct pipe_context *pipe,
       case PIPE_FORMAT_Z16_UNORM:
          svga->curr.depthscale = 1.0f / DEPTH_BIAS_SCALE_FACTOR_D16;
          break;
-      case PIPE_FORMAT_Z24_UNORM_S8_USCALED:
+      case PIPE_FORMAT_Z24_UNORM_S8_UINT:
       case PIPE_FORMAT_Z24X8_UNORM:
-      case PIPE_FORMAT_S8_USCALED_Z24_UNORM:
+      case PIPE_FORMAT_S8_UINT_Z24_UNORM:
       case PIPE_FORMAT_X8Z24_UNORM:
          svga->curr.depthscale = 1.0f / DEPTH_BIAS_SCALE_FACTOR_D24S8;
          break;

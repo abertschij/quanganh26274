@@ -73,8 +73,7 @@ fpclassify(double x)
 #elif defined(__APPLE__) || defined(__CYGWIN__) || defined(__FreeBSD__) || \
      defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__) || \
      (defined(__sun) && defined(__C99FEATURES__)) || defined(__MINGW32__) || \
-     (defined(__sun) && defined(__GNUC__)) || \
-     (defined(__linux) && defined(__GNUC__))
+     (defined(__sun) && defined(__GNUC__)) || defined(ANDROID) || defined(__HAIKU__)
 
 /* fpclassify is available. */
 
@@ -118,10 +117,6 @@ GLbitfield GL_APIENTRY _es_QueryMatrixxOES(GLfixed mantissa[16], GLint exponent[
         {GL_MODELVIEW, GL_MODELVIEW_MATRIX},
         {GL_PROJECTION, GL_PROJECTION_MATRIX},
         {GL_TEXTURE, GL_TEXTURE_MATRIX},
-#if 0
-        /* this doesn't exist in GLES */
-        {GL_COLOR, GL_COLOR_MATRIX},
-#endif
     };
 
     /* Call Mesa to get the current matrix in floating-point form.  First,

@@ -25,13 +25,12 @@
 
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_pack_color.h"
 
 #include "r300_context.h"
 #include "r300_fs.h"
-#include "r300_hyperz.h"
 #include "r300_screen.h"
 #include "r300_shader_semantics.h"
-#include "r300_state_derived.h"
 #include "r300_state_inlines.h"
 #include "r300_texture.h"
 #include "r300_vs.h"
@@ -192,7 +191,7 @@ static void r300_swtcl_vertex_psc(struct r300_context *r300)
         (R300_LAST_VEC << (i & 1 ? 16 : 0));
 
     vstream->count = (i >> 1) + 1;
-    r300->vertex_stream_state.dirty = TRUE;
+    r300_mark_atom_dirty(r300, &r300->vertex_stream_state);
     r300->vertex_stream_state.size = (1 + vstream->count) * 2;
 }
 
@@ -324,6 +323,7 @@ static void r300_update_rs_block(struct r300_context *r300)
     boolean any_bcolor_used = vs_outputs->bcolor[0] != ATTR_UNUSED ||
                               vs_outputs->bcolor[1] != ATTR_UNUSED;
     int *stream_loc_notcl = r300->stream_loc_notcl;
+    uint32_t stuffing_enable = 0;
 
     if (r300->screen->caps.is_r500) {
         rX00_rs_col       = r500_rs_col;
@@ -432,11 +432,17 @@ static void r300_update_rs_block(struct r300_context *r300)
         fp_offset++;
         col_count++;
         DBG(r300, DBG_RS, "r300: Rasterized FACE written to FS.\n");
+    } else if (fs_inputs->face != ATTR_UNUSED) {
+        fprintf(stderr, "r300: ERROR: FS input FACE unassigned.\n");
     }
 
     /* Rasterize texture coordinates. */
     for (i = 0; i < ATTR_GENERIC_COUNT && tex_count < 8; i++) {
-	bool sprite_coord = !!(r300->sprite_coord_enable & (1 << i));
+	boolean sprite_coord = false;
+
+	if (fs_inputs->generic[i] != ATTR_UNUSED) {
+	    sprite_coord = !!(r300->sprite_coord_enable & (1 << i));
+	}
 
         if (vs_outputs->generic[i] != ATTR_UNUSED || sprite_coord) {
             if (!sprite_coord) {
@@ -444,7 +450,9 @@ static void r300_update_rs_block(struct r300_context *r300)
                 rs.vap_vsm_vtx_assm |= (R300_INPUT_CNTL_TC0 << tex_count);
                 rs.vap_out_vtx_fmt[1] |= (4 << (3 * tex_count));
                 stream_loc_notcl[loc++] = 6 + tex_count;
-            }
+            } else
+                stuffing_enable |=
+                    R300_GB_TEX_ST << (R300_GB_TEX0_SOURCE_SHIFT + (tex_count*2));
 
             /* Rasterize it. */
             rX00_rs_tex(&rs, tex_count, tex_ptr,
@@ -456,8 +464,8 @@ static void r300_update_rs_block(struct r300_context *r300)
                 fp_offset++;
 
                 DBG(r300, DBG_RS,
-                    "r300: Rasterized generic %i written to FS%s.\n",
-                    i, sprite_coord ? " (sprite coord)" : "");
+                    "r300: Rasterized generic %i written to FS%s in texcoord %d.\n",
+                    i, sprite_coord ? " (sprite coord)" : "", tex_count);
             } else {
                 DBG(r300, DBG_RS,
                     "r300: Rasterized generic %i unused%s.\n",
@@ -477,12 +485,11 @@ static void r300_update_rs_block(struct r300_context *r300)
         }
     }
 
-    if (DBG_ON(r300, DBG_RS)) {
-        for (; i < ATTR_GENERIC_COUNT; i++) {
-            if (fs_inputs->generic[i] != ATTR_UNUSED) {
-                DBG(r300, DBG_RS,
-                    "r300: FS input generic %i unassigned.\n", i);
-            }
+    for (; i < ATTR_GENERIC_COUNT; i++) {
+        if (fs_inputs->generic[i] != ATTR_UNUSED) {
+            fprintf(stderr, "r300: ERROR: FS input generic %i unassigned, "
+                    "not enough hardware slots (it's not a bug, do not "
+                    "report it).\n", i);
         }
     }
 
@@ -513,7 +520,13 @@ static void r300_update_rs_block(struct r300_context *r300)
         if (fs_inputs->fog != ATTR_UNUSED) {
             fp_offset++;
 
-            DBG(r300, DBG_RS, "r300: FS input fog unassigned.\n");
+            if (tex_count < 8) {
+                DBG(r300, DBG_RS, "r300: FS input fog unassigned.\n");
+            } else {
+                fprintf(stderr, "r300: ERROR: FS input fog unassigned, "
+                        "not enough hardware slots. (it's not a bug, "
+                        "do not report it)\n");
+            }
         }
     }
 
@@ -536,6 +549,12 @@ static void r300_update_rs_block(struct r300_context *r300)
         fp_offset++;
         tex_count++;
         tex_ptr += 4;
+    } else {
+        if (fs_inputs->wpos != ATTR_UNUSED && tex_count >= 8) {
+            fprintf(stderr, "r300: ERROR: FS input WPOS unassigned, "
+                    "not enough hardware slots. (it's not a bug, do not "
+                    "report it)\n");
+        }
     }
 
     /* Invalidate the rest of the no-TCL (GA) stream locations. */
@@ -560,63 +579,164 @@ static void r300_update_rs_block(struct r300_context *r300)
     count = MAX3(col_count, tex_count, 1);
     rs.inst_count = count - 1;
 
+    /* set the GB enable flags */
+    if (r300->sprite_coord_enable)
+	stuffing_enable |= R300_GB_POINT_STUFF_ENABLE;
+
+    rs.gb_enable = stuffing_enable;
+
     /* Now, after all that, see if we actually need to update the state. */
     if (memcmp(r300->rs_block_state.state, &rs, sizeof(struct r300_rs_block))) {
         memcpy(r300->rs_block_state.state, &rs, sizeof(struct r300_rs_block));
-        r300->rs_block_state.size = 11 + count*2;
+        r300->rs_block_state.size = 13 + count*2;
     }
 }
 
+static void rgba_to_bgra(float color[4])
+{
+    float x = color[0];
+    color[0] = color[2];
+    color[2] = x;
+}
+
 static uint32_t r300_get_border_color(enum pipe_format format,
-                                      const float border[4])
+                                      const float border[4],
+                                      boolean is_r500)
 {
     const struct util_format_description *desc;
-    float border_swizzled[4] = {
-        border[2],
-        border[1],
-        border[0],
-        border[3]
-    };
-    uint32_t r;
+    float border_swizzled[4] = {0};
+    union util_color uc = {0};
 
     desc = util_format_description(format);
 
-    /* We don't use util_pack_format because it does not handle the formats
-     * we want, e.g. R4G4B4A4 is non-existent in Gallium. */
+    /* Do depth formats first. */
+    if (util_format_is_depth_or_stencil(format)) {
+        switch (format) {
+        case PIPE_FORMAT_Z16_UNORM:
+            return util_pack_z(PIPE_FORMAT_Z16_UNORM, border[0]);
+        case PIPE_FORMAT_X8Z24_UNORM:
+        case PIPE_FORMAT_S8_UINT_Z24_UNORM:
+            if (is_r500) {
+                return util_pack_z(PIPE_FORMAT_X8Z24_UNORM, border[0]);
+            } else {
+                return util_pack_z(PIPE_FORMAT_Z16_UNORM, border[0]) << 16;
+            }
+        default:
+            assert(0);
+            return 0;
+        }
+    }
+
+    /* Apply inverse swizzle of the format. */
+    util_format_unswizzle_4f(border_swizzled, border, desc->swizzle);
+
+    /* Compressed formats. */
+    if (util_format_is_compressed(format)) {
+        switch (format) {
+        case PIPE_FORMAT_RGTC1_SNORM:
+        case PIPE_FORMAT_LATC1_SNORM:
+            border_swizzled[0] = border_swizzled[0] < 0 ?
+                                 border_swizzled[0]*0.5+1 :
+                                 border_swizzled[0]*0.5;
+            /* Pass through. */
+
+        case PIPE_FORMAT_RGTC1_UNORM:
+        case PIPE_FORMAT_LATC1_UNORM:
+            /* Add 1/32 to round the border color instead of truncating. */
+            /* The Y component is used for the border color. */
+            border_swizzled[1] = border_swizzled[0] + 1.0f/32;
+            util_pack_color(border_swizzled, PIPE_FORMAT_B4G4R4A4_UNORM, &uc);
+            return uc.ui;
+        case PIPE_FORMAT_RGTC2_SNORM:
+        case PIPE_FORMAT_LATC2_SNORM:
+            util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SNORM, &uc);
+            return uc.ui;
+        case PIPE_FORMAT_RGTC2_UNORM:
+        case PIPE_FORMAT_LATC2_UNORM:
+            util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
+            return uc.ui;
+        case PIPE_FORMAT_DXT1_SRGB:
+        case PIPE_FORMAT_DXT1_SRGBA:
+        case PIPE_FORMAT_DXT3_SRGBA:
+        case PIPE_FORMAT_DXT5_SRGBA:
+            util_pack_color(border_swizzled, PIPE_FORMAT_B8G8R8A8_SRGB, &uc);
+            return uc.ui;
+        default:
+            util_pack_color(border_swizzled, PIPE_FORMAT_B8G8R8A8_UNORM, &uc);
+            return uc.ui;
+        }
+    }
+
     switch (desc->channel[0].size) {
+        case 2:
+            rgba_to_bgra(border_swizzled);
+            util_pack_color(border_swizzled, PIPE_FORMAT_B2G3R3_UNORM, &uc);
+            break;
+
         case 4:
-            r = ((float_to_ubyte(border_swizzled[0]) & 0xf0) >> 4) |
-                ((float_to_ubyte(border_swizzled[1]) & 0xf0) << 0) |
-                ((float_to_ubyte(border_swizzled[2]) & 0xf0) << 4) |
-                ((float_to_ubyte(border_swizzled[3]) & 0xf0) << 8);
+            rgba_to_bgra(border_swizzled);
+            util_pack_color(border_swizzled, PIPE_FORMAT_B4G4R4A4_UNORM, &uc);
             break;
 
         case 5:
+            rgba_to_bgra(border_swizzled);
             if (desc->channel[1].size == 5) {
-                r = ((float_to_ubyte(border_swizzled[0]) & 0xf8) >> 3) |
-                    ((float_to_ubyte(border_swizzled[1]) & 0xf8) << 2) |
-                    ((float_to_ubyte(border_swizzled[2]) & 0xf8) << 7) |
-                    ((float_to_ubyte(border_swizzled[3]) & 0x80) << 8);
+                util_pack_color(border_swizzled, PIPE_FORMAT_B5G5R5A1_UNORM, &uc);
             } else if (desc->channel[1].size == 6) {
-                r = ((float_to_ubyte(border_swizzled[0]) & 0xf8) >> 3) |
-                    ((float_to_ubyte(border_swizzled[1]) & 0xfc) << 3) |
-                    ((float_to_ubyte(border_swizzled[2]) & 0xf8) << 8);
+                util_pack_color(border_swizzled, PIPE_FORMAT_B5G6R5_UNORM, &uc);
             } else {
                 assert(0);
             }
             break;
 
         default:
-            /* I think the fat formats (16, 32) are specified
-             * as the 8-bit ones. I am not sure how compressed formats
-             * work here. */
-            r = ((float_to_ubyte(border_swizzled[0]) & 0xff) << 0) |
-                ((float_to_ubyte(border_swizzled[1]) & 0xff) << 8) |
-                ((float_to_ubyte(border_swizzled[2]) & 0xff) << 16) |
-                ((float_to_ubyte(border_swizzled[3]) & 0xff) << 24);
+        case 8:
+            if (desc->channel[0].type == UTIL_FORMAT_TYPE_SIGNED) {
+                util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SNORM, &uc);
+            } else if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) {
+                if (desc->nr_channels == 2) {
+                    border_swizzled[3] = border_swizzled[1];
+                    util_pack_color(border_swizzled, PIPE_FORMAT_L8A8_SRGB, &uc);
+                } else {
+                    util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SRGB, &uc);
+                }
+            } else {
+                util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
+            }
+            break;
+
+        case 10:
+            util_pack_color(border_swizzled, PIPE_FORMAT_R10G10B10A2_UNORM, &uc);
+            break;
+
+        case 16:
+            if (desc->nr_channels <= 2) {
+                if (desc->channel[0].type == UTIL_FORMAT_TYPE_FLOAT) {
+                    util_pack_color(border_swizzled, PIPE_FORMAT_R16G16_FLOAT, &uc);
+                } else if (desc->channel[0].type == UTIL_FORMAT_TYPE_SIGNED) {
+                    util_pack_color(border_swizzled, PIPE_FORMAT_R16G16_SNORM, &uc);
+                } else {
+                    util_pack_color(border_swizzled, PIPE_FORMAT_R16G16_UNORM, &uc);
+                }
+            } else {
+                if (desc->channel[0].type == UTIL_FORMAT_TYPE_SIGNED) {
+                    util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_SNORM, &uc);
+                } else {
+                    util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
+                }
+            }
+            break;
+
+        case 32:
+            if (desc->nr_channels == 1) {
+                util_pack_color(border_swizzled, PIPE_FORMAT_R32_FLOAT, &uc);
+            } else {
+                util_pack_color(border_swizzled, PIPE_FORMAT_R8G8B8A8_UNORM, &uc);
+            }
+            break;
     }
 
-    return r;
+    return uc.ui;
 }
 
 static void r300_merge_textures_and_samplers(struct r300_context* r300)
@@ -626,10 +746,11 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
     struct r300_texture_sampler_state *texstate;
     struct r300_sampler_state *sampler;
     struct r300_sampler_view *view;
-    struct r300_texture *tex;
-    unsigned min_level, max_level, i, j, size;
+    struct r300_resource *tex;
+    unsigned base_level, min_level, level_count, i, j, size;
     unsigned count = MIN2(state->sampler_view_count,
                           state->sampler_state_count);
+    boolean has_us_format = r300->screen->caps.has_us_format;
 
     /* The KIL opcode fix, see below. */
     if (!count && !r300->screen->caps.is_r500)
@@ -644,7 +765,7 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
             state->tx_enable |= 1 << i;
 
             view = state->sampler_views[i];
-            tex = r300_texture(view->base.texture);
+            tex = r300_resource(view->base.texture);
             sampler = state->sampler_states[i];
 
             texstate = &state->regs[i];
@@ -655,36 +776,47 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
             /* Set the border color. */
             texstate->border_color =
                 r300_get_border_color(view->base.format,
-                                      sampler->state.border_color);
+                                      sampler->state.border_color.f,
+                                      r300->screen->caps.is_r500);
 
             /* determine min/max levels */
-            max_level = MIN3(sampler->max_lod + view->base.first_level,
-                             tex->desc.b.b.last_level, view->base.last_level);
-            min_level = MIN2(sampler->min_lod + view->base.first_level,
-                             max_level);
+            base_level = view->base.u.tex.first_level;
+            min_level = sampler->min_lod;
+            level_count = MIN3(sampler->max_lod,
+                               tex->b.b.last_level - base_level,
+                               view->base.u.tex.last_level - base_level);
 
-            if (tex->desc.is_npot && min_level > 0) {
-                /* Even though we do not implement mipmapping for NPOT
-                 * textures, we should at least honor the minimum level
-                 * which is allowed to be displayed. We do this by setting up
-                 * an i-th mipmap level as the zero level. */
-                r300_texture_setup_format_state(r300->screen, &tex->desc,
-                                                min_level,
+            if (base_level + min_level) {
+                unsigned offset;
+
+                if (tex->tex.is_npot) {
+                    /* Even though we do not implement mipmapping for NPOT
+                     * textures, we should at least honor the minimum level
+                     * which is allowed to be displayed. We do this by setting up
+                     * an i-th mipmap level as the zero level. */
+                    base_level += min_level;
+                }
+                offset = tex->tex.offset_in_bytes[base_level];
+
+                r300_texture_setup_format_state(r300->screen, tex,
+                                                view->base.format,
+                                                base_level,
+                                                view->width0_override,
+		                                view->height0_override,
                                                 &texstate->format);
-                texstate->format.tile_config |=
-                        tex->desc.offset_in_bytes[min_level] & 0xffffffe0;
-                assert((tex->desc.offset_in_bytes[min_level] & 0x1f) == 0);
+                texstate->format.tile_config |= offset & 0xffffffe0;
+                assert((offset & 0x1f) == 0);
             }
 
             /* Assign a texture cache region. */
             texstate->format.format1 |= view->texcache_region;
 
             /* Depth textures are kinda special. */
-            if (util_format_is_depth_or_stencil(tex->desc.b.b.format)) {
+            if (util_format_is_depth_or_stencil(view->base.format)) {
                 unsigned char depth_swizzle[4];
 
                 if (!r300->screen->caps.is_r500 &&
-                    util_format_get_blocksizebits(tex->desc.b.b.format) == 32) {
+                    util_format_get_blocksizebits(view->base.format) == 32) {
                     /* X24x8 is sampled as Y16X16 on r3xx-r4xx.
                      * The depth here is at the Y component. */
                     for (j = 0; j < 4; j++)
@@ -701,20 +833,31 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
                 if (sampler->state.compare_mode == PIPE_TEX_COMPARE_NONE) {
                     texstate->format.format1 |=
                         r300_get_swizzle_combined(depth_swizzle,
-                                                  view->swizzle);
+                                                  view->swizzle, FALSE);
                 } else {
                     texstate->format.format1 |=
-                        r300_get_swizzle_combined(depth_swizzle, 0);
+                        r300_get_swizzle_combined(depth_swizzle, 0, FALSE);
                 }
             }
 
+            if (r300->screen->caps.dxtc_swizzle &&
+                util_format_is_compressed(view->base.format)) {
+                texstate->filter1 |= R400_DXTC_SWIZZLE_ENABLE;
+            }
+
             /* to emulate 1D textures through 2D ones correctly */
-            if (tex->desc.b.b.target == PIPE_TEXTURE_1D) {
+            if (tex->b.b.target == PIPE_TEXTURE_1D) {
                 texstate->filter0 &= ~R300_TX_WRAP_T_MASK;
                 texstate->filter0 |= R300_TX_WRAP_T(R300_TX_CLAMP_TO_EDGE);
             }
 
-            if (tex->desc.is_npot) {
+            /* The hardware doesn't like CLAMP and CLAMP_TO_BORDER
+             * for the 3rd coordinate if the texture isn't 3D. */
+            if (tex->b.b.target != PIPE_TEXTURE_3D) {
+                texstate->filter0 &= ~R300_TX_WRAP_R_MASK;
+            }
+
+            if (tex->tex.is_npot) {
                 /* NPOT textures don't support mip filter, unfortunately.
                  * This prevents incorrect rendering. */
                 texstate->filter0 &= ~R300_TX_MIN_FILTER_MIP_MASK;
@@ -739,13 +882,39 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
                 }
             } else {
                 /* the MAX_MIP level is the largest (finest) one */
-                texstate->format.format0 |= R300_TX_NUM_LEVELS(max_level);
+                texstate->format.format0 |= R300_TX_NUM_LEVELS(level_count);
                 texstate->filter0 |= R300_TX_MAX_MIP_LEVEL(min_level);
+            }
+
+            /* Float textures only support nearest and mip-nearest filtering. */
+            if (util_format_is_float(view->base.format)) {
+                /* No MAG linear filtering. */
+                if ((texstate->filter0 & R300_TX_MAG_FILTER_MASK) ==
+                    R300_TX_MAG_FILTER_LINEAR) {
+                    texstate->filter0 &= ~R300_TX_MAG_FILTER_MASK;
+                    texstate->filter0 |= R300_TX_MAG_FILTER_NEAREST;
+                }
+                /* No MIN linear filtering. */
+                if ((texstate->filter0 & R300_TX_MIN_FILTER_MASK) ==
+                    R300_TX_MIN_FILTER_LINEAR) {
+                    texstate->filter0 &= ~R300_TX_MIN_FILTER_MASK;
+                    texstate->filter0 |= R300_TX_MIN_FILTER_NEAREST;
+                }
+                /* No mipmap linear filtering. */
+                if ((texstate->filter0 & R300_TX_MIN_FILTER_MIP_MASK) ==
+                    R300_TX_MIN_FILTER_MIP_LINEAR) {
+                    texstate->filter0 &= ~R300_TX_MIN_FILTER_MIP_MASK;
+                    texstate->filter0 |= R300_TX_MIN_FILTER_MIP_NEAREST;
+                }
+                /* No anisotropic filtering. */
+                texstate->filter0 &= ~R300_TX_MAX_ANISO_MASK;
+                texstate->filter1 &= ~R500_TX_MAX_ANISO_MASK;
+                texstate->filter1 &= ~R500_TX_ANISO_HIGH_QUALITY;
             }
 
             texstate->filter0 |= i << 28;
 
-            size += 16;
+            size += 16 + (has_us_format ? 2 : 0);
             state->count = i+1;
         } else {
             /* For the KIL opcode to work on r3xx-r4xx, the texture unit
@@ -774,7 +943,7 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
                 texstate->border_color = 0;
 
                 texstate->filter0 |= i << 28;
-                size += 16;
+                size += 16 + (has_us_format ? 2 : 0);
                 state->count = i+1;
             }
         }
@@ -783,55 +952,74 @@ static void r300_merge_textures_and_samplers(struct r300_context* r300)
     r300->textures_state.size = size;
 
     /* Pick a fragment shader based on either the texture compare state
-     * or the uses_pitch flag. */
-    if (r300->fs.state && count) {
-        if (r300_pick_fragment_shader(r300)) {
-            r300_mark_fs_code_dirty(r300);
+     * or the uses_pitch flag or some other external state. */
+    if (count &&
+        r300->fs_status == FRAGMENT_SHADER_VALID) {
+        r300->fs_status = FRAGMENT_SHADER_MAYBE_DIRTY;
+    }
+}
+
+static void r300_decompress_depth_textures(struct r300_context *r300)
+{
+    struct r300_textures_state *state =
+        (struct r300_textures_state*)r300->textures_state.state;
+    struct pipe_resource *tex;
+    unsigned count = MIN2(state->sampler_view_count,
+                          state->sampler_state_count);
+    unsigned i;
+
+    if (!r300->locked_zbuffer) {
+        return;
+    }
+
+    for (i = 0; i < count; i++) {
+        if (state->sampler_views[i] && state->sampler_states[i]) {
+            tex = state->sampler_views[i]->base.texture;
+
+            if (tex == r300->locked_zbuffer->texture) {
+                r300_decompress_zmask_locked(r300);
+                return;
+            }
         }
     }
 }
 
-/* We can't use compressed zbuffers as samplers. */
-static void r300_flush_depth_textures(struct r300_context *r300)
+static void r300_validate_fragment_shader(struct r300_context *r300)
 {
-    struct r300_textures_state *state =
-        (struct r300_textures_state*)r300->textures_state.state;
-    unsigned i, level;
-    unsigned count = MIN2(state->sampler_view_count,
-                          state->sampler_state_count);
+    struct pipe_framebuffer_state *fb = r300->fb_state.state;
 
-    if (r300->z_decomp_rd)
-        return;
+    if (r300->fs.state && r300->fs_status != FRAGMENT_SHADER_VALID) {
+        /* Pick the fragment shader based on external states.
+         * Then mark the state dirty if the fragment shader is either dirty
+         * or the function r300_pick_fragment_shader changed the shader. */
+        if (r300_pick_fragment_shader(r300) ||
+            r300->fs_status == FRAGMENT_SHADER_DIRTY) {
+            /* Mark the state atom as dirty. */
+            r300_mark_fs_code_dirty(r300);
 
-    for (i = 0; i < count; i++)
-        if (state->sampler_views[i] && state->sampler_states[i]) {
-            struct pipe_resource *tex = state->sampler_views[i]->base.texture;
+            /* Does Multiwrite need to be changed? */
+            if (fb->nr_cbufs > 1) {
+                boolean new_multiwrite =
+                    r300_fragment_shader_writes_all(r300_fs(r300));
 
-            if (tex->target == PIPE_TEXTURE_3D ||
-                tex->target == PIPE_TEXTURE_CUBE)
-                continue;
-
-            /* Ignore non-depth textures.
-             * Also ignore reinterpreted depth textures, e.g. resource_copy. */
-            if (!util_format_is_depth_or_stencil(tex->format))
-                continue;
-
-            for (level = 0; level <= tex->last_level; level++)
-                if (r300_texture(tex)->zmask_in_use[level]) {
-                    /* We don't handle 3D textures and cubemaps yet. */
-                    r300_flush_depth_stencil(&r300->context, tex,
-                                             u_subresource(0, level), 0);
+                if (r300->fb_multiwrite != new_multiwrite) {
+                    r300->fb_multiwrite = new_multiwrite;
+                    r300_mark_fb_state_dirty(r300, R300_CHANGED_MULTIWRITE);
                 }
+            }
         }
+        r300->fs_status = FRAGMENT_SHADER_VALID;
+    }
 }
 
 void r300_update_derived_state(struct r300_context* r300)
 {
-    r300_flush_depth_textures(r300);
-
     if (r300->textures_state.dirty) {
+        r300_decompress_depth_textures(r300);
         r300_merge_textures_and_samplers(r300);
     }
+
+    r300_validate_fragment_shader(r300);
 
     if (r300->rs_block_state.dirty) {
         r300_update_rs_block(r300);

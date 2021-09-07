@@ -1,6 +1,6 @@
 /**************************************************************************
  *
- * Copyright 2009 VMware, Inc.
+ * Copyright 2009-2010 VMware, Inc.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -73,6 +73,7 @@
 
 #include "gallivm/lp_bld_type.h"
 #include "gallivm/lp_bld_arit.h"
+#include "gallivm/lp_bld_init.h"
 #include "lp_bld_blend.h"
 
 
@@ -204,7 +205,7 @@ lp_build_blend_soa_factor(struct lp_build_blend_soa_context *bld,
  * \param res  the result/output
  */
 void
-lp_build_blend_soa(LLVMBuilderRef builder,
+lp_build_blend_soa(struct gallivm_state *gallivm,
                    const struct pipe_blend_state *blend,
                    struct lp_type type,
                    unsigned rt,
@@ -213,6 +214,7 @@ lp_build_blend_soa(LLVMBuilderRef builder,
                    LLVMValueRef con[4],
                    LLVMValueRef res[4])
 {
+   LLVMBuilderRef builder = gallivm->builder;
    struct lp_build_blend_soa_context bld;
    unsigned i, j, k;
 
@@ -220,7 +222,7 @@ lp_build_blend_soa(LLVMBuilderRef builder,
 
    /* Setup build context */
    memset(&bld, 0, sizeof bld);
-   lp_build_context_init(&bld.base, builder, type);
+   lp_build_context_init(&bld.base, gallivm, type);
    for (i = 0; i < 4; ++i) {
       bld.src[i] = src[i];
       bld.dst[i] = dst[i];
@@ -243,9 +245,6 @@ lp_build_blend_soa(LLVMBuilderRef builder,
             unsigned func = i < 3 ? blend->rt[rt].rgb_func : blend->rt[rt].alpha_func;
             boolean func_commutative = lp_build_blend_func_commutative(func);
 
-            /* It makes no sense to blend unless values are normalized */
-            assert(type.norm);
-
             /*
              * Compute src/dst factors.
              */
@@ -254,6 +253,24 @@ lp_build_blend_soa(LLVMBuilderRef builder,
             bld.factor[0][1][i] = lp_build_blend_soa_factor(&bld, src_factor, i);
             bld.factor[1][0][i] = dst[i];
             bld.factor[1][1][i] = lp_build_blend_soa_factor(&bld, dst_factor, i);
+
+            /*
+             * Check if lp_build_blend can perform any optimisations
+             */
+            res[i] = lp_build_blend(&bld.base,
+                                    func,
+                                    src_factor,
+                                    dst_factor,
+                                    bld.factor[0][0][i],
+                                    bld.factor[1][0][i],
+                                    bld.factor[0][1][i],
+                                    bld.factor[1][1][i],
+                                    true,
+                                    true);
+
+            if (res[i]) {
+               continue;
+            }
 
             /*
              * Compute src/dst terms
@@ -269,7 +286,7 @@ lp_build_blend_soa(LLVMBuilderRef builder,
                      break;
                }
 
-               if(j < i)
+               if(j < i && bld.term[k][j])
                   bld.term[k][i] = bld.term[k][j];
                else
                   bld.term[k][i] = lp_build_mul(&bld.base, bld.factor[k][0][i], bld.factor[k][1][i]);

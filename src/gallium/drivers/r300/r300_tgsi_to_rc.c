@@ -22,8 +22,7 @@
 
 #include "r300_tgsi_to_rc.h"
 
-#include "radeon_compiler.h"
-#include "radeon_program.h"
+#include "compiler/radeon_compiler.h"
 
 #include "tgsi/tgsi_info.h"
 #include "tgsi/tgsi_parse.h"
@@ -52,14 +51,13 @@ static unsigned translate_opcode(unsigned opcode)
         case TGSI_OPCODE_MAD: return RC_OPCODE_MAD;
         case TGSI_OPCODE_SUB: return RC_OPCODE_SUB;
         case TGSI_OPCODE_LRP: return RC_OPCODE_LRP;
-     /* case TGSI_OPCODE_CND: return RC_OPCODE_CND; */
-     /* case TGSI_OPCODE_CND0: return RC_OPCODE_CND0; */
+        case TGSI_OPCODE_CND: return RC_OPCODE_CND;
      /* case TGSI_OPCODE_DP2A: return RC_OPCODE_DP2A; */
                                         /* gap */
         case TGSI_OPCODE_FRC: return RC_OPCODE_FRC;
-     /* case TGSI_OPCODE_CLAMP: return RC_OPCODE_CLAMP; */
+        case TGSI_OPCODE_CLAMP: return RC_OPCODE_CLAMP;
         case TGSI_OPCODE_FLR: return RC_OPCODE_FLR;
-     /* case TGSI_OPCODE_ROUND: return RC_OPCODE_ROUND; */
+        case TGSI_OPCODE_ROUND: return RC_OPCODE_ROUND;
         case TGSI_OPCODE_EX2: return RC_OPCODE_EX2;
         case TGSI_OPCODE_LG2: return RC_OPCODE_LG2;
         case TGSI_OPCODE_POW: return RC_OPCODE_POW;
@@ -116,7 +114,7 @@ static unsigned translate_opcode(unsigned opcode)
         case TGSI_OPCODE_CEIL: return RC_OPCODE_CEIL;
      /* case TGSI_OPCODE_I2F: return RC_OPCODE_I2F; */
      /* case TGSI_OPCODE_NOT: return RC_OPCODE_NOT; */
-        case TGSI_OPCODE_TRUNC: return RC_OPCODE_FLR;
+        case TGSI_OPCODE_TRUNC: return RC_OPCODE_TRUNC;
      /* case TGSI_OPCODE_SHL: return RC_OPCODE_SHL; */
      /* case TGSI_OPCODE_ISHR: return RC_OPCODE_SHR; */
      /* case TGSI_OPCODE_AND: return RC_OPCODE_AND; */
@@ -191,7 +189,12 @@ static void transform_dstreg(
     dst->File = translate_register_file(src->Register.File);
     dst->Index = translate_register_index(ttr, src->Register.File, src->Register.Index);
     dst->WriteMask = src->Register.WriteMask;
-    dst->RelAddr = src->Register.Indirect;
+
+    if (src->Register.Indirect) {
+        ttr->error = TRUE;
+        fprintf(stderr, "r300: Relative addressing of destination operands "
+                "is unsupported.\n");
+    }
 }
 
 static void transform_srcreg(
@@ -262,6 +265,7 @@ static void transform_texture(struct rc_instruction * dst, struct tgsi_instructi
             *shadowSamplers |= 1 << dst->U.I.TexSrcUnit;
             break;
     }
+    dst->U.I.TexSwizzle = RC_SWIZZLE_XYZW;
 }
 
 static void transform_instruction(struct tgsi_to_rc * ttr, struct tgsi_full_instruction * src)
@@ -332,6 +336,8 @@ void r300_tgsi_to_rc(struct tgsi_to_rc * ttr,
     unsigned imm_index = 0;
     int i;
 
+    ttr->error = FALSE;
+
     /* Allocate constants placeholders.
      *
      * Note: What if declared constants are not contiguous? */
@@ -363,10 +369,7 @@ void r300_tgsi_to_rc(struct tgsi_to_rc * ttr,
                 break;
             case TGSI_TOKEN_TYPE_INSTRUCTION:
                 inst = &parser.FullToken.FullInstruction;
-                /* This hack with the RET opcode woudn't work with
-                 * conditionals. */
-                if (inst->Instruction.Opcode == TGSI_OPCODE_END ||
-                    inst->Instruction.Opcode == TGSI_OPCODE_RET) {
+                if (inst->Instruction.Opcode == TGSI_OPCODE_END) {
                     break;
                 }
 

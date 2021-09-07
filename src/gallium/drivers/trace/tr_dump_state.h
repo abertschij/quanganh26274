@@ -37,8 +37,6 @@ void trace_dump_format(enum pipe_format format);
 
 void trace_dump_resource_template(const struct pipe_resource *templat);
 
-void trace_dump_subresource(const struct pipe_subresource *subresource);
-
 void trace_dump_box(const struct pipe_box *box);
 
 void trace_dump_rasterizer_state(const struct pipe_rasterizer_state *state);
@@ -67,9 +65,11 @@ void trace_dump_framebuffer_state(const struct pipe_framebuffer_state *state);
 
 void trace_dump_sampler_state(const struct pipe_sampler_state *state);
 
-void trace_dump_sampler_view_template(const struct pipe_sampler_view *view);
+void trace_dump_sampler_view_template(const struct pipe_sampler_view *view,
+                                      enum pipe_texture_target target);
 
-void trace_dump_surface(const struct pipe_surface *state);
+void trace_dump_surface_template(const struct pipe_surface *state,
+                                 enum pipe_texture_target target);
 
 void trace_dump_transfer(const struct pipe_transfer *state);
 
@@ -78,6 +78,8 @@ void trace_dump_vertex_buffer(const struct pipe_vertex_buffer *state);
 void trace_dump_index_buffer(const struct pipe_index_buffer *state);
 
 void trace_dump_vertex_element(const struct pipe_vertex_element *state);
+
+void trace_dump_draw_info(const struct pipe_draw_info *state);
 
 
 #endif /* TR_STATE_H */

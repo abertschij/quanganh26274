@@ -117,7 +117,7 @@ trace_screen_get_shader_param(struct pipe_screen *_screen, unsigned shader,
    trace_dump_call_begin("pipe_screen", "get_shader_param");
 
    trace_dump_arg(ptr, screen);
-   trace_dump_arg(int, shader);
+   trace_dump_arg(uint, shader);
    trace_dump_arg(int, param);
 
    result = screen->get_shader_param(screen, shader, param);
@@ -132,7 +132,7 @@ trace_screen_get_shader_param(struct pipe_screen *_screen, unsigned shader,
 
 static float
 trace_screen_get_paramf(struct pipe_screen *_screen,
-                        enum pipe_cap param)
+                        enum pipe_capf param)
 {
    struct trace_screen *tr_scr = trace_screen(_screen);
    struct pipe_screen *screen = tr_scr->screen;
@@ -158,8 +158,7 @@ trace_screen_is_format_supported(struct pipe_screen *_screen,
                                  enum pipe_format format,
                                  enum pipe_texture_target target,
                                  unsigned sample_count,
-                                 unsigned tex_usage,
-                                 unsigned geom_flags)
+                                 unsigned tex_usage)
 {
    struct trace_screen *tr_scr = trace_screen(_screen);
    struct pipe_screen *screen = tr_scr->screen;
@@ -172,10 +171,9 @@ trace_screen_is_format_supported(struct pipe_screen *_screen,
    trace_dump_arg(int, target);
    trace_dump_arg(uint, sample_count);
    trace_dump_arg(uint, tex_usage);
-   trace_dump_arg(uint, geom_flags);
 
    result = screen->is_format_supported(screen, format, target, sample_count,
-                                        tex_usage, geom_flags);
+                                        tex_usage);
 
    trace_dump_ret(bool, result);
 
@@ -210,23 +208,26 @@ trace_screen_context_create(struct pipe_screen *_screen, void *priv)
 
 static void
 trace_screen_flush_frontbuffer(struct pipe_screen *_screen,
-                               struct pipe_surface *_surface,
+                               struct pipe_resource *_resource,
+                               unsigned level, unsigned layer,
                                void *context_private)
 {
    struct trace_screen *tr_scr = trace_screen(_screen);
-   struct trace_surface *tr_surf = trace_surface(_surface);
+   struct trace_resource *tr_res = trace_resource(_resource);
    struct pipe_screen *screen = tr_scr->screen;
-   struct pipe_surface *surface = tr_surf->surface;
+   struct pipe_resource *resource = tr_res->resource;
 
    trace_dump_call_begin("pipe_screen", "flush_frontbuffer");
 
    trace_dump_arg(ptr, screen);
-   trace_dump_arg(ptr, surface);
+   trace_dump_arg(ptr, resource);
+   trace_dump_arg(uint, level);
+   trace_dump_arg(uint, layer);
    /* XXX: hide, as there is nothing we can do with this
    trace_dump_arg(ptr, context_private);
    */
 
-   screen->flush_frontbuffer(screen, surface, context_private);
+   screen->flush_frontbuffer(screen, resource, level, layer, context_private);
 
    trace_dump_call_end();
 }
@@ -281,146 +282,41 @@ trace_screen_resource_from_handle(struct pipe_screen *_screen,
 
 static boolean
 trace_screen_resource_get_handle(struct pipe_screen *_screen,
-                                struct pipe_resource *_texture,
+                                struct pipe_resource *_resource,
                                 struct winsys_handle *handle)
 {
    struct trace_screen *tr_screen = trace_screen(_screen);
-   struct trace_resource *tr_texture = trace_resource(_texture);
+   struct trace_resource *tr_resource = trace_resource(_resource);
    struct pipe_screen *screen = tr_screen->screen;
-   struct pipe_resource *texture = tr_texture->resource;
+   struct pipe_resource *resource = tr_resource->resource;
 
    /* TODO trace call */
 
-   return screen->resource_get_handle(screen, texture, handle);
+   return screen->resource_get_handle(screen, resource, handle);
 }
 
 
 
 static void
 trace_screen_resource_destroy(struct pipe_screen *_screen,
-			      struct pipe_resource *_texture)
+			      struct pipe_resource *_resource)
 {
    struct trace_screen *tr_scr = trace_screen(_screen);
-   struct trace_resource *tr_tex = trace_resource(_texture);
+   struct trace_resource *tr_res = trace_resource(_resource);
    struct pipe_screen *screen = tr_scr->screen;
-   struct pipe_resource *texture = tr_tex->resource;
+   struct pipe_resource *resource = tr_res->resource;
 
-   assert(texture->screen == screen);
+   assert(resource->screen == screen);
 
-   trace_dump_call_begin("pipe_screen", "texture_destroy");
+   trace_dump_call_begin("pipe_screen", "resource_destroy");
 
    trace_dump_arg(ptr, screen);
-   trace_dump_arg(ptr, texture);
+   trace_dump_arg(ptr, resource);
 
    trace_dump_call_end();
 
-   trace_resource_destroy(tr_scr, tr_tex);
+   trace_resource_destroy(tr_scr, tr_res);
 }
-
-
-/********************************************************************
- * surface
- */
-
-
-static struct pipe_surface *
-trace_screen_get_tex_surface(struct pipe_screen *_screen,
-                             struct pipe_resource *_texture,
-                             unsigned face, unsigned level,
-                             unsigned zslice,
-                             unsigned usage)
-{
-   struct trace_screen *tr_scr = trace_screen(_screen);
-   struct trace_resource *tr_tex = trace_resource(_texture);
-   struct pipe_screen *screen = tr_scr->screen;
-   struct pipe_resource *texture = tr_tex->resource;
-   struct pipe_surface *result = NULL;
-
-   assert(texture->screen == screen);
-
-   trace_dump_call_begin("pipe_screen", "get_tex_surface");
-
-   trace_dump_arg(ptr, screen);
-   trace_dump_arg(ptr, texture);
-   trace_dump_arg(uint, face);
-   trace_dump_arg(uint, level);
-   trace_dump_arg(uint, zslice);
-   trace_dump_arg(uint, usage);
-
-   result = screen->get_tex_surface(screen, texture, face, level, zslice, usage);
-
-   trace_dump_ret(ptr, result);
-
-   trace_dump_call_end();
-
-   result = trace_surface_create(tr_tex, result);
-
-   return result;
-}
-
-
-static void
-trace_screen_tex_surface_destroy(struct pipe_surface *_surface)
-{
-   struct trace_screen *tr_scr = trace_screen(_surface->texture->screen);
-   struct trace_surface *tr_surf = trace_surface(_surface);
-   struct pipe_screen *screen = tr_scr->screen;
-   struct pipe_surface *surface = tr_surf->surface;
-
-   trace_dump_call_begin("pipe_screen", "tex_surface_destroy");
-
-   trace_dump_arg(ptr, screen);
-   trace_dump_arg(ptr, surface);
-
-   trace_dump_call_end();
-
-   trace_surface_destroy(tr_surf);
-}
-
-
-
-
-
-/********************************************************************
- * buffer
- */
-
-
-
-static struct pipe_resource *
-trace_screen_user_buffer_create(struct pipe_screen *_screen,
-                                void *data,
-                                unsigned size,
-				unsigned usage)
-{
-   struct trace_screen *tr_scr = trace_screen(_screen);
-   struct pipe_screen *screen = tr_scr->screen;
-   struct pipe_resource *result;
-
-   trace_dump_call_begin("pipe_screen", "user_buffer_create");
-
-   trace_dump_arg(ptr, screen);
-   trace_dump_arg_begin("data");
-   trace_dump_bytes(data, size);
-   trace_dump_arg_end();
-   trace_dump_arg(uint, size);
-   trace_dump_arg(uint, usage);
-
-   result = screen->user_buffer_create(screen, data, size, usage);
-
-   trace_dump_ret(ptr, result);
-
-   trace_dump_call_end();
-
-   if(result) {
-      assert(!(result->flags & TRACE_FLAG_USER_BUFFER));
-      result->flags |= TRACE_FLAG_USER_BUFFER;
-   }
-
-   return trace_resource_create(tr_scr, result);
-}
-
-
 
 
 /********************************************************************
@@ -452,10 +348,9 @@ trace_screen_fence_reference(struct pipe_screen *_screen,
 }
 
 
-static int
+static boolean
 trace_screen_fence_signalled(struct pipe_screen *_screen,
-                             struct pipe_fence_handle *fence,
-                             unsigned flags)
+                             struct pipe_fence_handle *fence)
 {
    struct trace_screen *tr_scr = trace_screen(_screen);
    struct pipe_screen *screen = tr_scr->screen;
@@ -465,11 +360,10 @@ trace_screen_fence_signalled(struct pipe_screen *_screen,
 
    trace_dump_arg(ptr, screen);
    trace_dump_arg(ptr, fence);
-   trace_dump_arg(uint, flags);
 
-   result = screen->fence_signalled(screen, fence, flags);
+   result = screen->fence_signalled(screen, fence);
 
-   trace_dump_ret(int, result);
+   trace_dump_ret(bool, result);
 
    trace_dump_call_end();
 
@@ -477,10 +371,10 @@ trace_screen_fence_signalled(struct pipe_screen *_screen,
 }
 
 
-static int
+static boolean
 trace_screen_fence_finish(struct pipe_screen *_screen,
                           struct pipe_fence_handle *fence,
-                          unsigned flags)
+                          uint64_t timeout)
 {
    struct trace_screen *tr_scr = trace_screen(_screen);
    struct pipe_screen *screen = tr_scr->screen;
@@ -490,11 +384,11 @@ trace_screen_fence_finish(struct pipe_screen *_screen,
 
    trace_dump_arg(ptr, screen);
    trace_dump_arg(ptr, fence);
-   trace_dump_arg(uint, flags);
+   trace_dump_arg(uint, timeout);
 
-   result = screen->fence_finish(screen, fence, flags);
+   result = screen->fence_finish(screen, fence, timeout);
 
-   trace_dump_ret(int, result);
+   trace_dump_ret(bool, result);
 
    trace_dump_call_end();
 
@@ -505,6 +399,24 @@ trace_screen_fence_finish(struct pipe_screen *_screen,
 /********************************************************************
  * screen
  */
+
+static uint64_t
+trace_screen_get_timestamp(struct pipe_screen *_screen)
+{
+   struct trace_screen *tr_scr = trace_screen(_screen);
+   struct pipe_screen *screen = tr_scr->screen;
+   uint64_t result;
+
+   trace_dump_call_begin("pipe_screen", "get_timestamp");
+   trace_dump_arg(ptr, screen);
+
+   result = screen->get_timestamp(screen);
+
+   trace_dump_ret(uint, result);
+   trace_dump_call_end();
+
+   return result;
+}
 
 static void
 trace_screen_destroy(struct pipe_screen *_screen)
@@ -531,8 +443,6 @@ trace_enabled(void)
       return trace;
    firstrun = FALSE;
 
-   trace_dump_init();
-
    if(trace_dump_trace_begin()) {
       trace_dumping_start();
       trace = TRUE;
@@ -545,7 +455,6 @@ struct pipe_screen *
 trace_screen_create(struct pipe_screen *screen)
 {
    struct trace_screen *tr_scr;
-   struct pipe_winsys *winsys;
 
    if(!screen)
       goto error1;
@@ -559,14 +468,6 @@ trace_screen_create(struct pipe_screen *screen)
    if(!tr_scr)
       goto error2;
 
-#if 0
-   winsys = trace_winsys_create(screen->winsys);
-   if(!winsys)
-      goto error3;
-#else
-   winsys = screen->winsys;
-#endif
-   tr_scr->base.winsys = winsys;
    tr_scr->base.destroy = trace_screen_destroy;
    tr_scr->base.get_name = trace_screen_get_name;
    tr_scr->base.get_vendor = trace_screen_get_vendor;
@@ -580,13 +481,11 @@ trace_screen_create(struct pipe_screen *screen)
    tr_scr->base.resource_from_handle = trace_screen_resource_from_handle;
    tr_scr->base.resource_get_handle = trace_screen_resource_get_handle;
    tr_scr->base.resource_destroy = trace_screen_resource_destroy;
-   tr_scr->base.get_tex_surface = trace_screen_get_tex_surface;
-   tr_scr->base.tex_surface_destroy = trace_screen_tex_surface_destroy;
-   tr_scr->base.user_buffer_create = trace_screen_user_buffer_create;
    tr_scr->base.fence_reference = trace_screen_fence_reference;
    tr_scr->base.fence_signalled = trace_screen_fence_signalled;
    tr_scr->base.fence_finish = trace_screen_fence_finish;
    tr_scr->base.flush_frontbuffer = trace_screen_flush_frontbuffer;
+   tr_scr->base.get_timestamp = trace_screen_get_timestamp;
 
    tr_scr->screen = screen;
 

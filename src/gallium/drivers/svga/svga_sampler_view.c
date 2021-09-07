@@ -32,7 +32,9 @@
 #include "util/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_string.h"
 
+#include "svga_format.h"
 #include "svga_screen.h"
 #include "svga_context.h"
 #include "svga_resource_texture.h"
@@ -41,15 +43,25 @@
 #include "svga_surface.h"
 
 
+void
+svga_debug_describe_sampler_view(char *buf, const struct svga_sampler_view *sv)
+{
+   char res[128];
+   debug_describe_resource(res, sv->texture);
+   util_sprintf(buf, "svga_sampler_view<%s,[%u,%u]>", res, sv->min_lod, sv->max_lod);
+}
+
 struct svga_sampler_view *
 svga_get_tex_sampler_view(struct pipe_context *pipe,
 			  struct pipe_resource *pt,
                           unsigned min_lod, unsigned max_lod)
 {
-   struct svga_screen *ss = svga_screen(pt->screen);
+   struct svga_context *svga = svga_context(pipe);
+   struct svga_screen *ss = svga_screen(pipe->screen);
    struct svga_texture *tex = svga_texture(pt); 
    struct svga_sampler_view *sv = NULL;
-   SVGA3dSurfaceFormat format = svga_translate_format(pt->format);
+   SVGA3dSurfaceFlags flags = SVGA3D_SURFACE_HINT_TEXTURE;
+   SVGA3dSurfaceFormat format = svga_translate_format(ss, pt->format, PIPE_BIND_SAMPLER_VIEW);
    boolean view = TRUE;
 
    assert(pt);
@@ -67,10 +79,6 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
        */
       if (min_lod == 0 && max_lod >= pt->last_level)
          view = FALSE;
-
-      if (util_format_is_s3tc(pt->format) && view) {
-         format = svga_translate_format_render(pt->format);
-      }
 
       if (ss->debug.no_sampler_view)
          view = FALSE;
@@ -97,7 +105,12 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
 
    sv = CALLOC_STRUCT(svga_sampler_view);
    pipe_reference_init(&sv->reference, 1);
-   pipe_resource_reference(&sv->texture, pt);
+
+   /* Note: we're not refcounting the texture resource here to avoid
+    * a circular dependency.
+    */
+   sv->texture = pt;
+
    sv->min_lod = min_lod;
    sv->max_lod = max_lod;
 
@@ -113,6 +126,8 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
                pt->last_level);
       sv->key.cachable = 0;
       sv->handle = tex->handle;
+      debug_reference(&sv->reference,
+                      (debug_reference_descriptor)svga_debug_describe_sampler_view, 0);
       return sv;
    }
 
@@ -126,7 +141,7 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
             pt->last_level);
 
    sv->age = tex->age;
-   sv->handle = svga_texture_view_surface(pipe, tex, format,
+   sv->handle = svga_texture_view_surface(svga, tex, flags, format,
                                           min_lod,
                                           max_lod - min_lod + 1,
                                           -1, -1,
@@ -136,12 +151,17 @@ svga_get_tex_sampler_view(struct pipe_context *pipe,
       assert(0);
       sv->key.cachable = 0;
       sv->handle = tex->handle;
+      debug_reference(&sv->reference,
+                      (debug_reference_descriptor)svga_debug_describe_sampler_view, 0);
       return sv;
    }
 
    pipe_mutex_lock(ss->tex_mutex);
    svga_sampler_view_reference(&tex->cached_view, sv);
    pipe_mutex_unlock(ss->tex_mutex);
+
+   debug_reference(&sv->reference,
+                   (debug_reference_descriptor)svga_debug_describe_sampler_view, 0);
 
    return sv;
 }
@@ -191,6 +211,11 @@ svga_destroy_sampler_view_priv(struct svga_sampler_view *v)
       SVGA_DBG(DEBUG_DMA, "unref sid %p (sampler view)\n", v->handle);
       svga_screen_surface_destroy(ss, &v->key, &v->handle);
    }
-   pipe_resource_reference(&v->texture, NULL);
+
+   /* Note: we're not refcounting the texture resource here to avoid
+    * a circular dependency.
+    */
+   v->texture = NULL;
+
    FREE(v);
 }

@@ -51,8 +51,11 @@ svga_swtnl_draw_vbo(struct svga_context *svga,
    assert(svga->state.sw.need_swtnl);
    assert(draw);
 
+   /* Make sure that the need_swtnl flag does not go away */
+   svga->state.sw.in_swtnl_draw = TRUE;
+
    ret = svga_update_state(svga, SVGA_STATE_SWTNL_DRAW);
-   if (ret) {
+   if (ret != PIPE_OK) {
       svga_context_flush(svga, NULL);
       ret = svga_update_state(svga, SVGA_STATE_SWTNL_DRAW);
       svga->swtnl.new_vbuf = TRUE;
@@ -63,16 +66,15 @@ svga_swtnl_draw_vbo(struct svga_context *svga,
     * Map vertex buffers
     */
    for (i = 0; i < svga->curr.num_vertex_buffers; i++) {
-      map = pipe_buffer_map(&svga->pipe,
-                            svga->curr.vb[i].buffer,
-                            PIPE_TRANSFER_READ,
-			    &vb_transfer[i]);
+      if (svga->curr.vb[i].buffer) {
+         map = pipe_buffer_map(&svga->pipe,
+                               svga->curr.vb[i].buffer,
+                               PIPE_TRANSFER_READ,
+                               &vb_transfer[i]);
 
-      draw_set_mapped_vertex_buffer(draw, i, map);
+         draw_set_mapped_vertex_buffer(draw, i, map);
+      }
    }
-
-   /* TODO move this to update_swtnl_draw */
-   draw_set_index_buffer(draw, &svga->curr.ib);
 
    /* Map index buffer, if present */
    map = NULL;
@@ -80,8 +82,10 @@ svga_swtnl_draw_vbo(struct svga_context *svga,
       map = pipe_buffer_map(&svga->pipe, svga->curr.ib.buffer,
                             PIPE_TRANSFER_READ,
                             &ib_transfer);
+      draw_set_indexes(draw,
+                       (const ubyte *) map + svga->curr.ib.offset,
+                       svga->curr.ib.index_size);
    }
-   draw_set_mapped_index_buffer(draw, map);
 
    if (svga->curr.cb[PIPE_SHADER_VERTEX]) {
       map = pipe_buffer_map(&svga->pipe,
@@ -106,21 +110,24 @@ svga_swtnl_draw_vbo(struct svga_context *svga,
     * unmap vertex/index buffers
     */
    for (i = 0; i < svga->curr.num_vertex_buffers; i++) {
-      pipe_buffer_unmap(&svga->pipe, svga->curr.vb[i].buffer, 
-			vb_transfer[i]);
-      draw_set_mapped_vertex_buffer(draw, i, NULL);
+      if (svga->curr.vb[i].buffer) {
+         pipe_buffer_unmap(&svga->pipe, vb_transfer[i]);
+         draw_set_mapped_vertex_buffer(draw, i, NULL);
+      }
    }
 
    if (ib_transfer) {
-      pipe_buffer_unmap(&svga->pipe, svga->curr.ib.buffer, ib_transfer);
-      draw_set_mapped_index_buffer(draw, NULL);
+      pipe_buffer_unmap(&svga->pipe, ib_transfer);
+      draw_set_indexes(draw, NULL, 0);
    }
 
    if (svga->curr.cb[PIPE_SHADER_VERTEX]) {
-      pipe_buffer_unmap(&svga->pipe,
-                        svga->curr.cb[PIPE_SHADER_VERTEX],
-			cb_transfer);
+      pipe_buffer_unmap(&svga->pipe, cb_transfer);
    }
+
+   /* Now safe to remove the need_swtnl flag in any update_state call */
+   svga->state.sw.in_swtnl_draw = FALSE;
+   svga->dirty |= SVGA_NEW_NEED_PIPELINE | SVGA_NEW_NEED_SWVFETCH;
 
    return ret;
 }
@@ -152,7 +159,7 @@ boolean svga_init_swtnl( struct svga_context *svga )
    draw_install_pstipple_stage(svga->swtnl.draw, &svga->pipe);
 
    if (debug_get_bool_option("SVGA_SWTNL_FSE", FALSE))
-      draw_set_driver_clipping(svga->swtnl.draw, TRUE, TRUE);
+      draw_set_driver_clipping(svga->swtnl.draw, TRUE, TRUE, TRUE);
 
    return TRUE;
 

@@ -35,17 +35,24 @@
 #include "main/imports.h"
 #include "main/macros.h"
 #include "main/colormac.h"
+#include "main/renderbuffer.h"
+#include "main/framebuffer.h"
 
 #include "intel_batchbuffer.h" 
 #include "intel_regions.h" 
+#include "intel_fbo.h"
 
 #include "brw_context.h"
 #include "brw_defines.h"
 #include "brw_state.h"
 #include "brw_draw.h"
-#include "brw_state.h"
 #include "brw_vs.h"
 #include "brw_wm.h"
+
+#include "gen6_blorp.h"
+#include "gen7_blorp.h"
+
+#include "glsl/ralloc.h"
 
 static void
 dri_bo_release(drm_intel_bo **bo)
@@ -61,88 +68,89 @@ dri_bo_release(drm_intel_bo **bo)
 static void brw_destroy_context( struct intel_context *intel )
 {
    struct brw_context *brw = brw_context(&intel->ctx);
-   int i;
 
    brw_destroy_state(brw);
    brw_draw_destroy( brw );
-   brw_clear_validated_bos(brw);
-   if (brw->wm.compile_data) {
-      free(brw->wm.compile_data->instruction);
-      free(brw->wm.compile_data->vreg);
-      free(brw->wm.compile_data->refs);
-      free(brw->wm.compile_data->prog_instructions);
-      free(brw->wm.compile_data);
-   }
 
-   for (i = 0; i < brw->state.nr_color_regions; i++)
-      intel_region_release(&brw->state.color_regions[i]);
-   brw->state.nr_color_regions = 0;
-   intel_region_release(&brw->state.depth_region);
+   ralloc_free(brw->wm.compile_data);
 
    dri_bo_release(&brw->curbe.curbe_bo);
-   dri_bo_release(&brw->vs.prog_bo);
-   dri_bo_release(&brw->vs.state_bo);
-   dri_bo_release(&brw->vs.bind_bo);
    dri_bo_release(&brw->vs.const_bo);
-   dri_bo_release(&brw->gs.prog_bo);
-   dri_bo_release(&brw->gs.state_bo);
-   dri_bo_release(&brw->clip.prog_bo);
-   dri_bo_release(&brw->clip.state_bo);
-   dri_bo_release(&brw->clip.vp_bo);
-   dri_bo_release(&brw->sf.prog_bo);
-   dri_bo_release(&brw->sf.state_bo);
-   dri_bo_release(&brw->sf.vp_bo);
-   for (i = 0; i < BRW_MAX_TEX_UNIT; i++)
-      dri_bo_release(&brw->wm.sdc_bo[i]);
-   dri_bo_release(&brw->wm.bind_bo);
-   for (i = 0; i < BRW_WM_MAX_SURF; i++)
-      dri_bo_release(&brw->wm.surf_bo[i]);
-   dri_bo_release(&brw->wm.sampler_bo);
-   dri_bo_release(&brw->wm.prog_bo);
-   dri_bo_release(&brw->wm.state_bo);
    dri_bo_release(&brw->wm.const_bo);
-   dri_bo_release(&brw->wm.push_const_bo);
-   dri_bo_release(&brw->cc.prog_bo);
-   dri_bo_release(&brw->cc.state_bo);
-   dri_bo_release(&brw->cc.vp_bo);
-   dri_bo_release(&brw->cc.blend_state_bo);
-   dri_bo_release(&brw->cc.depth_stencil_state_bo);
-   dri_bo_release(&brw->cc.color_calc_state_bo);
 
    free(brw->curbe.last_buf);
    free(brw->curbe.next_buf);
-}
 
+   drm_intel_gem_context_destroy(intel->hw_ctx);
+}
 
 /**
- * called from intelDrawBuffer()
+ * Update the hardware state for drawing into a window or framebuffer object.
+ *
+ * Called by glDrawBuffer, glBindFramebufferEXT, MakeCurrent, and other
+ * places within the driver.
+ *
+ * Basically, this needs to be called any time the current framebuffer
+ * changes, the renderbuffers change, or we need to draw into different
+ * color buffers.
  */
-static void brw_set_draw_region( struct intel_context *intel, 
-                                 struct intel_region *color_regions[],
-                                 struct intel_region *depth_region,
-                                 GLuint num_color_regions)
+static void
+brw_update_draw_buffer(struct intel_context *intel)
 {
-   struct brw_context *brw = brw_context(&intel->ctx);
-   GLuint i;
+   struct gl_context *ctx = &intel->ctx;
+   struct gl_framebuffer *fb = ctx->DrawBuffer;
 
-   /* release old color/depth regions */
-   if (brw->state.depth_region != depth_region)
-      brw->state.dirty.brw |= BRW_NEW_DEPTH_BUFFER;
-   for (i = 0; i < brw->state.nr_color_regions; i++)
-       intel_region_release(&brw->state.color_regions[i]);
-   intel_region_release(&brw->state.depth_region);
+   if (!fb) {
+      /* this can happen during the initial context initialization */
+      return;
+   }
 
-   /* reference new color/depth regions */
-   for (i = 0; i < num_color_regions; i++)
-       intel_region_reference(&brw->state.color_regions[i], color_regions[i]);
-   intel_region_reference(&brw->state.depth_region, depth_region);
-   brw->state.nr_color_regions = num_color_regions;
+   /* Do this here, not core Mesa, since this function is called from
+    * many places within the driver.
+    */
+   if (ctx->NewState & _NEW_BUFFERS) {
+      /* this updates the DrawBuffer->_NumColorDrawBuffers fields, etc */
+      _mesa_update_framebuffer(ctx);
+      /* this updates the DrawBuffer's Width/Height if it's a FBO */
+      _mesa_update_draw_buffer_bounds(ctx);
+   }
+
+   if (fb->_Status != GL_FRAMEBUFFER_COMPLETE_EXT) {
+      /* this may occur when we're called by glBindFrameBuffer() during
+       * the process of someone setting up renderbuffers, etc.
+       */
+      /*_mesa_debug(ctx, "DrawBuffer: incomplete user FBO\n");*/
+      return;
+   }
+
+   /* Mesa's Stencil._Enabled field is updated when
+    * _NEW_BUFFERS | _NEW_STENCIL, but i965 code assumes that the value
+    * only changes with _NEW_STENCIL (which seems sensible).  So flag it
+    * here since this is the _NEW_BUFFERS path.
+    */
+   intel->NewGLState |= (_NEW_DEPTH | _NEW_STENCIL);
+
+   /* The driver uses this in places that need to look up
+    * renderbuffers' buffer objects.
+    */
+   intel->NewGLState |= _NEW_BUFFERS;
+
+   /* update viewport/scissor since it depends on window size */
+   intel->NewGLState |= _NEW_VIEWPORT | _NEW_SCISSOR;
+
+   /* Update culling direction which changes depending on the
+    * orientation of the buffer:
+    */
+   intel->NewGLState |= _NEW_POLYGON;
 }
-
 
 /**
  * called from intel_batchbuffer_flush and children before sending a
  * batchbuffer off.
+ *
+ * Note that ALL state emitted here must fit in the reserved space
+ * at the end of a batchbuffer.  If you add more GPU state, increase
+ * the BATCH_RESERVED macro.
  */
 static void brw_finish_batch(struct intel_context *intel)
 {
@@ -164,24 +172,38 @@ static void brw_new_batch( struct intel_context *intel )
 {
    struct brw_context *brw = brw_context(&intel->ctx);
 
-   /* Mark all context state as needing to be re-emitted.
-    * This is probably not as severe as on 915, since almost all of our state
-    * is just in referenced buffers.
+   /* If the kernel supports hardware contexts, then most hardware state is
+    * preserved between batches; we only need to re-emit state that is required
+    * to be in every batch.  Otherwise we need to re-emit all the state that
+    * would otherwise be stored in the context (which for all intents and
+    * purposes means everything).
     */
-   brw->state.dirty.brw |= BRW_NEW_CONTEXT;
+   if (intel->hw_ctx == NULL)
+      brw->state.dirty.brw |= BRW_NEW_CONTEXT;
 
-   brw->state.dirty.mesa |= ~0;
-   brw->state.dirty.brw |= ~0;
-   brw->state.dirty.cache |= ~0;
+   brw->state.dirty.brw |= BRW_NEW_BATCH;
 
-   /* Move to the end of the current upload buffer so that we'll force choosing
-    * a new buffer next time.
+   /* Assume that the last command before the start of our batch was a
+    * primitive, for safety.
     */
-   if (brw->vb.upload.bo != NULL) {
-      drm_intel_bo_unreference(brw->vb.upload.bo);
-      brw->vb.upload.bo = NULL;
-      brw->vb.upload.offset = 0;
-   }
+   intel->batch.need_workaround_flush = true;
+
+   brw->state_batch_count = 0;
+
+   /* Gen7 needs to track what the real transform feedback vertex count was at
+    * the start of the batch, since the kernel will be resetting the offset to
+    * 0.
+    */
+   brw->sol.offset_0_batch_start = brw->sol.svbi_0_starting_index;
+
+   brw->vb.nr_current_buffers = 0;
+   brw->ib.type = -1;
+
+   /* Mark that the current program cache BO has been used by the GPU.
+    * It will be reallocated if we need to put new programs in for the
+    * next batch.
+    */
+   brw->cache.bo_used_by_gpu = true;
 }
 
 static void brw_invalidate_state( struct intel_context *intel, GLuint new_state )
@@ -189,6 +211,25 @@ static void brw_invalidate_state( struct intel_context *intel, GLuint new_state 
    /* nothing */
 }
 
+/**
+ * \see intel_context.vtbl.is_hiz_depth_format
+ */
+static bool brw_is_hiz_depth_format(struct intel_context *intel,
+                                    gl_format format)
+{
+   if (!intel->has_hiz)
+      return false;
+
+   switch (format) {
+   case MESA_FORMAT_Z32_FLOAT:
+   case MESA_FORMAT_Z32_FLOAT_X24S8:
+   case MESA_FORMAT_X8_Z24:
+   case MESA_FORMAT_S8_Z24:
+      return true;
+   default:
+      return false;
+   }
+}
 
 void brwInitVtbl( struct brw_context *brw )
 {
@@ -202,6 +243,16 @@ void brwInitVtbl( struct brw_context *brw )
    brw->intel.vtbl.new_batch = brw_new_batch;
    brw->intel.vtbl.finish_batch = brw_finish_batch;
    brw->intel.vtbl.destroy = brw_destroy_context;
-   brw->intel.vtbl.set_draw_region = brw_set_draw_region;
+   brw->intel.vtbl.update_draw_buffer = brw_update_draw_buffer;
    brw->intel.vtbl.debug_batch = brw_debug_batch;
+   brw->intel.vtbl.annotate_aub = brw_annotate_aub;
+   brw->intel.vtbl.render_target_supported = brw_render_target_supported;
+   brw->intel.vtbl.is_hiz_depth_format = brw_is_hiz_depth_format;
+
+   assert(brw->intel.gen >= 4);
+   if (brw->intel.gen >= 7) {
+      gen7_init_vtable_surface_functions(brw);
+   } else if (brw->intel.gen >= 4) {
+      gen4_init_vtable_surface_functions(brw);
+   }
 }
