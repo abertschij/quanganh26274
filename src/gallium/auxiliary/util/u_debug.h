@@ -39,6 +39,7 @@
 #define U_DEBUG_H_
 
 
+#include <assert.h>
 #include "os/os_misc.h"
 
 
